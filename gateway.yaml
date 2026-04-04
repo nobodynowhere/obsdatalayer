@@ -1,0 +1,66 @@
+version: 1
+
+gateway:
+  port: 8080
+  token: "my-secret-token"
+  timeouts:
+    query: "30s"
+    push: "60s"
+
+instances:
+  - name: prod-logs
+    backend: loki
+    push_urls:
+      - url: "https://loki-a.prod.internal"
+        basic_auth: "user:pass-a"
+        tenant_id: "prod"
+      - url: "https://loki-b.prod.internal"
+        basic_auth: "user:pass-b"
+        tenant_id: "prod"
+    fan_out_mode: any
+    labels:
+      filter:
+        mode: allowlist
+        names:
+          - app
+          - env
+          - team
+      inject:
+        env: production
+
+  - name: prod-metrics
+    backend: mimir
+    push_urls:
+      - url: "https://mimir-a.prod.internal"
+        basic_auth: "user:pass-a"
+        tenant_id: "prod"
+      - url: "https://mimir-b.prod.internal"
+        basic_auth: "user:pass-b"
+        tenant_id: "prod"
+    fan_out_mode: any
+    labels:
+      inject:
+        env: production
+
+  - name: prod-traces
+    backend: tempo
+    url: "https://tempo.prod.internal"
+    basic_auth: "user:pass"
+    tenant_id: "prod"
+
+  - name: dev-logs
+    backend: loki
+    url: "https://loki.dev.internal"
+    basic_auth: "dev:devpass"
+    tenant_id: "dev"
+    labels:
+      filter:
+        mode: denylist
+        names:
+          - password
+          - secret
+
+  - name: passthrough-logs
+    backend: loki
+    url: "https://loki.corp.internal"
+    auth_passthrough: true

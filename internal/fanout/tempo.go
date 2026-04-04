@@ -1,0 +1,42 @@
+package fanout
+
+import (
+	"net/http"
+
+	"obsdatalayer/internal/config"
+	"obsdatalayer/internal/proxy"
+)
+
+// RegisterTempo registers all Tempo routes on mux.
+func RegisterTempo(mux *http.ServeMux, cfg *config.Config, p *proxy.Proxy, client *http.Client) {
+	mux.HandleFunc("POST /api/{instance}/tempo/otlp/v1/traces", func(w http.ResponseWriter, r *http.Request) {
+		if inst := getInstance(cfg, r, w, "tempo"); inst != nil {
+			p.ForwardPush(w, r, inst, "/otlp/v1/traces")
+		}
+	})
+	mux.HandleFunc("POST /api/{instance}/tempo/jaeger/v1/traces", func(w http.ResponseWriter, r *http.Request) {
+		if inst := getInstance(cfg, r, w, "tempo"); inst != nil {
+			p.ForwardPush(w, r, inst, "/api/traces")
+		}
+	})
+	mux.HandleFunc("GET /api/{instance}/tempo/search", func(w http.ResponseWriter, r *http.Request) {
+		if inst := getInstance(cfg, r, w, "tempo"); inst != nil {
+			p.ForwardQuery(w, r, inst, "/api/search")
+		}
+	})
+	mux.HandleFunc("GET /api/{instance}/tempo/traces/{traceID}", func(w http.ResponseWriter, r *http.Request) {
+		if inst := getInstance(cfg, r, w, "tempo"); inst != nil {
+			p.ForwardQuery(w, r, inst, "/api/traces/"+r.PathValue("traceID"))
+		}
+	})
+	mux.HandleFunc("GET /api/{instance}/tempo/v2/search/tags", func(w http.ResponseWriter, r *http.Request) {
+		if inst := getInstance(cfg, r, w, "tempo"); inst != nil {
+			p.ForwardQuery(w, r, inst, "/api/v2/search/tags")
+		}
+	})
+	mux.HandleFunc("GET /api/{instance}/tempo/v2/search/tag/{name}/values", func(w http.ResponseWriter, r *http.Request) {
+		if inst := getInstance(cfg, r, w, "tempo"); inst != nil {
+			p.ForwardQuery(w, r, inst, "/api/v2/search/tag/"+r.PathValue("name")+"/values")
+		}
+	})
+}
