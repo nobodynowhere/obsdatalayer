@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"testing"
 	"time"
 
@@ -197,90 +196,6 @@ func TestForwardQueryNoAuthWithoutPassthroughOrConfig(t *testing.T) {
 	}
 	if echoOrgID != "" {
 		t.Errorf("expected no X-Scope-OrgID sent, got %q", echoOrgID)
-	}
-}
-
-func TestForwardQueryPassthroughForwardsAllHeaders(t *testing.T) {
-	upstream := httptest.NewServer(echoHeadersHandler())
-	t.Cleanup(upstream.Close)
-
-	p := newProxy(&http.Client{Timeout: 5 * time.Second})
-	inst := &config.InstanceConfig{
-		Name:            "loki-prod",
-		Backend:         "loki",
-		URL:             upstream.URL,
-		AuthPassthrough: true,
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
-	req.Header.Set("Authorization", "Bearer client-token")
-	req.Header.Set("X-Custom-Header", "custom-value")
-	rec := httptest.NewRecorder()
-
-	p.ForwardQuery(rec, req, inst, "/loki/api/v1/labels")
-
-	// With passthrough, Authorization is stripped (gateway consumed it) but other headers forwarded
-	echoCustom := rec.Header().Get("X-Echo-X-Custom-Header")
-	if echoCustom != "custom-value" {
-		t.Errorf("expected custom header forwarded, got %q", echoCustom)
-	}
-
-	// Authorization should NOT be forwarded in passthrough mode (gateway consumed it)
-	echoAuth := rec.Header().Get("X-Echo-Authorization")
-	if echoAuth != "" {
-		t.Errorf("expected Authorization NOT forwarded in passthrough mode (gateway consumed it), got %q", echoAuth)
-	}
-}
-
-func TestForwardQueryPassthroughOrgIDForwarded(t *testing.T) {
-	upstream := httptest.NewServer(echoHeadersHandler())
-	t.Cleanup(upstream.Close)
-
-	p := newProxy(&http.Client{Timeout: 5 * time.Second})
-	inst := &config.InstanceConfig{
-		Name:            "loki-prod",
-		Backend:         "loki",
-		URL:             upstream.URL,
-		AuthPassthrough: true,
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
-	req.Header.Set("Authorization", "Bearer client-token")
-	req.Header.Set("X-Scope-OrgID", "client-tenant")
-	rec := httptest.NewRecorder()
-
-	p.ForwardQuery(rec, req, inst, "/loki/api/v1/labels")
-
-	echoOrgID := rec.Header().Get("X-Echo-X-Scope-Orgid")
-	if echoOrgID != "client-tenant" {
-		t.Errorf("expected X-Scope-OrgID='client-tenant' forwarded in passthrough, got %q", echoOrgID)
-	}
-}
-
-func TestForwardQueryPassthroughNoInjection(t *testing.T) {
-	upstream := httptest.NewServer(echoHeadersHandler())
-	t.Cleanup(upstream.Close)
-
-	p := newProxy(&http.Client{Timeout: 5 * time.Second})
-	inst := &config.InstanceConfig{
-		Name:            "loki-prod",
-		Backend:         "loki",
-		URL:             upstream.URL,
-		AuthPassthrough: true,
-		BasicAuth:       "should-not-inject:pass",
-		TenantID:        "should-not-inject",
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
-	req.Header.Set("Authorization", "Bearer client-token")
-	rec := httptest.NewRecorder()
-
-	p.ForwardQuery(rec, req, inst, "/loki/api/v1/labels")
-
-	// basic_auth should not be injected when auth_passthrough is true
-	echoAuth := rec.Header().Get("X-Echo-Authorization")
-	if strings.HasPrefix(echoAuth, "Basic ") {
-		t.Errorf("expected no basic auth injection in passthrough mode, got %q", echoAuth)
 	}
 }
 

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
 	"time"
@@ -39,9 +40,11 @@ type Config struct {
 }
 
 type GatewayConfig struct {
-	Port     int           `yaml:"port"`
-	Token    string        `yaml:"token"`
-	Timeouts TimeoutConfig `yaml:"timeouts"`
+	Port         int           `yaml:"port"`
+	AdminPort    int           `yaml:"admin_port"`
+	AuthFile     string        `yaml:"auth_file"`
+	MaxBodyBytes int64         `yaml:"max_body_bytes"`
+	Timeouts     TimeoutConfig `yaml:"timeouts"`
 }
 
 type TimeoutConfig struct {
@@ -50,15 +53,14 @@ type TimeoutConfig struct {
 }
 
 type InstanceConfig struct {
-	Name            string        `yaml:"name"`
-	Backend         string        `yaml:"backend"`
-	URL             string        `yaml:"url"`
-	PushURLs        []PushTarget  `yaml:"push_urls"`
-	FanOutMode      string        `yaml:"fan_out_mode"`
-	BasicAuth       string        `yaml:"basic_auth"`
-	TenantID        string        `yaml:"tenant_id"`
-	AuthPassthrough bool          `yaml:"auth_passthrough"`
-	Labels          *LabelsConfig `yaml:"labels"`
+	Name       string        `yaml:"name"`
+	Backend    string        `yaml:"backend"`
+	URL        string        `yaml:"url"`
+	PushURLs   []PushTarget  `yaml:"push_urls"`
+	FanOutMode string        `yaml:"fan_out_mode"`
+	BasicAuth  string        `yaml:"basic_auth"`
+	TenantID   string        `yaml:"tenant_id"`
+	Labels     *LabelsConfig `yaml:"labels"`
 }
 
 type PushTarget struct {
@@ -99,6 +101,12 @@ func Load(path string) (*Config, error) {
 	// Apply defaults
 	if cfg.Gateway.Port == 0 {
 		cfg.Gateway.Port = 8080
+	}
+	if cfg.Gateway.AdminPort == 0 {
+		cfg.Gateway.AdminPort = 9091
+	}
+	if cfg.Gateway.MaxBodyBytes == 0 {
+		cfg.Gateway.MaxBodyBytes = 32 * 1024 * 1024 // 32 MiB
 	}
 	if cfg.Gateway.Timeouts.Query == 0 {
 		cfg.Gateway.Timeouts.Query = Duration(30 * time.Second)
@@ -155,42 +163,37 @@ func validate(cfg *Config) error {
 			return fmt.Errorf("config: instance %q has unknown backend %q (must be loki, mimir, tempo)", inst.Name, inst.Backend)
 		}
 
-		// 6. auth_passthrough with basic_auth or tenant_id
-		if inst.AuthPassthrough && (inst.BasicAuth != "" || inst.TenantID != "") {
-			return fmt.Errorf("config: instance %q has auth_passthrough:true but also sets basic_auth or tenant_id", inst.Name)
-		}
-
-		// 7. both url and push_urls set
+		// 6. both url and push_urls set
 		if inst.URL != "" && len(inst.PushURLs) > 0 {
 			return fmt.Errorf("config: instance %q has both url and push_urls set", inst.Name)
 		}
 
-		// 8. neither url nor push_urls set
+		// 7. neither url nor push_urls set
 		if inst.URL == "" && len(inst.PushURLs) == 0 {
 			return fmt.Errorf("config: instance %q has neither url nor push_urls set", inst.Name)
 		}
 
-		// 9. push_urls on Tempo instance
+		// 8. push_urls on Tempo instance
 		if inst.Backend == "tempo" && len(inst.PushURLs) > 0 {
 			return fmt.Errorf("config: instance %q is tempo backend and cannot have push_urls", inst.Name)
 		}
 
-		// 10. fan_out_mode declared without push_urls
+		// 9. fan_out_mode declared without push_urls
 		if inst.FanOutMode != "" && len(inst.PushURLs) == 0 {
 			return fmt.Errorf("config: instance %q has fan_out_mode but no push_urls", inst.Name)
 		}
 
-		// 11. fan_out_mode not "any" or "all"
+		// 10. fan_out_mode not "any" or "all"
 		if inst.FanOutMode != "" && inst.FanOutMode != "any" && inst.FanOutMode != "all" {
 			return fmt.Errorf("config: instance %q has invalid fan_out_mode %q (must be any or all)", inst.Name, inst.FanOutMode)
 		}
 
-		// 12. labels on Tempo instance
+		// 11. labels on Tempo instance
 		if inst.Backend == "tempo" && inst.Labels != nil {
 			return fmt.Errorf("config: instance %q is tempo backend and cannot have labels config", inst.Name)
 		}
 
-		// 13. labels.filter.mode validation
+		// 12. labels.filter.mode validation
 		if inst.Labels != nil && inst.Labels.Filter != nil {
 			switch inst.Labels.Filter.Mode {
 			case "allowlist", "denylist":
@@ -199,19 +202,22 @@ func validate(cfg *Config) error {
 			}
 		}
 
-		// 14. push_urls target missing url
+		// 13. push_urls target missing url
 		for i, pt := range inst.PushURLs {
 			if pt.URL == "" {
 				return fmt.Errorf("config: instance %q push_urls[%d] is missing url", inst.Name, i)
 			}
 		}
 
-		// 15. per-target basic_auth/tenant_id when instance has auth_passthrough:true
-		if inst.AuthPassthrough {
-			for i, pt := range inst.PushURLs {
-				if pt.BasicAuth != "" || pt.TenantID != "" {
-					return fmt.Errorf("config: instance %q push_urls[%d] sets basic_auth/tenant_id but instance has auth_passthrough:true", inst.Name, i)
-				}
+		// 14. URL format validation
+		if inst.URL != "" {
+			if _, err := url.ParseRequestURI(inst.URL); err != nil {
+				return fmt.Errorf("config: instance %q url is not a valid URL: %w", inst.Name, err)
+			}
+		}
+		for i, pt := range inst.PushURLs {
+			if _, err := url.ParseRequestURI(pt.URL); err != nil {
+				return fmt.Errorf("config: instance %q push_urls[%d] is not a valid URL: %w", inst.Name, i, err)
 			}
 		}
 	}

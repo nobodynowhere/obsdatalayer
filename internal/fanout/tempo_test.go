@@ -24,12 +24,13 @@ func tempoInst(name, url string) *config.InstanceConfig {
 }
 
 func newTempoTestMux(cfg *config.Config, p *proxy.Proxy, pushClient *http.Client) http.Handler {
+	h := config.NewHolder(cfg, "")
 	mux := http.NewServeMux()
 	m := newTestMetrics()
-	fanout.RegisterLoki(mux, cfg, p, pushClient, m)
-	fanout.RegisterMimir(mux, cfg, p, pushClient, m)
-	fanout.RegisterTempo(mux, cfg, p, pushClient)
-	return middleware.BearerAuth(cfg.Gateway.Token, mux)
+	fanout.RegisterLoki(mux, h, p, pushClient, m)
+	fanout.RegisterMimir(mux, h, p, pushClient, m)
+	fanout.RegisterTempo(mux, h, p, pushClient)
+	return middleware.BasicAuth(testUF, mux)
 }
 
 func TestTempoOTLPPush(t *testing.T) {

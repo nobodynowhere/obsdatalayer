@@ -24,7 +24,6 @@ const baseConfig = `
 version: 1
 gateway:
   port: 9090
-  token: "secret"
 instances:
   - name: loki-prod
     backend: loki
@@ -39,9 +38,6 @@ func TestValidMinimalConfig(t *testing.T) {
 	}
 	if cfg.Gateway.Port != 9090 {
 		t.Errorf("expected port 9090, got %d", cfg.Gateway.Port)
-	}
-	if cfg.Gateway.Token != "secret" {
-		t.Errorf("expected token 'secret', got %q", cfg.Gateway.Token)
 	}
 	if len(cfg.Instances) != 1 {
 		t.Fatalf("expected 1 instance, got %d", len(cfg.Instances))
@@ -61,8 +57,7 @@ func TestValidMinimalConfig(t *testing.T) {
 func TestPortDefault(t *testing.T) {
 	yaml := `
 version: 1
-gateway:
-  token: "secret"
+gateway: {}
 instances:
   - name: loki-prod
     backend: loki
@@ -292,49 +287,6 @@ instances:
 	}
 }
 
-func TestAuthPassthroughWithBasicAuthError(t *testing.T) {
-	yaml := `
-version: 1
-gateway:
-  port: 9090
-  token: "secret"
-instances:
-  - name: loki-prod
-    backend: loki
-    url: http://loki.local
-    auth_passthrough: true
-    basic_auth: "user:pass"
-`
-	path := writeConfig(t, yaml)
-	_, err := config.Load(path)
-	if err == nil {
-		t.Fatal("expected error for auth_passthrough + basic_auth")
-	}
-	if !strings.Contains(err.Error(), "auth_passthrough") {
-		t.Errorf("expected error about auth_passthrough, got: %v", err)
-	}
-}
-
-func TestAuthPassthroughWithTenantIDError(t *testing.T) {
-	yaml := `
-version: 1
-gateway:
-  port: 9090
-  token: "secret"
-instances:
-  - name: loki-prod
-    backend: loki
-    url: http://loki.local
-    auth_passthrough: true
-    tenant_id: "my-tenant"
-`
-	path := writeConfig(t, yaml)
-	_, err := config.Load(path)
-	if err == nil {
-		t.Fatal("expected error for auth_passthrough + tenant_id")
-	}
-}
-
 func TestBothURLAndPushURLsError(t *testing.T) {
 	yaml := `
 version: 1
@@ -513,48 +465,6 @@ instances:
 	}
 	if !strings.Contains(err.Error(), "missing url") {
 		t.Errorf("expected error about missing url, got: %v", err)
-	}
-}
-
-func TestPerTargetBasicAuthWithAuthPassthroughError(t *testing.T) {
-	yaml := `
-version: 1
-gateway:
-  port: 9090
-  token: "secret"
-instances:
-  - name: loki-prod
-    backend: loki
-    auth_passthrough: true
-    push_urls:
-      - url: http://loki-a.local
-        basic_auth: "user:pass"
-`
-	path := writeConfig(t, yaml)
-	_, err := config.Load(path)
-	if err == nil {
-		t.Fatal("expected error for per-target basic_auth with auth_passthrough")
-	}
-}
-
-func TestPerTargetTenantIDWithAuthPassthroughError(t *testing.T) {
-	yaml := `
-version: 1
-gateway:
-  port: 9090
-  token: "secret"
-instances:
-  - name: loki-prod
-    backend: loki
-    auth_passthrough: true
-    push_urls:
-      - url: http://loki-a.local
-        tenant_id: "my-tenant"
-`
-	path := writeConfig(t, yaml)
-	_, err := config.Load(path)
-	if err == nil {
-		t.Fatal("expected error for per-target tenant_id with auth_passthrough")
 	}
 }
 

@@ -44,21 +44,21 @@ func TestFormatPartialFailureHeaderEmpty(t *testing.T) {
 
 func TestFormatPartialFailureHeaderSingle(t *testing.T) {
 	failures := []fanout.PartialFailure{
-		{Target: "http://x", StatusCode: 502},
+		{Instance: "loki-prod", StatusCode: 502},
 	}
 	s := fanout.FormatPartialFailureHeader(failures)
-	if s != "target=http://x status=502" {
+	if s != "instance=loki-prod status=502" {
 		t.Errorf("unexpected header value: %q", s)
 	}
 }
 
 func TestFormatPartialFailureHeaderMultiple(t *testing.T) {
 	failures := []fanout.PartialFailure{
-		{Target: "http://a", StatusCode: 502},
-		{Target: "http://b", StatusCode: 503},
+		{Instance: "loki-prod", StatusCode: 502},
+		{Instance: "loki-prod", StatusCode: 503},
 	}
 	s := fanout.FormatPartialFailureHeader(failures)
-	if s != "target=http://a status=502, target=http://b status=503" {
+	if s != "instance=loki-prod status=502, instance=loki-prod status=503" {
 		t.Errorf("unexpected header value: %q", s)
 	}
 }
@@ -249,8 +249,8 @@ func TestDoAllOneTargetFails(t *testing.T) {
 	if !strings.Contains(string(respBody), "push target failed") {
 		t.Errorf("expected body to mention 'push target failed', got %s", respBody)
 	}
-	if !strings.Contains(string(respBody), upstreamFail.URL) {
-		t.Errorf("expected body to include target URL, got %s", respBody)
+	if !strings.Contains(string(respBody), "loki-prod") {
+		t.Errorf("expected body to include instance name 'loki-prod', got %s", respBody)
 	}
 }
 

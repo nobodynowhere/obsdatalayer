@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -27,7 +28,7 @@ type TargetResult struct {
 
 // PartialFailure represents a non-suppressed failed target in a fan-out request.
 type PartialFailure struct {
-	Target     string
+	Instance   string
 	StatusCode int
 }
 
@@ -41,14 +42,15 @@ var mimirSuppressPatterns = []string{
 func FormatPartialFailureHeader(failures []PartialFailure) string {
 	parts := make([]string, len(failures))
 	for i, f := range failures {
-		parts[i] = fmt.Sprintf("target=%s status=%d", f.Target, f.StatusCode)
+		parts[i] = fmt.Sprintf("instance=%s status=%d", f.Instance, f.StatusCode)
 	}
 	return strings.Join(parts, ", ")
 }
 
 // getInstance looks up an instance by URL path value and validates its backend type.
 // Writes a 404 and returns nil if the instance is unknown or has the wrong backend.
-func getInstance(cfg *config.Config, r *http.Request, w http.ResponseWriter, backend string) *config.InstanceConfig {
+func getInstance(h *config.ConfigHolder, r *http.Request, w http.ResponseWriter, backend string) *config.InstanceConfig {
+	cfg := h.Get()
 	inst, ok := cfg.ByName[r.PathValue("instance")]
 	if !ok || inst.Backend != backend {
 		proxy.WriteJSONError(w, http.StatusNotFound, map[string]string{"error": "unknown instance"})
@@ -119,12 +121,22 @@ func copyResponseHeaders(w http.ResponseWriter, headers http.Header) {
 	}
 }
 
-// handlePush reads the body, optionally rewrites labels, fans out, and writes the response.
-// rewriteFn is called only when inst.Labels != nil; pass nil-safe closures.
-func handlePush(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, upstreamPath string, rewriteFn func([]byte) ([]byte, error), client *http.Client, m *metrics.Metrics) {
+// handlePush reads the body (limited to maxBodyBytes), optionally rewrites labels,
+// fans out, and writes the response. rewriteFn is called only when inst.Labels != nil.
+func handlePush(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, upstreamPath string, rewriteFn func([]byte) ([]byte, error), maxBodyBytes int64, client *http.Client, m *metrics.Metrics) {
+	if maxBodyBytes > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		proxy.WriteJSONError(w, http.StatusBadRequest, map[string]string{"error": "failed to read request body"})
+		status := http.StatusBadRequest
+		msg := "failed to read request body"
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			status = http.StatusRequestEntityTooLarge
+			msg = "request body too large"
+		}
+		proxy.WriteJSONError(w, status, map[string]string{"error": msg})
 		return
 	}
 	if inst.Labels != nil {
@@ -163,7 +175,7 @@ func doAnyMode(inst *config.InstanceConfig, results []TargetResult) (int, []byte
 			if r.Err != nil {
 				sc = 502
 			}
-			partialFailures = append(partialFailures, PartialFailure{Target: r.URL, StatusCode: sc})
+			partialFailures = append(partialFailures, PartialFailure{Instance: inst.Name, StatusCode: sc})
 		default:
 			if firstSuccess == nil {
 				firstSuccess = r
@@ -187,7 +199,7 @@ func doAllMode(inst *config.InstanceConfig, results []TargetResult) (int, []byte
 		r := &results[i]
 		if r.Err != nil || r.StatusCode < 200 || r.StatusCode >= 300 {
 			body, _ := json.Marshal(map[string]string{
-				"error": "push target failed", "instance": inst.Name, "target": r.URL,
+				"error": "push target failed", "instance": inst.Name,
 			})
 			return http.StatusBadGateway, body, http.Header{"Content-Type": []string{"application/json"}}, nil
 		}
@@ -215,7 +227,7 @@ func doSingleTarget(
 		return TargetResult{URL: url, Err: err}
 	}
 
-	proxy.CopyHeadersForUpstream(req, originalHeaders, inst, target)
+	proxy.CopyHeadersForUpstream(req, originalHeaders, target)
 
 	resp, err := client.Do(req)
 	if err != nil {

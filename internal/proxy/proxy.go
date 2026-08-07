@@ -8,8 +8,24 @@ import (
 	"net/http"
 	"strings"
 
+	"obsdatalayer/internal/auth"
 	"obsdatalayer/internal/config"
 )
+
+// hopByHopHeaders is the set of headers that must never be forwarded upstream.
+// Includes standard hop-by-hop headers (RFC 7230 §6.1) plus gateway auth headers.
+var hopByHopHeaders = map[string]bool{
+	"Authorization":       true,
+	"X-Scope-Orgid":       true, // canonical form of X-Scope-OrgID
+	"Connection":          true,
+	"Keep-Alive":          true,
+	"Transfer-Encoding":   true,
+	"Te":                  true,
+	"Trailers":            true,
+	"Upgrade":             true,
+	"Proxy-Authorization": true,
+	"Proxy-Authenticate":  true,
+}
 
 // Proxy forwards requests to upstream backends.
 type Proxy struct {
@@ -48,7 +64,7 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, inst *config.Ins
 		return
 	}
 
-	CopyHeadersForUpstream(req, r.Header, inst, target)
+	CopyHeadersForUpstream(req, r.Header, target)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -74,32 +90,35 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, inst *config.Ins
 	_, _ = io.Copy(w, resp.Body)
 }
 
-// CopyHeadersForUpstream copies inbound headers to the upstream request, applying auth rules.
-func CopyHeadersForUpstream(req *http.Request, inbound http.Header, inst *config.InstanceConfig, target config.ResolvedTarget) {
-	if inst.AuthPassthrough {
-		for key, vals := range inbound {
-			if !strings.EqualFold(key, "Authorization") {
-				req.Header[key] = vals
-			}
+// CopyHeadersForUpstream copies safe inbound headers to the upstream request.
+// Hop-by-hop headers (Authorization, X-Scope-OrgID, Connection, etc.) are
+// stripped. X-Scope-OrgID is then re-injected from the request's auth context
+// (set by BasicAuth middleware): for reads all tenant IDs are pipe-joined, for
+// writes only the first is used. Falls back to target.TenantID when no auth
+// context is present. BasicAuth credentials are injected from target config.
+func CopyHeadersForUpstream(req *http.Request, inbound http.Header, target config.ResolvedTarget) {
+	for key, vals := range inbound {
+		if !hopByHopHeaders[key] {
+			req.Header[key] = vals
 		}
-	} else {
-		for key, vals := range inbound {
-			if !strings.EqualFold(key, "Authorization") && !strings.EqualFold(key, "X-Scope-OrgID") {
-				req.Header[key] = vals
-			}
-		}
-		injectAuth(req, target)
 	}
-}
 
-// injectAuth sets BasicAuth and X-Scope-OrgID from target config.
-func injectAuth(req *http.Request, target config.ResolvedTarget) {
+	// Inject upstream basic auth if configured on the target.
 	if target.BasicAuth != "" {
 		if parts := strings.SplitN(target.BasicAuth, ":", 2); len(parts) == 2 {
 			req.SetBasicAuth(parts[0], parts[1])
 		}
 	}
-	if target.TenantID != "" {
+
+	// Inject X-Scope-OrgID from the resolved auth context.
+	if ra := auth.FromContext(req.Context()); ra != nil && len(ra.TenantIDs) > 0 {
+		if ra.IsRead {
+			req.Header.Set("X-Scope-OrgID", strings.Join(ra.TenantIDs, "|"))
+		} else {
+			req.Header.Set("X-Scope-OrgID", ra.TenantIDs[0])
+		}
+	} else if target.TenantID != "" {
+		// Fallback: inject from static target config (no auth context present).
 		req.Header.Set("X-Scope-OrgID", target.TenantID)
 	}
 }

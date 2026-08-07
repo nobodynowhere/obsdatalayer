@@ -1,23 +1,52 @@
 package fanout_test
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"golang.org/x/crypto/bcrypt"
 
+	"obsdatalayer/internal/auth"
 	"obsdatalayer/internal/config"
 	"obsdatalayer/internal/fanout"
 	"obsdatalayer/internal/metrics"
 	"obsdatalayer/internal/middleware"
 	"obsdatalayer/internal/proxy"
 )
+
+// testUF is a shared *auth.UserFile for the fanout integration tests.
+// "testuser"/"testpass" has wildcard access to all backends/actions for "test-tenant".
+var testUF *auth.UserFile
+
+func TestMain(m *testing.M) {
+	hash, err := bcrypt.GenerateFromPassword([]byte("testpass"), bcrypt.MinCost)
+	if err != nil {
+		log.Fatalf("bcrypt: %v", err)
+	}
+	testUF, err = auth.New([]*auth.User{{
+		Name:           "testuser",
+		PasswordBcrypt: string(hash),
+		Policies: []auth.Policy{{
+			Backends:  []string{"*"},
+			Actions:   []string{"read", "write"},
+			TenantIDs: []string{"test-tenant"},
+		}},
+	}})
+	if err != nil {
+		log.Fatalf("auth.New: %v", err)
+	}
+	os.Exit(m.Run())
+}
 
 func newTestMetrics() *metrics.Metrics {
 	return metrics.New(prometheus.NewRegistry())
@@ -29,18 +58,21 @@ func newTestConfig(instances []*config.InstanceConfig) *config.Config {
 		byName[inst.Name] = inst
 	}
 	return &config.Config{
-		Gateway:   config.GatewayConfig{Token: "test-token"},
+		Gateway: config.GatewayConfig{
+			MaxBodyBytes: 32 * 1024 * 1024,
+		},
 		Instances: instances,
 		ByName:    byName,
 	}
 }
 
 func newTestMux(cfg *config.Config, p *proxy.Proxy, pushClient *http.Client, m *metrics.Metrics) http.Handler {
+	h := config.NewHolder(cfg, "")
 	mux := http.NewServeMux()
-	fanout.RegisterLoki(mux, cfg, p, pushClient, m)
-	fanout.RegisterMimir(mux, cfg, p, pushClient, m)
-	fanout.RegisterTempo(mux, cfg, p, pushClient)
-	return middleware.BearerAuth(cfg.Gateway.Token, mux)
+	fanout.RegisterLoki(mux, h, p, pushClient, m)
+	fanout.RegisterMimir(mux, h, p, pushClient, m)
+	fanout.RegisterTempo(mux, h, p, pushClient)
+	return middleware.BasicAuth(testUF, mux)
 }
 
 func lokiInst(name string, url string) *config.InstanceConfig {
@@ -51,8 +83,9 @@ func lokiInst(name string, url string) *config.InstanceConfig {
 	}
 }
 
+// authHeader returns the Authorization header value for testuser/testpass.
 func authHeader() string {
-	return "Bearer test-token"
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte("testuser:testpass"))
 }
 
 func TestLokiPushSuccess(t *testing.T) {
@@ -370,3 +403,4 @@ func TestLokiPushFanoutMultipleTargets(t *testing.T) {
 		t.Errorf("expected upstream2 to receive 1 request, got %d", count2.Load())
 	}
 }
+
