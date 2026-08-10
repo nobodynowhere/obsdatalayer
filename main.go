@@ -20,6 +20,10 @@ import (
 	"obsdatalayer/internal/proxy"
 )
 
+var version = "unknown"
+var commit = "unknown"
+var buildTime = "unknown"
+
 func main() {
 	configPath := flag.String("config", "./gateway.yaml", "path to config file")
 	flag.Parse()

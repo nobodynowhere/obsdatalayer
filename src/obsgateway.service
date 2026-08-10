@@ -1,0 +1,22 @@
+[Unit]
+Description=Observability Data Layer Gateway
+Documentation=https://github.com/joellarkin/obsgateway
+ConditionPathExists=/usr/bin/obsgateway-linux-amd64
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/default/obsgateway
+User=obsgateway
+ExecStart=/usr/bin/obsgateway-linux-amd64 $CPE_OPTS
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=10s
+LimitNOFILE=65536
+PermissionsStartOnly=true
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=obsgateway
+
+[Install]
+WantedBy=multi-user.target

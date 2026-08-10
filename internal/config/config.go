@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"github.com/goccy/go-yaml"
 )
 
 var validName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
@@ -19,9 +19,9 @@ func (d Duration) Duration() time.Duration {
 	return time.Duration(d)
 }
 
-func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
+func (d *Duration) UnmarshalYAML(b []byte) error {
 	var s string
-	if err := value.Decode(&s); err != nil {
+	if err := yaml.Unmarshal(b, &s); err != nil {
 		return err
 	}
 	dur, err := time.ParseDuration(s)
@@ -31,11 +31,19 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 	*d = Duration(dur)
 	return nil
 }
+func (d *Duration) UnmarshalText(text []byte) error {
+	dur, err := time.ParseDuration(string(text))
+	if err != nil {
+		return fmt.Errorf("invalid duration %q: %w", string(text), err)
+	}
+	*d = Duration(dur)
+	return nil
+}
 
 type Config struct {
-	Version   int               `yaml:"version"`
-	Gateway   GatewayConfig     `yaml:"gateway"`
-	Instances []*InstanceConfig `yaml:"instances"`
+	Version   int                        `yaml:"version"`
+	Gateway   GatewayConfig              `yaml:"gateway"`
+	Instances []*InstanceConfig          `yaml:"instances"`
 	ByName    map[string]*InstanceConfig `yaml:"-"`
 }
 

@@ -1,0 +1,34 @@
+name: "obsgateway"
+arch: "amd64"
+platform: "linux"
+version: "v26.8.1"
+version_schema: semver
+description: The obsgateway is a Go-based observability data-layer gateway. It sits in front of Loki (logs), Mimir (metrics), and Tempo (traces) and exposes a single HTTP API that proxies/rewrites push and query traffic, injects tenant headers, and can fan writes out to multiple backends.
+maintainer: "@joellarkin"
+vendor: "Joel Larkin"
+homepage: "https://github.com/joellarkin/obsgateway"
+license: "MIT"
+
+contents:
+- src: build/obsgateway-linux-amd64
+  dst: /usr/bin/obsgateway-linux-amd64
+
+- src: src/obsgateway.yml
+  dst: /etc/obsgateway/obsgateway.yml
+  type: config|noreplace
+
+- src: src/obsgateway.service
+  dst: /usr/lib/systemd/system/obsgateway.service
+
+- src: src/obsgateway.default
+  dst: /etc/default/obsgateway
+  type: config|noreplace
+
+scripts:
+  preinstall: src/preinstall.sh
+  postinstall: src/postinstall.sh
+  preremove: src/preremove.sh
+  postremove: src/postremove.sh
+
+depends:
+  - systemd

@@ -3,6 +3,8 @@ module obsdatalayer
 go 1.26.5
 
 require (
+	github.com/goccy/go-yaml v1.19.2
+	github.com/gofrs/uuid/v5 v5.5.1
 	github.com/gogo/protobuf v1.3.2
 	github.com/golang/snappy v1.0.0
 	github.com/prometheus/client_golang v1.23.2
