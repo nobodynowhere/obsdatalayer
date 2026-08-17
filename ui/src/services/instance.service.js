@@ -1,6 +1,6 @@
 import axios from 'axios'
 
-const API = '/instances'
+const API = '/api/instances'
 
 export default class InstanceService {
   list() {

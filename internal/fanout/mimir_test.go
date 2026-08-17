@@ -33,6 +33,15 @@ func newMimirTestMux(cfg *config.Config, p *proxy.Proxy) http.Handler {
 	return middleware.BasicAuth(testAuth, mux)
 }
 
+func withAuthTenants(t *testing.T, tenants ...string) {
+	t.Helper()
+	previous := append([]string(nil), testAuth.Tenants...)
+	testAuth.Tenants = append([]string(nil), tenants...)
+	t.Cleanup(func() {
+		testAuth.Tenants = previous
+	})
+}
+
 func TestMimirPushSuccess(t *testing.T) {
 	var receivedPath string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -58,6 +67,143 @@ func TestMimirPushSuccess(t *testing.T) {
 	}
 	if receivedPath != "/api/v1/push" {
 		t.Errorf("expected upstream path /api/v1/push, got %q", receivedPath)
+	}
+}
+
+func TestMimirPushInjectsConfiguredTenantWhenGranted(t *testing.T) {
+	withAuthTenants(t, "tenant-a", "tenant-b")
+
+	var receivedOrgID string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedOrgID = r.Header.Get("X-Scope-OrgID")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(upstream.Close)
+
+	inst := &config.InstanceConfig{
+		Name:    "mimir-prod",
+		Backend: "mimir",
+		PushURLs: []config.PushTarget{
+			{URL: upstream.URL, TenantID: "tenant-b"},
+		},
+	}
+	cfg := newTestConfig([]*config.InstanceConfig{inst})
+	client := &http.Client{Timeout: 5 * time.Second}
+	p := proxy.New(client, client)
+	h := newMimirTestMux(cfg, p)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/mimir-prod/mimir/push", strings.NewReader("body"))
+	req.Header.Set("Authorization", authHeader())
+	req.Header.Set("Content-Type", "application/x-protobuf")
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", rec.Code)
+	}
+	if receivedOrgID != "tenant-b" {
+		t.Errorf("expected configured tenant tenant-b to be injected, got %q", receivedOrgID)
+	}
+}
+
+func TestMimirPushRejectsConfiguredTenantWithoutGrant(t *testing.T) {
+	withAuthTenants(t, "tenant-a")
+
+	var called bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(upstream.Close)
+
+	inst := &config.InstanceConfig{
+		Name:    "mimir-prod",
+		Backend: "mimir",
+		PushURLs: []config.PushTarget{
+			{URL: upstream.URL, TenantID: "tenant-b"},
+		},
+	}
+	cfg := newTestConfig([]*config.InstanceConfig{inst})
+	client := &http.Client{Timeout: 5 * time.Second}
+	p := proxy.New(client, client)
+	h := newMimirTestMux(cfg, p)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/mimir-prod/mimir/push", strings.NewReader("body"))
+	req.Header.Set("Authorization", authHeader())
+	req.Header.Set("Content-Type", "application/x-protobuf")
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+	if called {
+		t.Error("upstream should not be called when the configured tenant is not granted")
+	}
+}
+
+func TestMimirPushInjectsSingleGrantedTenantWhenInstanceIsUnscoped(t *testing.T) {
+	withAuthTenants(t, "tenant-a")
+
+	var receivedOrgID string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedOrgID = r.Header.Get("X-Scope-OrgID")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(upstream.Close)
+
+	cfg := newTestConfig([]*config.InstanceConfig{mimirInst("mimir-prod", upstream.URL)})
+	client := &http.Client{Timeout: 5 * time.Second}
+	p := proxy.New(client, client)
+	h := newMimirTestMux(cfg, p)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/mimir-prod/mimir/push", strings.NewReader("body"))
+	req.Header.Set("Authorization", authHeader())
+	req.Header.Set("Content-Type", "application/x-protobuf")
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", rec.Code)
+	}
+	if receivedOrgID != "tenant-a" {
+		t.Errorf("expected granted tenant tenant-a to be injected, got %q", receivedOrgID)
+	}
+}
+
+func TestMimirPushRejectsAmbiguousUnscopedWrite(t *testing.T) {
+	withAuthTenants(t, "tenant-a", "tenant-b")
+
+	var called bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(upstream.Close)
+
+	cfg := newTestConfig([]*config.InstanceConfig{mimirInst("mimir-prod", upstream.URL)})
+	client := &http.Client{Timeout: 5 * time.Second}
+	p := proxy.New(client, client)
+	h := newMimirTestMux(cfg, p)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/mimir-prod/mimir/push", strings.NewReader("body"))
+	req.Header.Set("Authorization", authHeader())
+	req.Header.Set("Content-Type", "application/x-protobuf")
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+	if called {
+		t.Error("upstream should not be called for an ambiguous write tenant")
+	}
+	if !strings.Contains(rec.Body.String(), "ambiguous") {
+		t.Errorf("expected ambiguity message, got %q", rec.Body.String())
 	}
 }
 

@@ -1,12 +1,16 @@
 package auth
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/casbin/casbin/v3"
 	"github.com/casbin/casbin/v3/model"
@@ -82,6 +86,7 @@ type Service struct {
 	enf     *casbin.SyncedEnforcer
 	tenants *tenant.Store
 	users   atomic.Pointer[map[string]*User]
+	cache   *credentialCache
 }
 
 var _ Authorizer = (*Service)(nil)
@@ -106,7 +111,7 @@ func NewService(db *gorm.DB, tenants *tenant.Store) (*Service, error) {
 		return nil, fmt.Errorf("auth: load policy: %w", err)
 	}
 
-	s := &Service{db: db, enf: enf, tenants: tenants}
+	s := &Service{db: db, enf: enf, tenants: tenants, cache: newCredentialCache(time.Minute)}
 	if err := s.Reload(); err != nil {
 		return nil, err
 	}
@@ -124,6 +129,7 @@ func (s *Service) Reload() error {
 		idx[r.Name] = &User{Name: r.Name, PasswordBcrypt: r.PasswordBcrypt}
 	}
 	s.users.Store(&idx)
+	s.cache.Clear()
 
 	if err := s.enf.LoadPolicy(); err != nil {
 		return fmt.Errorf("auth: reload policy: %w", err)
@@ -140,8 +146,8 @@ func (s *Service) Tenants() *tenant.Store { return s.tenants }
 
 // ---- authentication ---------------------------------------------------------
 
-// Authenticate verifies a username and plaintext password. It takes the same
-// amount of time whether or not the username exists.
+// Authenticate verifies a username and plaintext password. Unknown usernames
+// still run a real bcrypt comparison so they are not cheaply enumerable.
 func (s *Service) Authenticate(name, password string) (*User, error) {
 	idx := *s.users.Load()
 	u, ok := idx[name]
@@ -151,10 +157,55 @@ func (s *Service) Authenticate(name, password string) (*User, error) {
 		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
 		return nil, ErrInvalidCredentials
 	}
+	if s.cache.Valid(name, password, u.PasswordBcrypt) {
+		return u, nil
+	}
 	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordBcrypt), []byte(password)); err != nil {
 		return nil, ErrInvalidCredentials
 	}
+	s.cache.Store(name, password, u.PasswordBcrypt)
 	return u, nil
+}
+
+type credentialCache struct {
+	mu      sync.Mutex
+	ttl     time.Duration
+	entries map[string]time.Time
+}
+
+func newCredentialCache(ttl time.Duration) *credentialCache {
+	return &credentialCache{ttl: ttl, entries: make(map[string]time.Time)}
+}
+
+func (c *credentialCache) Valid(name, password, passwordHash string) bool {
+	key := credentialCacheKey(name, password, passwordHash)
+	now := time.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	expires, ok := c.entries[key]
+	if !ok || !now.Before(expires) {
+		delete(c.entries, key)
+		return false
+	}
+	return true
+}
+
+func (c *credentialCache) Store(name, password, passwordHash string) {
+	key := credentialCacheKey(name, password, passwordHash)
+	c.mu.Lock()
+	c.entries[key] = time.Now().Add(c.ttl)
+	c.mu.Unlock()
+}
+
+func (c *credentialCache) Clear() {
+	c.mu.Lock()
+	c.entries = make(map[string]time.Time)
+	c.mu.Unlock()
+}
+
+func credentialCacheKey(name, password, passwordHash string) string {
+	sum := sha256.Sum256([]byte(password))
+	return name + "\x00" + passwordHash + "\x00" + hex.EncodeToString(sum[:])
 }
 
 // ---- authorization ----------------------------------------------------------
@@ -341,6 +392,9 @@ func (s *Service) SetPassword(name, password string) error {
 
 // SetUserRoles replaces the user's role assignments.
 func (s *Service) SetUserRoles(name string, roles []string) error {
+	if _, err := s.GetUser(name); err != nil {
+		return err
+	}
 	if err := s.assertRolesExist(roles); err != nil {
 		return err
 	}

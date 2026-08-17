@@ -19,7 +19,7 @@ routes survive a refresh or a deep link.
 ## Authentication
 
 The admin API uses HTTP Basic on every request. The SPA collects credentials on
-the sign-in screen, validates them against `GET /whoami`, and holds the encoded
+the sign-in screen, validates them against `GET /api/whoami`, and holds the encoded
 credential in `sessionStorage` — it is cleared when the tab closes and never
 written to `localStorage` or a cookie. An axios interceptor attaches it to every
 request and treats a 401 as a lost session.

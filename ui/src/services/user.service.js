@@ -1,6 +1,6 @@
 import axios from 'axios'
 
-const API = '/users'
+const API = '/api/users'
 
 export default class UserService {
   list() {

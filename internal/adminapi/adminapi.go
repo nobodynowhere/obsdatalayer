@@ -31,36 +31,36 @@ func Register(mux *http.ServeMux, d Deps) {
 
 	// Reads are registered directly; every mutation is wrapped so it emits a
 	// started/finished pair naming the actor.
-	mux.HandleFunc("GET /whoami", h.whoami)
+	mux.HandleFunc("GET /api/whoami", h.whoami)
 
-	mux.HandleFunc("GET /instances", h.listInstances)
-	mux.HandleFunc("GET /instances/{name}", h.getInstance)
-	mux.HandleFunc("POST /instances", h.audited("instance.create", h.createInstance))
-	mux.HandleFunc("PUT /instances/{name}", h.audited("instance.update", h.updateInstance))
-	mux.HandleFunc("DELETE /instances/{name}", h.audited("instance.delete", h.deleteInstance))
+	mux.HandleFunc("GET /api/instances", h.listInstances)
+	mux.HandleFunc("GET /api/instances/{name}", h.getInstance)
+	mux.HandleFunc("POST /api/instances", h.audited("instance.create", h.createInstance))
+	mux.HandleFunc("PUT /api/instances/{name}", h.audited("instance.update", h.updateInstance))
+	mux.HandleFunc("DELETE /api/instances/{name}", h.audited("instance.delete", h.deleteInstance))
 
-	mux.HandleFunc("GET /settings", h.getSettings)
-	mux.HandleFunc("PUT /settings", h.audited("settings.update", h.updateSettings))
+	mux.HandleFunc("GET /api/settings", h.getSettings)
+	mux.HandleFunc("PUT /api/settings", h.audited("settings.update", h.updateSettings))
 
-	mux.HandleFunc("GET /tenants", h.listTenants)
-	mux.HandleFunc("GET /tenants/{id}", h.getTenant)
-	mux.HandleFunc("POST /tenants", h.audited("tenant.create", h.createTenant))
-	mux.HandleFunc("PUT /tenants/{id}", h.audited("tenant.update", h.updateTenant))
-	mux.HandleFunc("DELETE /tenants/{id}", h.audited("tenant.delete", h.deleteTenant))
+	mux.HandleFunc("GET /api/tenants", h.listTenants)
+	mux.HandleFunc("GET /api/tenants/{id}", h.getTenant)
+	mux.HandleFunc("POST /api/tenants", h.audited("tenant.create", h.createTenant))
+	mux.HandleFunc("PUT /api/tenants/{id}", h.audited("tenant.update", h.updateTenant))
+	mux.HandleFunc("DELETE /api/tenants/{id}", h.audited("tenant.delete", h.deleteTenant))
 
-	mux.HandleFunc("GET /users", h.listUsers)
-	mux.HandleFunc("GET /users/{name}", h.getUser)
-	mux.HandleFunc("POST /users", h.audited("user.create", h.createUser))
-	mux.HandleFunc("DELETE /users/{name}", h.audited("user.delete", h.deleteUser))
-	mux.HandleFunc("PUT /users/{name}/password", h.audited("user.set_password", h.setPassword))
-	mux.HandleFunc("PUT /users/{name}/roles", h.audited("user.set_roles", h.setUserRoles))
-	mux.HandleFunc("PUT /users/{name}/grants", h.audited("user.set_grants", h.setUserGrants))
+	mux.HandleFunc("GET /api/users", h.listUsers)
+	mux.HandleFunc("GET /api/users/{name}", h.getUser)
+	mux.HandleFunc("POST /api/users", h.audited("user.create", h.createUser))
+	mux.HandleFunc("DELETE /api/users/{name}", h.audited("user.delete", h.deleteUser))
+	mux.HandleFunc("PUT /api/users/{name}/password", h.audited("user.set_password", h.setPassword))
+	mux.HandleFunc("PUT /api/users/{name}/roles", h.audited("user.set_roles", h.setUserRoles))
+	mux.HandleFunc("PUT /api/users/{name}/grants", h.audited("user.set_grants", h.setUserGrants))
 
-	mux.HandleFunc("GET /roles", h.listRoles)
-	mux.HandleFunc("GET /roles/{name}", h.getRole)
-	mux.HandleFunc("POST /roles", h.audited("role.create", h.createRole))
-	mux.HandleFunc("DELETE /roles/{name}", h.audited("role.delete", h.deleteRole))
-	mux.HandleFunc("PUT /roles/{name}/grants", h.audited("role.set_grants", h.setRoleGrants))
+	mux.HandleFunc("GET /api/roles", h.listRoles)
+	mux.HandleFunc("GET /api/roles/{name}", h.getRole)
+	mux.HandleFunc("POST /api/roles", h.audited("role.create", h.createRole))
+	mux.HandleFunc("DELETE /api/roles/{name}", h.audited("role.delete", h.deleteRole))
+	mux.HandleFunc("PUT /api/roles/{name}/grants", h.audited("role.set_grants", h.setRoleGrants))
 }
 
 type handler struct {
@@ -154,12 +154,14 @@ func (h *handler) deleteUser(w http.ResponseWriter, r *http.Request) {
 
 	// Refuse to remove the last account that can still reach the admin plane,
 	// which would otherwise lock everyone out with no recovery path.
-	locksOut, err := h.lastAdmin(name)
+	adminRemains, err := h.adminWouldRemain(func(s *adminSnapshot) {
+		s.removeUser(name)
+	})
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	if locksOut {
+	if !adminRemains {
 		writeJSON(w, http.StatusConflict, map[string]string{
 			"error": "refusing to delete the last user with admin access",
 		})
@@ -196,14 +198,14 @@ func (h *handler) setUserRoles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Same lockout guard as delete: stripping admin from the last admin would
-	// leave the admin plane unreachable.
-	locksOut, err := h.lastAdmin(name)
+	adminRemains, err := h.adminWouldRemain(func(s *adminSnapshot) {
+		s.setUserRoles(name, req.Roles)
+	})
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	if locksOut && !containsAdminRole(req.Roles) {
+	if !adminRemains {
 		writeJSON(w, http.StatusConflict, map[string]string{
 			"error": "refusing to remove admin access from the last admin user",
 		})
@@ -232,6 +234,23 @@ func (h *handler) setUserGrants(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+	if _, err := h.svc.GetUser(name); err != nil {
+		writeErr(w, err)
+		return
+	}
+	adminRemains, err := h.adminWouldRemain(func(s *adminSnapshot) {
+		s.setUserGrants(name, req.Grants)
+	})
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if !adminRemains {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "refusing to remove admin access from the last admin user",
+		})
+		return
+	}
 	if err := h.svc.SetUserGrants(name, req.Grants); err != nil {
 		writeErr(w, err)
 		return
@@ -244,33 +263,97 @@ func (h *handler) setUserGrants(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, user)
 }
 
-// lastAdmin reports whether name is the only remaining user with admin access.
-func (h *handler) lastAdmin(name string) (bool, error) {
+type adminSnapshot struct {
+	users []auth.UserInfo
+	roles []auth.RoleInfo
+}
+
+func (h *handler) adminWouldRemain(apply func(*adminSnapshot)) (bool, error) {
 	users, err := h.svc.ListUsers()
 	if err != nil {
 		return false, err
 	}
-	var target, others bool
-	for _, u := range users {
-		if !u.Admin {
-			continue
-		}
-		if u.Name == name {
-			target = true
-		} else {
-			others = true
-		}
+	roles, err := h.svc.ListRoles()
+	if err != nil {
+		return false, err
 	}
-	return target && !others, nil
+	s := &adminSnapshot{users: users, roles: roles}
+	apply(s)
+	return s.hasAdmin(), nil
 }
 
-func containsAdminRole(roles []string) bool {
-	for _, r := range roles {
-		if r == auth.RoleAdmin {
+func (s *adminSnapshot) hasAdmin() bool {
+	roleAdmins := make(map[string]bool, len(s.roles))
+	for _, role := range s.roles {
+		roleAdmins[role.Name] = grantsAdmin(role.Grants)
+	}
+	for _, user := range s.users {
+		if grantsAdmin(user.Grants) {
 			return true
+		}
+		for _, role := range user.Roles {
+			if roleAdmins[role] {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+func (s *adminSnapshot) removeUser(name string) {
+	dst := s.users[:0]
+	for _, user := range s.users {
+		if user.Name != name {
+			dst = append(dst, user)
+		}
+	}
+	s.users = dst
+}
+
+func (s *adminSnapshot) setUserRoles(name string, roles []string) {
+	for i := range s.users {
+		if s.users[i].Name == name {
+			s.users[i].Roles = roles
+			return
+		}
+	}
+}
+
+func (s *adminSnapshot) setUserGrants(name string, grants []auth.Grant) {
+	for i := range s.users {
+		if s.users[i].Name == name {
+			s.users[i].Grants = grants
+			return
+		}
+	}
+}
+
+func (s *adminSnapshot) removeRole(name string) {
+	dst := s.roles[:0]
+	for _, role := range s.roles {
+		if role.Name != name {
+			dst = append(dst, role)
+		}
+	}
+	s.roles = dst
+	for i := range s.users {
+		filtered := s.users[i].Roles[:0]
+		for _, role := range s.users[i].Roles {
+			if role != name {
+				filtered = append(filtered, role)
+			}
+		}
+		s.users[i].Roles = filtered
+	}
+}
+
+func (s *adminSnapshot) setRoleGrants(name string, grants []auth.Grant) {
+	for i := range s.roles {
+		if s.roles[i].Name == name {
+			s.roles[i].Grants = grants
+			return
+		}
+	}
 }
 
 // whoami reports the authenticated principal. The UI calls it to validate
@@ -431,6 +514,23 @@ func (h *handler) deleteRole(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	if _, err := h.svc.GetRole(name); err != nil {
+		writeErr(w, err)
+		return
+	}
+	adminRemains, err := h.adminWouldRemain(func(s *adminSnapshot) {
+		s.removeRole(name)
+	})
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if !adminRemains {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "refusing to remove the last admin access path",
+		})
+		return
+	}
 	if err := h.svc.DeleteRole(name); err != nil {
 		writeErr(w, err)
 		return
@@ -450,6 +550,23 @@ func (h *handler) setRoleGrants(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	if _, err := h.svc.GetRole(name); err != nil {
+		writeErr(w, err)
+		return
+	}
+	adminRemains, err := h.adminWouldRemain(func(s *adminSnapshot) {
+		s.setRoleGrants(name, req.Grants)
+	})
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if !adminRemains {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "refusing to remove the last admin access path",
+		})
+		return
+	}
 	if err := h.svc.SetRoleGrants(name, req.Grants); err != nil {
 		writeErr(w, err)
 		return
@@ -464,7 +581,7 @@ func (h *handler) setRoleGrants(w http.ResponseWriter, r *http.Request) {
 
 func grantsAdmin(grants []auth.Grant) bool {
 	for _, g := range grants {
-		if g.IsAdmin() {
+		if g.Backend == auth.ObjectAdmin && g.Action == auth.ActionAccess {
 			return true
 		}
 	}

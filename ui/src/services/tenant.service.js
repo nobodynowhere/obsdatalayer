@@ -1,6 +1,6 @@
 import axios from 'axios'
 
-const API = '/tenants'
+const API = '/api/tenants'
 
 export default class TenantService {
   list() {

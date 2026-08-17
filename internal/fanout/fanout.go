@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"obsdatalayer/internal/auth"
 	"obsdatalayer/internal/config"
 	"obsdatalayer/internal/metrics"
 	"obsdatalayer/internal/proxy"
@@ -58,7 +59,79 @@ func getInstance(h *config.ConfigHolder, r *http.Request, w http.ResponseWriter,
 		proxy.WriteJSONError(w, http.StatusNotFound, map[string]string{"error": "unknown instance"})
 		return nil
 	}
+	if !scopeRequestToInstance(w, r, inst) {
+		return nil
+	}
 	return inst
+}
+
+func scopeRequestToInstance(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig) bool {
+	ra := auth.FromContext(r.Context())
+	if ra == nil || len(ra.TenantIDs) == 0 {
+		return true
+	}
+
+	wanted := targetTenantIDs(inst, !ra.IsRead)
+	if len(wanted) == 0 {
+		if !ra.IsRead && len(ra.TenantIDs) > 1 {
+			proxy.WriteJSONError(w, http.StatusForbidden, map[string]string{
+				"error": "write tenant is ambiguous for this instance",
+			})
+			return false
+		}
+		return true
+	}
+	if !ra.IsRead && hasUnscopedPushTarget(inst) && len(ra.TenantIDs) > 1 {
+		proxy.WriteJSONError(w, http.StatusForbidden, map[string]string{
+			"error": "write tenant is ambiguous for this instance",
+		})
+		return false
+	}
+
+	allowed := make(map[string]struct{}, len(ra.TenantIDs))
+	for _, id := range ra.TenantIDs {
+		allowed[id] = struct{}{}
+	}
+	for _, id := range wanted {
+		if _, ok := allowed[id]; !ok {
+			proxy.WriteJSONError(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+			return false
+		}
+	}
+	ra.TenantIDs = wanted
+	return true
+}
+
+func targetTenantIDs(inst *config.InstanceConfig, write bool) []string {
+	var targets []config.PushTarget
+	if write {
+		targets = inst.GetPushTargets()
+	} else {
+		targets = []config.PushTarget{inst.GetQueryTarget()}
+	}
+
+	seen := make(map[string]struct{})
+	ids := make([]string, 0, len(targets))
+	for _, target := range targets {
+		if target.TenantID == "" {
+			continue
+		}
+		if _, ok := seen[target.TenantID]; ok {
+			continue
+		}
+		seen[target.TenantID] = struct{}{}
+		ids = append(ids, target.TenantID)
+	}
+	return ids
+}
+
+func hasUnscopedPushTarget(inst *config.InstanceConfig) bool {
+	for _, target := range inst.GetPushTargets() {
+		if target.TenantID == "" {
+			return true
+		}
+	}
+	return false
 }
 
 // Do fans out a push request to all targets in parallel and returns the aggregated result.

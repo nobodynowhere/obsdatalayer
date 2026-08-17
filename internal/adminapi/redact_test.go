@@ -18,7 +18,7 @@ func TestRedactedCredentialFollowsItsTarget(t *testing.T) {
 			{"url": "http://b.local", "basic_auth": "user:BBB"},
 		},
 	}
-	if rec := e.do(t, http.MethodPost, "/instances", create); rec.Code != http.StatusCreated {
+	if rec := e.do(t, http.MethodPost, "/api/instances", create); rec.Code != http.StatusCreated {
 		t.Fatalf("create: %d %s", rec.Code, rec.Body)
 	}
 
@@ -30,7 +30,7 @@ func TestRedactedCredentialFollowsItsTarget(t *testing.T) {
 			{"url": "http://a.local", "basic_auth": "<redacted>"},
 		},
 	}
-	if rec := e.do(t, http.MethodPut, "/instances/mimir-prod", update); rec.Code != http.StatusOK {
+	if rec := e.do(t, http.MethodPut, "/api/instances/mimir-prod", update); rec.Code != http.StatusOK {
 		t.Fatalf("update: %d %s", rec.Code, rec.Body)
 	}
 
@@ -56,7 +56,7 @@ func TestUnresolvableRedactedCredentialIsRejected(t *testing.T) {
 		"name": "mimir-prod", "backend": "mimir", "fan_out_mode": "any",
 		"push_urls": []map[string]any{{"url": "http://a.local", "basic_auth": "user:AAA"}},
 	}
-	if rec := e.do(t, http.MethodPost, "/instances", create); rec.Code != http.StatusCreated {
+	if rec := e.do(t, http.MethodPost, "/api/instances", create); rec.Code != http.StatusCreated {
 		t.Fatalf("create: %d %s", rec.Code, rec.Body)
 	}
 
@@ -65,7 +65,7 @@ func TestUnresolvableRedactedCredentialIsRejected(t *testing.T) {
 		"name": "mimir-prod", "backend": "mimir", "fan_out_mode": "any",
 		"push_urls": []map[string]any{{"url": "http://new.local", "basic_auth": "<redacted>"}},
 	}
-	rec := e.do(t, http.MethodPut, "/instances/mimir-prod", update)
+	rec := e.do(t, http.MethodPut, "/api/instances/mimir-prod", update)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body)
 	}
@@ -86,15 +86,15 @@ func TestRedactedCredentialSurvivesNoOpUpdate(t *testing.T) {
 			{"url": "http://b.local"},
 		},
 	}
-	if rec := e.do(t, http.MethodPost, "/instances", create); rec.Code != http.StatusCreated {
+	if rec := e.do(t, http.MethodPost, "/api/instances", create); rec.Code != http.StatusCreated {
 		t.Fatalf("create: %d %s", rec.Code, rec.Body)
 	}
 
 	// Echo back exactly what a GET returns, masks included.
-	rec := e.do(t, http.MethodGet, "/instances/mimir-prod", nil)
+	rec := e.do(t, http.MethodGet, "/api/instances/mimir-prod", nil)
 	var doc map[string]any
 	decodeInto(t, rec, &doc)
-	if rec := e.do(t, http.MethodPut, "/instances/mimir-prod", doc); rec.Code != http.StatusOK {
+	if rec := e.do(t, http.MethodPut, "/api/instances/mimir-prod", doc); rec.Code != http.StatusOK {
 		t.Fatalf("update: %d %s", rec.Code, rec.Body)
 	}
 

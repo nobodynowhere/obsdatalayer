@@ -139,9 +139,11 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, inst *config.Ins
 // CopyHeadersForUpstream copies safe inbound headers to the upstream request.
 // Hop-by-hop headers (Authorization, X-Scope-OrgID, Connection, etc.) are
 // stripped. X-Scope-OrgID is then re-injected from the request's auth context
-// (set by BasicAuth middleware): for reads all tenant IDs are pipe-joined, for
-// writes only the first is used. Falls back to target.TenantID when no auth
-// context is present. BasicAuth credentials are injected from target config.
+// (set by BasicAuth middleware): configured target tenant wins, reads otherwise
+// pipe-join all resolved tenant IDs, and writes otherwise use the single
+// resolved tenant chosen by the fan-out layer. Falls back to target.TenantID
+// when no auth context is present. BasicAuth credentials are injected from
+// target config.
 func CopyHeadersForUpstream(req *http.Request, inbound http.Header, target config.PushTarget) {
 	for key, vals := range inbound {
 		if !hopByHopHeaders[key] {
@@ -158,7 +160,9 @@ func CopyHeadersForUpstream(req *http.Request, inbound http.Header, target confi
 
 	// Inject X-Scope-OrgID from the resolved auth context.
 	if ra := auth.FromContext(req.Context()); ra != nil && len(ra.TenantIDs) > 0 {
-		if ra.IsRead {
+		if target.TenantID != "" {
+			req.Header.Set("X-Scope-OrgID", target.TenantID)
+		} else if ra.IsRead {
 			req.Header.Set("X-Scope-OrgID", strings.Join(ra.TenantIDs, "|"))
 		} else {
 			req.Header.Set("X-Scope-OrgID", ra.TenantIDs[0])

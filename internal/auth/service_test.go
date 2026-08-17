@@ -331,6 +331,48 @@ func TestEnsureBootstrapAdminIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestEnsureBootstrapAdminRepairsExistingAdminRole(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	if err := svc.CreateRole(auth.RoleAdmin, "", nil); err != nil {
+		t.Fatalf("create broken admin role: %v", err)
+	}
+
+	res, err := svc.EnsureBootstrapAdmin()
+	if err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	if !res.Created {
+		t.Fatal("expected bootstrap to create an admin user")
+	}
+	if !svc.CanAdmin("admin") {
+		t.Error("expected repaired admin role to grant admin access")
+	}
+	if _, err := svc.Authenticate("admin", res.Password); err != nil {
+		t.Errorf("generated password should authenticate: %v", err)
+	}
+}
+
+func TestEnsureBootstrapAdminRecoversWhenUsersExistButNoAdmins(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustUser(t, svc, "alice")
+
+	res, err := svc.EnsureBootstrapAdmin()
+	if err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	if !res.Created {
+		t.Fatal("expected bootstrap to create a recovery admin")
+	}
+	if !svc.CanAdmin("admin") {
+		t.Error("expected recovery admin to have admin access")
+	}
+	if _, err := svc.Authenticate("admin", res.Password); err != nil {
+		t.Errorf("generated password should authenticate: %v", err)
+	}
+}
+
 // ---- user and role management ----------------------------------------------
 
 func TestCreateUserRejectsShortPassword(t *testing.T) {
@@ -355,6 +397,19 @@ func TestCreateDuplicateUser(t *testing.T) {
 	mustUser(t, svc, "alice")
 	if err := svc.CreateUser("alice", testPassword, nil); !errors.Is(err, auth.ErrExists) {
 		t.Errorf("expected ErrExists, got %v", err)
+	}
+}
+
+func TestSetUserRolesRejectsUnknownUser(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustRole(t, svc, "reader", grant("loki", "read", env.a))
+
+	if err := svc.SetUserRoles("ghost", []string{"reader"}); !errors.Is(err, auth.ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+	if _, ok := svc.TenantIDsFor("ghost", "loki", "read"); ok {
+		t.Error("unknown user should not gain role grants")
 	}
 }
 

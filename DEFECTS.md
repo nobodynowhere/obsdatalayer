@@ -9,36 +9,6 @@ perspective of production multi-tenant use.
 Each entry below was re-verified against the current source. A summary of what
 has been resolved since earlier revisions is at the end.
 
----
-
-## P0 - Every data-plane request pays a full bcrypt comparison
-
-`middleware.BasicAuth` calls `Authenticate` on every request, which runs
-`bcrypt.CompareHashAndPassword` at cost 10. There is no verified-credential
-cache and no session or token exchange, so the cost is paid per request rather
-than per login.
-
-References:
-- `internal/middleware/auth.go:34` (data plane) and `:87` (admin plane).
-- `Service.Authenticate` in `internal/auth/service.go`; the service holds no cache.
-
-Measured against the running gateway on a 10-core machine:
-
-| | throughput |
-|---|---|
-| sequential | 76.3 ms/request — 13.1 req/s |
-| 40 concurrent | 90.2 req/s |
-
-Impact: this is a telemetry ingest path. Promtail, Alloy and OTel collectors push
-continuously, and a ceiling around 90 req/s per instance makes the gateway the
-bottleneck for the entire estate. The ceiling is CPU-bound and scales only with
-cores, not with tuning.
-
-Fix direction: cache verified credentials keyed by username plus a hash of the
-presented password, with a short TTL and invalidation on password change, so
-bcrypt runs once per credential rather than once per request. An API-key path for
-high-volume writers would remove it from the hot path entirely.
-
 ## P1 - Authorization is per backend type, not per instance
 
 A grant names a backend kind (`loki`, `mimir`, `tempo`, or `*`), an action, and a
@@ -68,14 +38,34 @@ There is no rate limiting, no per-source throttle and no account lockout.
 References:
 - `Service.Authenticate` compares against `dummyHash` for unknown users and
   against the stored hash for wrong passwords.
+- Successful credentials are cached briefly, but failed credentials deliberately
+  are not.
 
 Impact: an unauthenticated client can saturate every core by sending garbage
-credentials at modest request rates. A credential cache (see the P0 above) does
-not help, because failures never populate it. This is reachable on the data
-listener, which binds all interfaces by default.
+credentials at modest request rates. The successful-credential cache does not
+help, because failures never populate it. This is reachable on the data listener,
+which binds all interfaces by default.
 
 Fix direction: per-source rate limiting in front of the bcrypt path, plus a
 failure counter with backoff.
+
+## P1 - There is no tenant-issued token or API-key workflow
+
+Creating a tenant creates a UUID that is used as the upstream `X-Scope-OrgID`
+value. It does not issue a credential. Callers still authenticate as users with
+HTTP Basic, and user or role grants decide which tenant UUIDs may be injected.
+
+References:
+- Tenant creation in `internal/adminapi/adminapi.go`, `createTenant`.
+- Authentication in `middleware.BasicAuth`.
+
+Impact: automation cannot be handed a narrow tenant-scoped token. Operators must
+create a user, assign grants, and distribute that user's Basic credential. The
+new successful-credential cache reduces bcrypt pressure for valid callers, but
+it is still not an explicit telemetry-writer credential model.
+
+Fix direction: add first-class API keys or tokens with tenant, backend and action
+claims, revocation, rotation and last-used metadata.
 
 ## P1 - Fan-out has no delivery contract
 
@@ -129,8 +119,8 @@ label scope their writes are confined to.
 ## P1 - Upstream credentials are stored as plaintext
 
 Backend `basic_auth` values are ordinary columns in the instances and
-push_targets tables. They are redacted in `GET /config`, in the instance API and
-in the audit log, but they are plaintext at rest and readable by anyone with
+push_targets tables. They are redacted in `GET /api/config`, in the instance API
+and in the audit log, but they are plaintext at rest and readable by anyone with
 database access. There is no design for secret references, environment expansion,
 file references, rotation or audit of the secrets themselves.
 
@@ -183,9 +173,9 @@ References:
 - `middleware.AdminAuth` checks `CanAdmin` alone.
 - Every route registered by `adminapi.Register` sits behind that one check.
 
-Impact: an operator who needs only to read `/config` or scrape `/metrics` must be
-granted full administrative control, including user management. The audit log now
-records who did what, but does not constrain what they may do.
+Impact: an operator who needs only to read `/api/config` or scrape `/metrics`
+must be granted full administrative control, including user management. The audit
+log now records who did what, but does not constrain what they may do.
 
 ## P2 - Updating an instance changes its database identity
 
@@ -221,7 +211,7 @@ unversioned.
 
 References:
 - Route subsets hard-coded in `internal/fanout/loki.go`, `mimir.go` and `tempo.go`.
-- Admin routes registered without a version prefix in `internal/adminapi`.
+- Admin routes are grouped under `/api`, but without a version prefix.
 
 Impact: clients may assume the gateway is a transparent replacement for each
 backend when it is a partial facade. Unversioned admin routes make future
@@ -295,6 +285,21 @@ Recorded so they are not re-reported as defects.
   startup log — parse errors are routed through `redactYAMLError`.
 - **Masked push-target credentials were matched positionally**, so reordering
   targets sent one upstream's password to another. They are now matched by URL.
+- **Every successful data-plane request paid full bcrypt cost** — valid
+  credentials are now cached briefly and the cache is invalidated on auth reload
+  or password-hash change. Failed authentication remains a DoS risk and is
+  recorded above.
+- **Admin API routes lived at the root** — they now sit under `/api/...`, and the
+  UI and dev proxy call the prefixed paths.
+- **Configured instance or push-target tenants were not checked against grants**
+  before use — the data path now verifies the authenticated caller is allowed for
+  the effective target tenant and rejects ambiguous multi-tenant writes.
+- **Admin lockout checks only understood the built-in admin role** — the admin
+  API now simulates user and role mutations and refuses changes that would remove
+  the last remaining admin access path.
+- **Bootstrap could leave an existing user database with no usable admin** — the
+  bootstrap pass now repairs the built-in admin role and creates or resets a
+  recovery admin user when no current user has admin access.
 - Earlier revisions also resolved: the global bearer token, unauthenticated
   `/config` and `/metrics`, the shared data/admin listener, `auth_passthrough`,
   backend URLs leaking in error responses, unvalidated upstream URLs, stale

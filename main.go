@@ -295,7 +295,7 @@ func adminHandler(gormDB *gorm.DB, holder *config.ConfigHolder, authSvc *auth.Se
 	})
 	mux.Handle("GET /metrics", promhttp.Handler())
 
-	mux.HandleFunc("GET /config", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/config", func(w http.ResponseWriter, r *http.Request) {
 		data, err := yaml.Marshal(redactedConfig(holder.Get()))
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
@@ -307,7 +307,7 @@ func adminHandler(gormDB *gorm.DB, holder *config.ConfigHolder, authSvc *auth.Se
 		_, _ = w.Write(data)
 	})
 
-	mux.HandleFunc("POST /config/reload", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/config/reload", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if err := reload.run(); err != nil {
 			w.WriteHeader(http.StatusBadRequest)

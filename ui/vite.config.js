@@ -20,7 +20,7 @@ export default defineConfig({
     proxy: {
       // Admin API endpoints during `npm run dev`. The gateway's admin listener
       // is on loopback:9091 by default.
-      '^/(whoami|tenants|users|roles|config|healthz|metrics)': {
+      '^/(api|healthz|metrics)': {
         target: 'http://127.0.0.1:9091',
         changeOrigin: true,
         secure: false,

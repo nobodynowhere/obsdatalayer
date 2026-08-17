@@ -197,7 +197,7 @@ func TestAdminAuthAllowsAdmin(t *testing.T) {
 	stub := authtest.NewAdmin()
 	h := middleware.AdminAuth(stub, inner)
 
-	req := httptest.NewRequest(http.MethodGet, "/config", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
 	req.Header.Set("Authorization", stub.Header())
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -215,7 +215,7 @@ func TestAdminAuthRejectsNonAdmin(t *testing.T) {
 	stub := authtest.New() // valid credentials, no admin grant
 	h := middleware.AdminAuth(stub, inner)
 
-	req := httptest.NewRequest(http.MethodGet, "/config", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
 	req.Header.Set("Authorization", stub.Header())
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -254,7 +254,7 @@ func TestAdminAuthRejectsBadPassword(t *testing.T) {
 	inner, _ := newHandlerCalledFlag()
 	h := middleware.AdminAuth(authtest.NewAdmin(), inner)
 
-	req := httptest.NewRequest(http.MethodGet, "/config", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
 	req.Header.Set("Authorization", authtest.BasicHeader("testuser", "wrong"))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -291,7 +291,7 @@ func TestAdminAuthServesUIWithoutCredentials(t *testing.T) {
 
 // The exemption must be scoped to the bundle and nothing else.
 func TestAdminAuthExemptionDoesNotLeakToAPI(t *testing.T) {
-	for _, path := range []string{"/tenants", "/users", "/roles", "/config", "/whoami", "/uiconfig"} {
+	for _, path := range []string{"/api/tenants", "/api/users", "/api/roles", "/api/config", "/api/whoami", "/uiconfig"} {
 		t.Run(path, func(t *testing.T) {
 			inner, called := newHandlerCalledFlag()
 			h := middleware.AdminAuth(authtest.NewAdmin(), inner)

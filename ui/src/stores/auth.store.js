@@ -26,7 +26,7 @@ export const useAuthStore = defineStore(
       try {
         // whoami is the cheapest authenticated endpoint; a 200 proves both the
         // credential and the admin grant.
-        const res = await axios.get('/whoami', {
+        const res = await axios.get('/api/whoami', {
           headers: { Authorization: `Basic ${encoded}` },
         })
         credential.value = encoded
@@ -78,7 +78,7 @@ export function installAuthInterceptors() {
       if (error?.response?.status === 401) {
         const auth = useAuthStore()
         // Don't bounce the login screen's own probe back to itself.
-        if (!String(error.config?.url || '').includes('/whoami') || auth.loggedIn) {
+        if (!String(error.config?.url || '').includes('/api/whoami') || auth.loggedIn) {
           auth.reset()
           if (router.currentRoute.value.name !== 'login') {
             router.push({ name: 'login' })

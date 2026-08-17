@@ -1,6 +1,6 @@
 import axios from 'axios'
 
-const API = '/roles'
+const API = '/api/roles'
 
 export default class RoleService {
   list() {

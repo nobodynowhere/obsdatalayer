@@ -98,7 +98,7 @@ func decodeInto(t *testing.T, rec *httptest.ResponseRecorder, dst any) {
 func TestCreateAndListTenants(t *testing.T) {
 	e := newEnv(t)
 
-	rec := e.do(t, http.MethodPost, "/tenants", map[string]any{"name": "acme"})
+	rec := e.do(t, http.MethodPost, "/api/tenants", map[string]any{"name": "acme"})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body)
 	}
@@ -111,7 +111,7 @@ func TestCreateAndListTenants(t *testing.T) {
 		t.Errorf("grafana_id should be unset by default, got %v", *created.GrafanaID)
 	}
 
-	rec = e.do(t, http.MethodGet, "/tenants", nil)
+	rec = e.do(t, http.MethodGet, "/api/tenants", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
@@ -126,7 +126,7 @@ func TestCreateAndListTenants(t *testing.T) {
 
 func TestCreateTenantWithGrafanaID(t *testing.T) {
 	e := newEnv(t)
-	rec := e.do(t, http.MethodPost, "/tenants", map[string]any{"name": "acme", "grafana_id": 42})
+	rec := e.do(t, http.MethodPost, "/api/tenants", map[string]any{"name": "acme", "grafana_id": 42})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body)
 	}
@@ -139,7 +139,7 @@ func TestCreateTenantWithGrafanaID(t *testing.T) {
 
 func TestGetMissingTenant(t *testing.T) {
 	e := newEnv(t)
-	rec := e.do(t, http.MethodGet, "/tenants/6f1d2c9e-9d3a-4c1b-8f47-2b0a5e7c1d34", nil)
+	rec := e.do(t, http.MethodGet, "/api/tenants/6f1d2c9e-9d3a-4c1b-8f47-2b0a5e7c1d34", nil)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("expected 404, got %d", rec.Code)
 	}
@@ -160,7 +160,7 @@ func TestDeleteTenantInUseIsRefused(t *testing.T) {
 		t.Fatalf("create role: %v", err)
 	}
 
-	rec := e.do(t, http.MethodDelete, "/tenants/"+created.ID, nil)
+	rec := e.do(t, http.MethodDelete, "/api/tenants/"+created.ID, nil)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body)
 	}
@@ -175,7 +175,7 @@ func TestDeleteUnreferencedTenant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}
-	rec := e.do(t, http.MethodDelete, "/tenants/"+created.ID, nil)
+	rec := e.do(t, http.MethodDelete, "/api/tenants/"+created.ID, nil)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("expected 204, got %d: %s", rec.Code, rec.Body)
 	}
@@ -193,7 +193,7 @@ func TestCreateUserWithRole(t *testing.T) {
 		t.Fatalf("create tenant: %v", err)
 	}
 
-	rec := e.do(t, http.MethodPost, "/roles", map[string]any{
+	rec := e.do(t, http.MethodPost, "/api/roles", map[string]any{
 		"name": "reader",
 		"grants": []map[string]any{
 			{"backend": "loki", "action": "read", "tenant_ids": []string{tn.ID}},
@@ -203,7 +203,7 @@ func TestCreateUserWithRole(t *testing.T) {
 		t.Fatalf("create role: expected 201, got %d: %s", rec.Code, rec.Body)
 	}
 
-	rec = e.do(t, http.MethodPost, "/users", map[string]any{
+	rec = e.do(t, http.MethodPost, "/api/users", map[string]any{
 		"name": "alice", "password": "correct-horse-battery-staple", "roles": []string{"reader"},
 	})
 	if rec.Code != http.StatusCreated {
@@ -221,7 +221,7 @@ func TestCreateUserWithRole(t *testing.T) {
 
 func TestCreateRoleRejectsUnknownTenant(t *testing.T) {
 	e := newEnv(t)
-	rec := e.do(t, http.MethodPost, "/roles", map[string]any{
+	rec := e.do(t, http.MethodPost, "/api/roles", map[string]any{
 		"name": "reader",
 		"grants": []map[string]any{
 			{"backend": "loki", "action": "read",
@@ -235,7 +235,7 @@ func TestCreateRoleRejectsUnknownTenant(t *testing.T) {
 
 func TestCreateUserRejectsShortPassword(t *testing.T) {
 	e := newEnv(t)
-	rec := e.do(t, http.MethodPost, "/users", map[string]any{"name": "alice", "password": "short"})
+	rec := e.do(t, http.MethodPost, "/api/users", map[string]any{"name": "alice", "password": "short"})
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d: %s", rec.Code, rec.Body)
 	}
@@ -244,17 +244,17 @@ func TestCreateUserRejectsShortPassword(t *testing.T) {
 func TestDuplicateUserConflicts(t *testing.T) {
 	e := newEnv(t)
 	body := map[string]any{"name": "alice", "password": "correct-horse-battery-staple"}
-	if rec := e.do(t, http.MethodPost, "/users", body); rec.Code != http.StatusCreated {
+	if rec := e.do(t, http.MethodPost, "/api/users", body); rec.Code != http.StatusCreated {
 		t.Fatalf("first create: %d", rec.Code)
 	}
-	if rec := e.do(t, http.MethodPost, "/users", body); rec.Code != http.StatusConflict {
+	if rec := e.do(t, http.MethodPost, "/api/users", body); rec.Code != http.StatusConflict {
 		t.Errorf("expected 409 on duplicate, got %d", rec.Code)
 	}
 }
 
 func TestUnknownFieldsRejected(t *testing.T) {
 	e := newEnv(t)
-	req := httptest.NewRequest(http.MethodPost, "/tenants",
+	req := httptest.NewRequest(http.MethodPost, "/api/tenants",
 		bytes.NewBufferString(`{"name":"acme","typo":true}`))
 	rec := httptest.NewRecorder()
 	e.mux.ServeHTTP(rec, req)
@@ -273,7 +273,7 @@ func TestCannotDeleteLastAdmin(t *testing.T) {
 		t.Fatalf("bootstrap: %v", err)
 	}
 
-	rec := e.do(t, http.MethodDelete, "/users/admin", nil)
+	rec := e.do(t, http.MethodDelete, "/api/users/admin", nil)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body)
 	}
@@ -288,7 +288,7 @@ func TestCannotStripRolesFromLastAdmin(t *testing.T) {
 		t.Fatalf("bootstrap: %v", err)
 	}
 
-	rec := e.do(t, http.MethodPut, "/users/admin/roles", map[string]any{"roles": []string{}})
+	rec := e.do(t, http.MethodPut, "/api/users/admin/roles", map[string]any{"roles": []string{}})
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body)
 	}
@@ -307,7 +307,7 @@ func TestCanDeleteAdminWhenAnotherExists(t *testing.T) {
 		t.Fatalf("create second admin: %v", err)
 	}
 
-	rec := e.do(t, http.MethodDelete, "/users/admin", nil)
+	rec := e.do(t, http.MethodDelete, "/api/users/admin", nil)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("expected 204, got %d: %s", rec.Code, rec.Body)
 	}
@@ -322,11 +322,11 @@ func TestBuiltInAdminRoleIsProtected(t *testing.T) {
 		t.Fatalf("bootstrap: %v", err)
 	}
 
-	if rec := e.do(t, http.MethodDelete, "/roles/admin", nil); rec.Code != http.StatusConflict {
+	if rec := e.do(t, http.MethodDelete, "/api/roles/admin", nil); rec.Code != http.StatusConflict {
 		t.Errorf("expected 409 deleting the built-in admin role, got %d", rec.Code)
 	}
 
-	rec := e.do(t, http.MethodPut, "/roles/admin/grants", map[string]any{
+	rec := e.do(t, http.MethodPut, "/api/roles/admin/grants", map[string]any{
 		"grants": []map[string]any{},
 	})
 	if rec.Code != http.StatusConflict {
@@ -334,6 +334,64 @@ func TestBuiltInAdminRoleIsProtected(t *testing.T) {
 	}
 	if !e.svc.CanAdmin("admin") {
 		t.Error("admin access must survive a refused grant change")
+	}
+}
+
+func TestCannotStripDirectGrantsFromLastAdmin(t *testing.T) {
+	e := newEnv(t)
+	if err := e.svc.CreateUser("solo", "correct-horse-battery-staple", nil); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := e.svc.SetUserGrants("solo", []auth.Grant{{Backend: auth.ObjectAdmin, Action: auth.ActionAccess}}); err != nil {
+		t.Fatalf("grant admin: %v", err)
+	}
+
+	rec := e.do(t, http.MethodPut, "/api/users/solo/grants", map[string]any{
+		"grants": []map[string]any{},
+	})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 stripping the last direct admin grant, got %d: %s", rec.Code, rec.Body)
+	}
+	if !e.svc.CanAdmin("solo") {
+		t.Error("admin access must survive a refused direct grant change")
+	}
+}
+
+func TestCannotDeleteCustomLastAdminRole(t *testing.T) {
+	e := newEnv(t)
+	if err := e.svc.CreateRole("ops", "", []auth.Grant{{Backend: auth.ObjectAdmin, Action: auth.ActionAccess}}); err != nil {
+		t.Fatalf("create role: %v", err)
+	}
+	if err := e.svc.CreateUser("solo", "correct-horse-battery-staple", []string{"ops"}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	rec := e.do(t, http.MethodDelete, "/api/roles/ops", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 deleting the last custom admin role, got %d: %s", rec.Code, rec.Body)
+	}
+	if !e.svc.CanAdmin("solo") {
+		t.Error("admin access must survive a refused custom role delete")
+	}
+}
+
+func TestCannotStripCustomLastAdminRole(t *testing.T) {
+	e := newEnv(t)
+	if err := e.svc.CreateRole("ops", "", []auth.Grant{{Backend: auth.ObjectAdmin, Action: auth.ActionAccess}}); err != nil {
+		t.Fatalf("create role: %v", err)
+	}
+	if err := e.svc.CreateUser("solo", "correct-horse-battery-staple", []string{"ops"}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	rec := e.do(t, http.MethodPut, "/api/roles/ops/grants", map[string]any{
+		"grants": []map[string]any{},
+	})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 stripping the last custom admin role, got %d: %s", rec.Code, rec.Body)
+	}
+	if !e.svc.CanAdmin("solo") {
+		t.Error("admin access must survive a refused custom role grant change")
 	}
 }
 
@@ -354,7 +412,7 @@ func TestMutationsAreAudited(t *testing.T) {
 	e := newEnv(t)
 	logs := captureLogs(t, slog.LevelInfo)
 
-	rec := e.do(t, http.MethodPost, "/tenants", map[string]any{"name": "acme"})
+	rec := e.do(t, http.MethodPost, "/api/tenants", map[string]any{"name": "acme"})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d", rec.Code)
 	}
@@ -377,7 +435,7 @@ func TestFailedMutationIsAuditedAsFailure(t *testing.T) {
 	e := newEnv(t)
 	logs := captureLogs(t, slog.LevelInfo)
 
-	rec := e.do(t, http.MethodPost, "/users", map[string]any{"name": "alice", "password": "short"})
+	rec := e.do(t, http.MethodPost, "/api/users", map[string]any{"name": "alice", "password": "short"})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
 	}
@@ -396,7 +454,7 @@ func TestReadsAreNotAudited(t *testing.T) {
 	e := newEnv(t)
 	logs := captureLogs(t, slog.LevelInfo)
 
-	e.do(t, http.MethodGet, "/tenants", nil)
+	e.do(t, http.MethodGet, "/api/tenants", nil)
 	if strings.Contains(logs.String(), "admin operation") {
 		t.Errorf("reads should not emit audit lines, got:\n%s", logs.String())
 	}
@@ -409,7 +467,7 @@ func TestAuditBodyRedactsSecrets(t *testing.T) {
 	logs := captureLogs(t, slog.LevelDebug)
 
 	const secret = "correct-horse-battery-staple"
-	e.do(t, http.MethodPost, "/users", map[string]any{"name": "alice", "password": secret})
+	e.do(t, http.MethodPost, "/api/users", map[string]any{"name": "alice", "password": secret})
 
 	out := logs.String()
 	if strings.Contains(out, secret) {
@@ -428,7 +486,7 @@ func TestAuditRedactsNestedSecrets(t *testing.T) {
 	e := newEnv(t)
 	logs := captureLogs(t, slog.LevelDebug)
 
-	e.do(t, http.MethodPost, "/instances", map[string]any{
+	e.do(t, http.MethodPost, "/api/instances", map[string]any{
 		"name": "mimir-prod", "backend": "mimir",
 		"push_urls": []map[string]any{
 			{"url": "http://a.local", "basic_auth": "user:topsecret"},
@@ -450,7 +508,7 @@ func TestAuditDoesNotEchoUnparsableBody(t *testing.T) {
 	e := newEnv(t)
 	logs := captureLogs(t, slog.LevelDebug)
 
-	req := httptest.NewRequest(http.MethodPost, "/tenants",
+	req := httptest.NewRequest(http.MethodPost, "/api/tenants",
 		bytes.NewBufferString("this is not json: hunter2"))
 	rec := httptest.NewRecorder()
 	e.mux.ServeHTTP(rec, req)
@@ -469,7 +527,7 @@ func TestAuditPreservesRequestBody(t *testing.T) {
 	e := newEnv(t)
 	captureLogs(t, slog.LevelDebug)
 
-	rec := e.do(t, http.MethodPost, "/tenants", map[string]any{"name": "acme", "grafana_id": 9})
+	rec := e.do(t, http.MethodPost, "/api/tenants", map[string]any{"name": "acme", "grafana_id": 9})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body)
 	}
@@ -485,7 +543,7 @@ func TestAuditNamesCreatedSubject(t *testing.T) {
 	e := newEnv(t)
 	logs := captureLogs(t, slog.LevelInfo)
 
-	e.do(t, http.MethodPost, "/tenants", map[string]any{"name": "acme"})
+	e.do(t, http.MethodPost, "/api/tenants", map[string]any{"name": "acme"})
 
 	if !strings.Contains(logs.String(), "target=acme") {
 		t.Errorf("expected the created subject to be named, got:\n%s", logs.String())
