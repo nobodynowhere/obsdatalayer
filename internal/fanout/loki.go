@@ -10,7 +10,7 @@ import (
 )
 
 // RegisterLoki registers all Loki routes on mux.
-func RegisterLoki(mux *http.ServeMux, h *config.ConfigHolder, p *proxy.Proxy, client *http.Client, m *metrics.Metrics) {
+func RegisterLoki(mux *http.ServeMux, h *config.ConfigHolder, p *proxy.Proxy, m *metrics.Metrics) {
 	mux.HandleFunc("POST /api/{instance}/loki/push", func(w http.ResponseWriter, r *http.Request) {
 		inst := getInstance(h, r, w, "loki")
 		if inst == nil {
@@ -20,7 +20,7 @@ func RegisterLoki(mux *http.ServeMux, h *config.ConfigHolder, p *proxy.Proxy, cl
 		maxBytes := h.Get().Gateway.MaxBodyBytes
 		handlePush(w, r, inst, "/loki/api/v1/push", func(body []byte) ([]byte, error) {
 			return rewrite.RewriteLoki(ct, body, inst.Labels)
-		}, maxBytes, client, m)
+		}, maxBytes, p, m)
 	})
 
 	mux.HandleFunc("GET /api/{instance}/loki/query_range", func(w http.ResponseWriter, r *http.Request) {

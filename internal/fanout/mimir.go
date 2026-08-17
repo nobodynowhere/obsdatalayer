@@ -10,7 +10,7 @@ import (
 )
 
 // RegisterMimir registers all Mimir routes on mux.
-func RegisterMimir(mux *http.ServeMux, h *config.ConfigHolder, p *proxy.Proxy, client *http.Client, m *metrics.Metrics) {
+func RegisterMimir(mux *http.ServeMux, h *config.ConfigHolder, p *proxy.Proxy, m *metrics.Metrics) {
 	mux.HandleFunc("POST /api/{instance}/mimir/push", func(w http.ResponseWriter, r *http.Request) {
 		inst := getInstance(h, r, w, "mimir")
 		if inst == nil {
@@ -19,7 +19,7 @@ func RegisterMimir(mux *http.ServeMux, h *config.ConfigHolder, p *proxy.Proxy, c
 		maxBytes := h.Get().Gateway.MaxBodyBytes
 		handlePush(w, r, inst, "/api/v1/push", func(body []byte) ([]byte, error) {
 			return rewrite.RewriteMimir(body, inst.Labels)
-		}, maxBytes, client, m)
+		}, maxBytes, p, m)
 	})
 
 	mux.HandleFunc("GET /api/{instance}/mimir/query_range", func(w http.ResponseWriter, r *http.Request) {

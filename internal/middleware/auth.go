@@ -8,14 +8,14 @@ import (
 	"obsdatalayer/internal/auth"
 )
 
-// BasicAuth wraps a handler requiring HTTP Basic authentication backed by
-// auth.UserFile. /healthz bypasses auth without credentials. The backend is
+// BasicAuth wraps a handler requiring HTTP Basic authentication backed by an
+// auth.Source. /healthz bypasses auth without credentials. The backend is
 // extracted from the URL path (/api/{instance}/{backend}/...); the action is
 // derived from the HTTP method (GET→read, anything else→write).
 //
 // On success the resolved RequestAuth is attached to the request context for
 // downstream handlers to use when injecting X-Scope-OrgID.
-func BasicAuth(uf *auth.UserFile, next http.Handler) http.Handler {
+func BasicAuth(src auth.Source, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
 			next.ServeHTTP(w, r)
@@ -24,6 +24,12 @@ func BasicAuth(uf *auth.UserFile, next http.Handler) http.Handler {
 
 		username, password, ok := r.BasicAuth()
 		if !ok {
+			writeUnauthorized(w)
+			return
+		}
+
+		uf := src.Get()
+		if uf == nil {
 			writeUnauthorized(w)
 			return
 		}

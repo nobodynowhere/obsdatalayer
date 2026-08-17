@@ -23,13 +23,13 @@ func tempoInst(name, url string) *config.InstanceConfig {
 	}
 }
 
-func newTempoTestMux(cfg *config.Config, p *proxy.Proxy, pushClient *http.Client) http.Handler {
+func newTempoTestMux(cfg *config.Config, p *proxy.Proxy) http.Handler {
 	h := config.NewHolder(cfg, "")
 	mux := http.NewServeMux()
 	m := newTestMetrics()
-	fanout.RegisterLoki(mux, h, p, pushClient, m)
-	fanout.RegisterMimir(mux, h, p, pushClient, m)
-	fanout.RegisterTempo(mux, h, p, pushClient)
+	fanout.RegisterLoki(mux, h, p, m)
+	fanout.RegisterMimir(mux, h, p, m)
+	fanout.RegisterTempo(mux, h, p)
 	return middleware.BasicAuth(testUF, mux)
 }
 
@@ -44,7 +44,7 @@ func TestTempoOTLPPush(t *testing.T) {
 	cfg := newTestConfig([]*config.InstanceConfig{tempoInst("tempo-prod", upstream.URL)})
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
-	h := newTempoTestMux(cfg, p, client)
+	h := newTempoTestMux(cfg, p)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/tempo-prod/tempo/otlp/v1/traces", strings.NewReader("trace data"))
 	req.Header.Set("Authorization", authHeader())
@@ -72,7 +72,7 @@ func TestTempoJaegerPush(t *testing.T) {
 	cfg := newTestConfig([]*config.InstanceConfig{tempoInst("tempo-prod", upstream.URL)})
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
-	h := newTempoTestMux(cfg, p, client)
+	h := newTempoTestMux(cfg, p)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/tempo-prod/tempo/jaeger/v1/traces", strings.NewReader("trace data"))
 	req.Header.Set("Authorization", authHeader())
@@ -100,7 +100,7 @@ func TestTempoSearch(t *testing.T) {
 	cfg := newTestConfig([]*config.InstanceConfig{tempoInst("tempo-prod", upstream.URL)})
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
-	h := newTempoTestMux(cfg, p, client)
+	h := newTempoTestMux(cfg, p)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/tempo-prod/tempo/search?q=xxx", nil)
 	req.Header.Set("Authorization", authHeader())
@@ -130,7 +130,7 @@ func TestTempoGetTrace(t *testing.T) {
 	cfg := newTestConfig([]*config.InstanceConfig{tempoInst("tempo-prod", upstream.URL)})
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
-	h := newTempoTestMux(cfg, p, client)
+	h := newTempoTestMux(cfg, p)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/tempo-prod/tempo/traces/abc123", nil)
 	req.Header.Set("Authorization", authHeader())
@@ -157,7 +157,7 @@ func TestTempoSearchTagsV2(t *testing.T) {
 	cfg := newTestConfig([]*config.InstanceConfig{tempoInst("tempo-prod", upstream.URL)})
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
-	h := newTempoTestMux(cfg, p, client)
+	h := newTempoTestMux(cfg, p)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/tempo-prod/tempo/v2/search/tags", nil)
 	req.Header.Set("Authorization", authHeader())
@@ -184,7 +184,7 @@ func TestTempoSearchTagValuesV2(t *testing.T) {
 	cfg := newTestConfig([]*config.InstanceConfig{tempoInst("tempo-prod", upstream.URL)})
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
-	h := newTempoTestMux(cfg, p, client)
+	h := newTempoTestMux(cfg, p)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/tempo-prod/tempo/v2/search/tag/service.name/values", nil)
 	req.Header.Set("Authorization", authHeader())
@@ -204,7 +204,7 @@ func TestTempoUnknownInstance(t *testing.T) {
 	cfg := newTestConfig([]*config.InstanceConfig{})
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
-	h := newTempoTestMux(cfg, p, client)
+	h := newTempoTestMux(cfg, p)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/unknown/tempo/otlp/v1/traces", strings.NewReader("data"))
 	req.Header.Set("Authorization", authHeader())
@@ -236,7 +236,7 @@ func TestTempoPushBodyStreamedVerbatim(t *testing.T) {
 	cfg := newTestConfig([]*config.InstanceConfig{tempoInst("tempo-prod", upstream.URL)})
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
-	h := newTempoTestMux(cfg, p, client)
+	h := newTempoTestMux(cfg, p)
 
 	sendBody := "binary trace data \x00\x01\x02"
 	req := httptest.NewRequest(http.MethodPost, "/api/tempo-prod/tempo/otlp/v1/traces", strings.NewReader(sendBody))

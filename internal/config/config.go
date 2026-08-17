@@ -40,6 +40,11 @@ func (d *Duration) UnmarshalText(text []byte) error {
 	return nil
 }
 
+// MarshalYAML emits durations as human-readable strings like "30s".
+func (d Duration) MarshalYAML() ([]byte, error) {
+	return []byte(time.Duration(d).String()), nil
+}
+
 type Config struct {
 	Version   int                        `yaml:"version"`
 	Gateway   GatewayConfig              `yaml:"gateway"`
@@ -50,7 +55,6 @@ type Config struct {
 type GatewayConfig struct {
 	Port         int           `yaml:"port"`
 	AdminPort    int           `yaml:"admin_port"`
-	AuthFile     string        `yaml:"auth_file"`
 	MaxBodyBytes int64         `yaml:"max_body_bytes"`
 	Timeouts     TimeoutConfig `yaml:"timeouts"`
 }
@@ -94,19 +98,35 @@ type ResolvedTarget struct {
 	TenantID  string
 }
 
-// Load reads YAML config from path, validates it, builds ByName map, and applies defaults.
+// Load reads a legacy YAML gateway config from path, validates it and builds the runtime view.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
+	return LoadYAML(data)
+}
 
+// LoadYAML parses a YAML gateway config, applies defaults, validates and builds ByName.
+func LoadYAML(data []byte) (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	return New(&cfg)
+}
 
-	// Apply defaults
+// New validates and finalizes a Config in preparation for use.
+func New(cfg *Config) (*Config, error) {
+	applyDefaults(cfg)
+	if err := validate(cfg); err != nil {
+		return nil, err
+	}
+	cfg.ByName = buildByName(cfg.Instances)
+	return cfg, nil
+}
+
+func applyDefaults(cfg *Config) {
 	if cfg.Gateway.Port == 0 {
 		cfg.Gateway.Port = 8080
 	}
@@ -127,17 +147,14 @@ func Load(path string) (*Config, error) {
 			inst.FanOutMode = "any"
 		}
 	}
+}
 
-	if err := validate(&cfg); err != nil {
-		return nil, err
+func buildByName(instances []*InstanceConfig) map[string]*InstanceConfig {
+	byName := make(map[string]*InstanceConfig, len(instances))
+	for _, inst := range instances {
+		byName[inst.Name] = inst
 	}
-
-	cfg.ByName = make(map[string]*InstanceConfig, len(cfg.Instances))
-	for _, inst := range cfg.Instances {
-		cfg.ByName[inst.Name] = inst
-	}
-
-	return &cfg, nil
+	return byName
 }
 
 func validate(cfg *Config) error {

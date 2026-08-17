@@ -23,13 +23,13 @@ func mimirInst(name string, url string) *config.InstanceConfig {
 	}
 }
 
-func newMimirTestMux(cfg *config.Config, p *proxy.Proxy, pushClient *http.Client) http.Handler {
+func newMimirTestMux(cfg *config.Config, p *proxy.Proxy) http.Handler {
 	h := config.NewHolder(cfg, "")
 	mux := http.NewServeMux()
 	m := newTestMetrics()
-	fanout.RegisterLoki(mux, h, p, pushClient, m)
-	fanout.RegisterMimir(mux, h, p, pushClient, m)
-	fanout.RegisterTempo(mux, h, p, pushClient)
+	fanout.RegisterLoki(mux, h, p, m)
+	fanout.RegisterMimir(mux, h, p, m)
+	fanout.RegisterTempo(mux, h, p)
 	return middleware.BasicAuth(testUF, mux)
 }
 
@@ -44,7 +44,7 @@ func TestMimirPushSuccess(t *testing.T) {
 	cfg := newTestConfig([]*config.InstanceConfig{mimirInst("mimir-prod", upstream.URL)})
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
-	h := newMimirTestMux(cfg, p, client)
+	h := newMimirTestMux(cfg, p)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/mimir-prod/mimir/push", strings.NewReader("body"))
 	req.Header.Set("Authorization", authHeader())
@@ -73,7 +73,7 @@ func TestMimirQueryRange(t *testing.T) {
 	cfg := newTestConfig([]*config.InstanceConfig{mimirInst("mimir-prod", upstream.URL)})
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
-	h := newMimirTestMux(cfg, p, client)
+	h := newMimirTestMux(cfg, p)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/mimir-prod/mimir/query_range?query=up&start=1&end=2&step=1", nil)
 	req.Header.Set("Authorization", authHeader())
@@ -100,7 +100,7 @@ func TestMimirInstantQuery(t *testing.T) {
 	cfg := newTestConfig([]*config.InstanceConfig{mimirInst("mimir-prod", upstream.URL)})
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
-	h := newMimirTestMux(cfg, p, client)
+	h := newMimirTestMux(cfg, p)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/mimir-prod/mimir/query?query=up", nil)
 	req.Header.Set("Authorization", authHeader())
@@ -127,7 +127,7 @@ func TestMimirLabels(t *testing.T) {
 	cfg := newTestConfig([]*config.InstanceConfig{mimirInst("mimir-prod", upstream.URL)})
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
-	h := newMimirTestMux(cfg, p, client)
+	h := newMimirTestMux(cfg, p)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/mimir-prod/mimir/labels", nil)
 	req.Header.Set("Authorization", authHeader())
@@ -154,7 +154,7 @@ func TestMimirLabelValues(t *testing.T) {
 	cfg := newTestConfig([]*config.InstanceConfig{mimirInst("mimir-prod", upstream.URL)})
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
-	h := newMimirTestMux(cfg, p, client)
+	h := newMimirTestMux(cfg, p)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/mimir-prod/mimir/label/job/values", nil)
 	req.Header.Set("Authorization", authHeader())
@@ -181,7 +181,7 @@ func TestMimirSeries(t *testing.T) {
 	cfg := newTestConfig([]*config.InstanceConfig{mimirInst("mimir-prod", upstream.URL)})
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
-	h := newMimirTestMux(cfg, p, client)
+	h := newMimirTestMux(cfg, p)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/mimir-prod/mimir/series", nil)
 	req.Header.Set("Authorization", authHeader())
@@ -208,7 +208,7 @@ func TestMimirMetadata(t *testing.T) {
 	cfg := newTestConfig([]*config.InstanceConfig{mimirInst("mimir-prod", upstream.URL)})
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
-	h := newMimirTestMux(cfg, p, client)
+	h := newMimirTestMux(cfg, p)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/mimir-prod/mimir/metadata", nil)
 	req.Header.Set("Authorization", authHeader())
@@ -247,7 +247,7 @@ func TestMimirPushPartialFailureHeader(t *testing.T) {
 	cfg := newTestConfig([]*config.InstanceConfig{inst})
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
-	h := newMimirTestMux(cfg, p, client)
+	h := newMimirTestMux(cfg, p)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/mimir-prod/mimir/push", strings.NewReader("body"))
 	req.Header.Set("Authorization", authHeader())
@@ -272,7 +272,7 @@ func TestMimirPushUnknownInstance(t *testing.T) {
 	cfg := newTestConfig([]*config.InstanceConfig{})
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
-	h := newMimirTestMux(cfg, p, client)
+	h := newMimirTestMux(cfg, p)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/unknown/mimir/push", strings.NewReader("body"))
 	req.Header.Set("Authorization", authHeader())

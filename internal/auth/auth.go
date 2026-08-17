@@ -10,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/goccy/go-yaml"
 	"golang.org/x/crypto/bcrypt"
-	"gopkg.in/yaml.v3"
 )
 
 // ---- types -----------------------------------------------------------------
@@ -79,10 +79,14 @@ func Load(path string) (*UserFile, error) {
 	if err != nil {
 		return nil, fmt.Errorf("auth: read %s: %w", path, err)
 	}
+	return LoadYAML(data)
+}
 
+// LoadYAML parses an auth YAML document into a validated UserFile.
+func LoadYAML(data []byte) (*UserFile, error) {
 	var uf UserFile
 	if err := yaml.Unmarshal(data, &uf); err != nil {
-		return nil, fmt.Errorf("auth: parse %s: %w", path, err)
+		return nil, fmt.Errorf("auth: parse: %w", err)
 	}
 
 	if err := buildUserFile(&uf); err != nil {

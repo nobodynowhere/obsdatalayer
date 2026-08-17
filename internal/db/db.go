@@ -1,0 +1,60 @@
+package db
+
+import (
+	"fmt"
+
+	"github.com/glebarez/sqlite"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+)
+
+// DSN holds the database connection settings.
+// SQLite uses the pure-Go driver so the binary remains CGO-free.
+type DSN struct {
+	Type string `yaml:"type"`
+	DSN  string `yaml:"dsn"`
+}
+
+// Open returns a GORM handle for the configured database type.
+func Open(d DSN) (*gorm.DB, error) {
+	var dialector gorm.Dialector
+	switch d.Type {
+	case "sqlite":
+		dialector = sqlite.Open(d.DSN)
+	case "postgres":
+		dialector = postgres.Open(d.DSN)
+	default:
+		return nil, fmt.Errorf("unsupported db type %q", d.Type)
+	}
+
+	db, err := gorm.Open(dialector, &gorm.Config{})
+	if err != nil {
+		return nil, fmt.Errorf("open database: %w", err)
+	}
+
+	if d.Type == "sqlite" {
+		if err := db.Exec("PRAGMA foreign_keys = ON").Error; err != nil {
+			return nil, fmt.Errorf("enable sqlite foreign keys: %w", err)
+		}
+	}
+
+	return db, nil
+}
+
+// Migrate creates or updates the tables used by the gateway.
+func Migrate(db *gorm.DB) error {
+	return db.AutoMigrate(
+		&GatewaySetting{},
+		&Instance{},
+		&PushTarget{},
+		&LabelsGroup{},
+		&Filter{},
+		&FilterName{},
+		&LabelInject{},
+		&User{},
+		&Policy{},
+		&PolicyBackend{},
+		&PolicyAction{},
+		&PolicyTenantID{},
+	)
+}

@@ -8,7 +8,7 @@ import (
 )
 
 // RegisterTempo registers all Tempo routes on mux.
-func RegisterTempo(mux *http.ServeMux, h *config.ConfigHolder, p *proxy.Proxy, client *http.Client) {
+func RegisterTempo(mux *http.ServeMux, h *config.ConfigHolder, p *proxy.Proxy) {
 	mux.HandleFunc("POST /api/{instance}/tempo/otlp/v1/traces", func(w http.ResponseWriter, r *http.Request) {
 		if inst := getInstance(h, r, w, "tempo"); inst != nil {
 			p.ForwardPush(w, r, inst, "/otlp/v1/traces")

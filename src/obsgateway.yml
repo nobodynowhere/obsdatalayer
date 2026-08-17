@@ -1,39 +1,44 @@
-version: 1
+db:
+  type: sqlite
+  dsn: /var/lib/obsgateway/gateway.db
 gateway:
   port: 8080
   admin_port: 9091
-  auth_file: ./auth.yaml
-  max_body_bytes: 33554432
-  timeouts:
-    query: 30s
-    push: 60s
- 
-instances:
-  - name: loki-prod
-    backend: loki
-    url: http://loki.local
-    basic_auth: "admin:secret"
-    tenant_id: tenant-a
-    labels:
-      filter:
-        mode: allowlist
-        names:
-          - env
-          - cluster
-      inject:
-        env: prod
-        cluster: primary
- 
-  - name: mimir-prod
-    backend: mimir
-    push_urls:
-      - url: http://mimir-1.local
-        basic_auth: "admin:secret"
-        tenant_id: tenant-a
-      - url: http://mimir-2.local
-    fan_out_mode: any
- 
-  - name: tempo-prod
-    backend: tempo
-    url: http://tempo.local
-    tenant_id: tenant-b
+log_level: info
+reload_interval: 30s
+seed:
+  version: 1
+  gateway:
+    max_body_bytes: 33554432
+    timeouts:
+      query: 30s
+      push: 60s
+  instances:
+    - name: loki-prod
+      backend: loki
+      url: http://loki.local
+      basic_auth: "admin:secret"
+      tenant_id: tenant-a
+      labels:
+        filter:
+          mode: allowlist
+          names:
+            - env
+            - cluster
+        inject:
+          env: prod
+          cluster: primary
+
+    - name: mimir-prod
+      backend: mimir
+      push_urls:
+        - url: http://mimir-1.local
+          basic_auth: "admin:secret"
+          tenant_id: tenant-a
+        - url: http://mimir-2.local
+      fan_out_mode: any
+
+    - name: tempo-prod
+      backend: tempo
+      url: http://tempo.local
+      tenant_id: tenant-b

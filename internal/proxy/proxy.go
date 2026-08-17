@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 
 	"obsdatalayer/internal/auth"
 	"obsdatalayer/internal/config"
@@ -27,25 +28,43 @@ var hopByHopHeaders = map[string]bool{
 	"Proxy-Authenticate":  true,
 }
 
+type clients struct {
+	query *http.Client
+	push  *http.Client
+}
+
 // Proxy forwards requests to upstream backends.
+// The underlying HTTP clients are stored atomically so timeouts can be reloaded.
 type Proxy struct {
-	queryClient *http.Client
-	pushClient  *http.Client
+	clients atomic.Pointer[clients]
 }
 
 // New creates a Proxy with separate query and push clients.
 func New(queryClient, pushClient *http.Client) *Proxy {
-	return &Proxy{queryClient: queryClient, pushClient: pushClient}
+	p := &Proxy{}
+	p.clients.Store(&clients{query: queryClient, push: pushClient})
+	return p
 }
+
+// SetClients replaces the active HTTP clients.
+func (p *Proxy) SetClients(queryClient, pushClient *http.Client) {
+	p.clients.Store(&clients{query: queryClient, push: pushClient})
+}
+
+// QueryClient returns the current query HTTP client.
+func (p *Proxy) QueryClient() *http.Client { return p.clients.Load().query }
+
+// PushClient returns the current push HTTP client.
+func (p *Proxy) PushClient() *http.Client { return p.clients.Load().push }
 
 // ForwardQuery forwards a read request using the query client.
 func (p *Proxy) ForwardQuery(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, upstreamPath string) {
-	p.forward(w, r, inst, upstreamPath, p.queryClient)
+	p.forward(w, r, inst, upstreamPath, p.QueryClient())
 }
 
 // ForwardPush forwards a push request using the push client (Tempo single-target).
 func (p *Proxy) ForwardPush(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, upstreamPath string) {
-	p.forward(w, r, inst, upstreamPath, p.pushClient)
+	p.forward(w, r, inst, upstreamPath, p.PushClient())
 }
 
 func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, upstreamPath string, client *http.Client) {

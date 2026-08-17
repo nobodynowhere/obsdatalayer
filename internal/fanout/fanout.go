@@ -123,7 +123,7 @@ func copyResponseHeaders(w http.ResponseWriter, headers http.Header) {
 
 // handlePush reads the body (limited to maxBodyBytes), optionally rewrites labels,
 // fans out, and writes the response. rewriteFn is called only when inst.Labels != nil.
-func handlePush(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, upstreamPath string, rewriteFn func([]byte) ([]byte, error), maxBodyBytes int64, client *http.Client, m *metrics.Metrics) {
+func handlePush(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, upstreamPath string, rewriteFn func([]byte) ([]byte, error), maxBodyBytes int64, p *proxy.Proxy, m *metrics.Metrics) {
 	if maxBodyBytes > 0 {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	}
@@ -148,7 +148,7 @@ func handlePush(w http.ResponseWriter, r *http.Request, inst *config.InstanceCon
 			return
 		}
 	}
-	statusCode, respBody, respHeaders, partialFailures := Do(r.Context(), inst, inst.GetPushTargets(), body, r.Header, upstreamPath, client, m)
+	statusCode, respBody, respHeaders, partialFailures := Do(r.Context(), inst, inst.GetPushTargets(), body, r.Header, upstreamPath, p.PushClient(), m)
 	if len(partialFailures) > 0 {
 		w.Header().Set("X-Gateway-Partial-Failure", FormatPartialFailureHeader(partialFailures))
 		m.RecordPartialFailure(inst.Name)

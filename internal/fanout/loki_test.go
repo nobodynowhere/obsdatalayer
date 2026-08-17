@@ -66,12 +66,12 @@ func newTestConfig(instances []*config.InstanceConfig) *config.Config {
 	}
 }
 
-func newTestMux(cfg *config.Config, p *proxy.Proxy, pushClient *http.Client, m *metrics.Metrics) http.Handler {
+func newTestMux(cfg *config.Config, p *proxy.Proxy, m *metrics.Metrics) http.Handler {
 	h := config.NewHolder(cfg, "")
 	mux := http.NewServeMux()
-	fanout.RegisterLoki(mux, h, p, pushClient, m)
-	fanout.RegisterMimir(mux, h, p, pushClient, m)
-	fanout.RegisterTempo(mux, h, p, pushClient)
+	fanout.RegisterLoki(mux, h, p, m)
+	fanout.RegisterMimir(mux, h, p, m)
+	fanout.RegisterTempo(mux, h, p)
 	return middleware.BasicAuth(testUF, mux)
 }
 
@@ -100,7 +100,7 @@ func TestLokiPushSuccess(t *testing.T) {
 	m := newTestMetrics()
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
-	h := newTestMux(cfg, p, client, m)
+	h := newTestMux(cfg, p, m)
 
 	body := `{"streams":[{"stream":{"app":"foo"},"values":[["1","log"]]}]}`
 	req := httptest.NewRequest(http.MethodPost, "/api/loki-prod/loki/push", strings.NewReader(body))
@@ -139,7 +139,7 @@ func TestLokiPushWithLabelsRewrite(t *testing.T) {
 	m := newTestMetrics()
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
-	h := newTestMux(cfg, p, client, m)
+	h := newTestMux(cfg, p, m)
 
 	body := `{"streams":[{"stream":{"app":"foo","env":"staging"},"values":[["1","log"]]}]}`
 	req := httptest.NewRequest(http.MethodPost, "/api/loki-prod/loki/push", strings.NewReader(body))
@@ -166,7 +166,7 @@ func TestLokiPushUnknownInstance(t *testing.T) {
 	m := newTestMetrics()
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
-	h := newTestMux(cfg, p, client, m)
+	h := newTestMux(cfg, p, m)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/unknown/loki/push", strings.NewReader("{}"))
 	req.Header.Set("Authorization", authHeader())
@@ -201,7 +201,7 @@ func TestLokiQueryRange(t *testing.T) {
 	m := newTestMetrics()
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
-	h := newTestMux(cfg, p, client, m)
+	h := newTestMux(cfg, p, m)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/query_range?query=xxx&start=1&end=2&step=1", nil)
 	req.Header.Set("Authorization", authHeader())
@@ -232,7 +232,7 @@ func TestLokiInstantQuery(t *testing.T) {
 	m := newTestMetrics()
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
-	h := newTestMux(cfg, p, client, m)
+	h := newTestMux(cfg, p, m)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/query?query=xxx", nil)
 	req.Header.Set("Authorization", authHeader())
@@ -260,7 +260,7 @@ func TestLokiLabels(t *testing.T) {
 	m := newTestMetrics()
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
-	h := newTestMux(cfg, p, client, m)
+	h := newTestMux(cfg, p, m)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
 	req.Header.Set("Authorization", authHeader())
@@ -288,7 +288,7 @@ func TestLokiLabelValues(t *testing.T) {
 	m := newTestMetrics()
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
-	h := newTestMux(cfg, p, client, m)
+	h := newTestMux(cfg, p, m)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/label/app/values", nil)
 	req.Header.Set("Authorization", authHeader())
@@ -316,7 +316,7 @@ func TestLokiSeries(t *testing.T) {
 	m := newTestMetrics()
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
-	h := newTestMux(cfg, p, client, m)
+	h := newTestMux(cfg, p, m)
 
 	req := httptest.NewRequest(http.MethodGet, `/api/loki-prod/loki/series?match[]=xxx`, nil)
 	req.Header.Set("Authorization", authHeader())
@@ -342,7 +342,7 @@ func TestLokiMissingAuth(t *testing.T) {
 	m := newTestMetrics()
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
-	h := newTestMux(cfg, p, client, m)
+	h := newTestMux(cfg, p, m)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
 	// No Authorization header
@@ -383,7 +383,7 @@ func TestLokiPushFanoutMultipleTargets(t *testing.T) {
 	m := newTestMetrics()
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
-	h := newTestMux(cfg, p, client, m)
+	h := newTestMux(cfg, p, m)
 
 	body := `{"streams":[{"stream":{"app":"foo"},"values":[["1","log"]]}]}`
 	req := httptest.NewRequest(http.MethodPost, "/api/loki-prod/loki/push", strings.NewReader(body))
@@ -403,4 +403,3 @@ func TestLokiPushFanoutMultipleTargets(t *testing.T) {
 		t.Errorf("expected upstream2 to receive 1 request, got %d", count2.Load())
 	}
 }
-

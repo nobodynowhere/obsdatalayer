@@ -1,1 +1,1 @@
-CPE_OPTS='-config /etc/obsgateway/gateway.yml'
+CPE_OPTS='-config /etc/obsgateway/obsgateway.yml'
