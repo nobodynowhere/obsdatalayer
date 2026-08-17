@@ -1,22 +1,18 @@
 package fanout_test
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"io"
-	"log"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"golang.org/x/crypto/bcrypt"
 
-	"obsdatalayer/internal/auth"
+	"obsdatalayer/internal/auth/authtest"
 	"obsdatalayer/internal/config"
 	"obsdatalayer/internal/fanout"
 	"obsdatalayer/internal/metrics"
@@ -24,29 +20,8 @@ import (
 	"obsdatalayer/internal/proxy"
 )
 
-// testUF is a shared *auth.UserFile for the fanout integration tests.
-// "testuser"/"testpass" has wildcard access to all backends/actions for "test-tenant".
-var testUF *auth.UserFile
-
-func TestMain(m *testing.M) {
-	hash, err := bcrypt.GenerateFromPassword([]byte("testpass"), bcrypt.MinCost)
-	if err != nil {
-		log.Fatalf("bcrypt: %v", err)
-	}
-	testUF, err = auth.New([]*auth.User{{
-		Name:           "testuser",
-		PasswordBcrypt: string(hash),
-		Policies: []auth.Policy{{
-			Backends:  []string{"*"},
-			Actions:   []string{"read", "write"},
-			TenantIDs: []string{"test-tenant"},
-		}},
-	}})
-	if err != nil {
-		log.Fatalf("auth.New: %v", err)
-	}
-	os.Exit(m.Run())
-}
+// testAuth is the shared stub authorizer for the fan-out HTTP tests.
+var testAuth = authtest.New()
 
 func newTestMetrics() *metrics.Metrics {
 	return metrics.New(prometheus.NewRegistry())
@@ -72,7 +47,7 @@ func newTestMux(cfg *config.Config, p *proxy.Proxy, m *metrics.Metrics) http.Han
 	fanout.RegisterLoki(mux, h, p, m)
 	fanout.RegisterMimir(mux, h, p, m)
 	fanout.RegisterTempo(mux, h, p)
-	return middleware.BasicAuth(testUF, mux)
+	return middleware.BasicAuth(testAuth, mux)
 }
 
 func lokiInst(name string, url string) *config.InstanceConfig {
@@ -83,9 +58,9 @@ func lokiInst(name string, url string) *config.InstanceConfig {
 	}
 }
 
-// authHeader returns the Authorization header value for testuser/testpass.
+// authHeader returns the Authorization header value for the stub credentials.
 func authHeader() string {
-	return "Basic " + base64.StdEncoding.EncodeToString([]byte("testuser:testpass"))
+	return testAuth.Header()
 }
 
 func TestLokiPushSuccess(t *testing.T) {

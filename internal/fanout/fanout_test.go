@@ -29,8 +29,8 @@ func newInstance(name, backend, fanOutMode string) *config.InstanceConfig {
 	}
 }
 
-func makeTarget(url string) config.ResolvedTarget {
-	return config.ResolvedTarget{URL: url}
+func makeTarget(url string) config.PushTarget {
+	return config.PushTarget{URL: url}
 }
 
 // ---- FormatPartialFailureHeader tests ----
@@ -72,7 +72,7 @@ func TestDoAnySingleTargetSuccess(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	inst := newInstance("loki-prod", "loki", "any")
-	targets := []config.ResolvedTarget{makeTarget(upstream.URL)}
+	targets := []config.PushTarget{makeTarget(upstream.URL)}
 	m := newMetrics()
 
 	statusCode, _, _, partialFailures := fanout.Do(
@@ -101,7 +101,7 @@ func TestDoAnyAllTargetsSucceed(t *testing.T) {
 	t.Cleanup(upstream2.Close)
 
 	inst := newInstance("loki-prod", "loki", "any")
-	targets := []config.ResolvedTarget{makeTarget(upstream1.URL), makeTarget(upstream2.URL)}
+	targets := []config.PushTarget{makeTarget(upstream1.URL), makeTarget(upstream2.URL)}
 	m := newMetrics()
 
 	statusCode, _, _, partialFailures := fanout.Do(
@@ -129,7 +129,7 @@ func TestDoAnyOneTargetFailsOneSucceeds(t *testing.T) {
 	t.Cleanup(upstreamFail.Close)
 
 	inst := newInstance("loki-prod", "loki", "any")
-	targets := []config.ResolvedTarget{makeTarget(upstreamFail.URL), makeTarget(upstreamOK.URL)}
+	targets := []config.PushTarget{makeTarget(upstreamFail.URL), makeTarget(upstreamOK.URL)}
 	m := newMetrics()
 
 	statusCode, _, _, partialFailures := fanout.Do(
@@ -157,7 +157,7 @@ func TestDoAnyAllTargetsFail(t *testing.T) {
 	t.Cleanup(upstream2.Close)
 
 	inst := newInstance("loki-prod", "loki", "any")
-	targets := []config.ResolvedTarget{makeTarget(upstream1.URL), makeTarget(upstream2.URL)}
+	targets := []config.PushTarget{makeTarget(upstream1.URL), makeTarget(upstream2.URL)}
 	m := newMetrics()
 
 	statusCode, respBody, _, _ := fanout.Do(
@@ -180,7 +180,7 @@ func TestDoAnyConnectionError(t *testing.T) {
 	upstream.Close() // Close before making request
 
 	inst := newInstance("loki-prod", "loki", "any")
-	targets := []config.ResolvedTarget{makeTarget(url)}
+	targets := []config.PushTarget{makeTarget(url)}
 	m := newMetrics()
 
 	statusCode, respBody, _, _ := fanout.Do(
@@ -210,7 +210,7 @@ func TestDoAllTargetsSucceed(t *testing.T) {
 	t.Cleanup(upstream2.Close)
 
 	inst := newInstance("loki-prod", "loki", "all")
-	targets := []config.ResolvedTarget{makeTarget(upstream1.URL), makeTarget(upstream2.URL)}
+	targets := []config.PushTarget{makeTarget(upstream1.URL), makeTarget(upstream2.URL)}
 	m := newMetrics()
 
 	statusCode, _, _, _ := fanout.Do(
@@ -235,7 +235,7 @@ func TestDoAllOneTargetFails(t *testing.T) {
 	t.Cleanup(upstreamFail.Close)
 
 	inst := newInstance("loki-prod", "loki", "all")
-	targets := []config.ResolvedTarget{makeTarget(upstreamOK.URL), makeTarget(upstreamFail.URL)}
+	targets := []config.PushTarget{makeTarget(upstreamOK.URL), makeTarget(upstreamFail.URL)}
 	m := newMetrics()
 
 	statusCode, respBody, _, _ := fanout.Do(
@@ -268,7 +268,7 @@ func TestMimirSuppressOutOfOrderSample(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	inst := newInstance("mimir-prod", "mimir", "any")
-	targets := []config.ResolvedTarget{makeTarget(upstream.URL)}
+	targets := []config.PushTarget{makeTarget(upstream.URL)}
 	m := newMetrics()
 
 	statusCode, _, _, partialFailures := fanout.Do(
@@ -290,7 +290,7 @@ func TestMimirSuppressDuplicateSample(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	inst := newInstance("mimir-prod", "mimir", "any")
-	targets := []config.ResolvedTarget{makeTarget(upstream.URL)}
+	targets := []config.PushTarget{makeTarget(upstream.URL)}
 	m := newMetrics()
 
 	statusCode, _, _, _ := fanout.Do(
@@ -308,7 +308,7 @@ func TestMimirSuppressTimestampTooOld(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	inst := newInstance("mimir-prod", "mimir", "any")
-	targets := []config.ResolvedTarget{makeTarget(upstream.URL)}
+	targets := []config.PushTarget{makeTarget(upstream.URL)}
 	m := newMetrics()
 
 	statusCode, _, _, _ := fanout.Do(
@@ -326,7 +326,7 @@ func TestMimirUnmatchedBodyNotSuppressed(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	inst := newInstance("mimir-prod", "mimir", "any")
-	targets := []config.ResolvedTarget{makeTarget(upstream.URL)}
+	targets := []config.PushTarget{makeTarget(upstream.URL)}
 	m := newMetrics()
 
 	statusCode, _, _, partialFailures := fanout.Do(
@@ -351,7 +351,7 @@ func TestMimirAllSuppressed(t *testing.T) {
 	t.Cleanup(upstream2.Close)
 
 	inst := newInstance("mimir-prod", "mimir", "any")
-	targets := []config.ResolvedTarget{makeTarget(upstream1.URL), makeTarget(upstream2.URL)}
+	targets := []config.PushTarget{makeTarget(upstream1.URL), makeTarget(upstream2.URL)}
 	m := newMetrics()
 
 	statusCode, _, _, partialFailures := fanout.Do(
@@ -377,7 +377,7 @@ func TestMimirOneSuppressedOneSuccess(t *testing.T) {
 	t.Cleanup(upstreamOK.Close)
 
 	inst := newInstance("mimir-prod", "mimir", "any")
-	targets := []config.ResolvedTarget{makeTarget(upstreamSuppressed.URL), makeTarget(upstreamOK.URL)}
+	targets := []config.PushTarget{makeTarget(upstreamSuppressed.URL), makeTarget(upstreamOK.URL)}
 	m := newMetrics()
 
 	statusCode, _, _, partialFailures := fanout.Do(
@@ -398,7 +398,7 @@ func TestMimir409NotSuppressed(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	inst := newInstance("mimir-prod", "mimir", "any")
-	targets := []config.ResolvedTarget{makeTarget(upstream.URL)}
+	targets := []config.PushTarget{makeTarget(upstream.URL)}
 	m := newMetrics()
 
 	statusCode, _, _, _ := fanout.Do(
@@ -418,7 +418,7 @@ func TestMimirAllModeSuppressionNotApplied(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	inst := newInstance("mimir-prod", "mimir", "all")
-	targets := []config.ResolvedTarget{makeTarget(upstream.URL)}
+	targets := []config.PushTarget{makeTarget(upstream.URL)}
 	m := newMetrics()
 
 	statusCode, respBody, _, _ := fanout.Do(
@@ -461,7 +461,7 @@ func TestPartialFailureMetricCountedOncePerRequest(t *testing.T) {
 	t.Cleanup(ok.Close)
 
 	inst := newInstance("loki-prod", "loki", "any")
-	targets := []config.ResolvedTarget{makeTarget(fail1.URL), makeTarget(fail2.URL), makeTarget(ok.URL)}
+	targets := []config.PushTarget{makeTarget(fail1.URL), makeTarget(fail2.URL), makeTarget(ok.URL)}
 	m := newMetrics()
 
 	statusCode, _, _, partialFailures := fanout.Do(

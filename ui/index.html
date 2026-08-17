@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="/favicon.svg" />
+    <title>Observability Gateway</title>
+    <link rel="stylesheet" href="/dds-fonts.css" />
+    <link rel="stylesheet" href="/dds-icons.css" />
+  </head>
+  <body>
+    <script>
+      // Inline and synchronous on purpose: this must run before first paint.
+      try {
+        if (localStorage.getItem('obsgateway-dark') === 'true') {
+          document.documentElement.classList.add('my-app-dark');
+        }
+      } catch (e) { /* storage unavailable; fall back to the light theme */ }
+    </script>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

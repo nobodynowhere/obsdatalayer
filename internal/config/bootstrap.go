@@ -3,32 +3,57 @@ package config
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/goccy/go-yaml"
+
 	"obsdatalayer/internal/db"
 )
 
-// GatewayBootstrap contains only the values needed to start the gateway process.
-// All other gateway configuration lives in the database.
+// Default hosts applied when a listener specifies only a port.
+// The data plane serves clients so it binds every interface; the admin plane
+// carries config read/write and user management so it stays on loopback.
+const (
+	DefaultDataHost  = "*"
+	DefaultAdminHost = "127.0.0.1"
+)
+
+// GatewayBootstrap holds the process listener addresses. They are named for
+// what they are -- full "host:port" listen addresses, not bare ports.
 type GatewayBootstrap struct {
-	Port      int `yaml:"port"`
-	AdminPort int `yaml:"admin_port"`
+	Listen      ListenAddr `yaml:"listen"`
+	AdminListen ListenAddr `yaml:"admin_listen"`
 }
 
-// Bootstrap is the minimal startup file used to open the database and the
-// process listeners. The database is the source of truth for all runtime config.
+// Bootstrap is the startup file. It carries only what cannot be read from the
+// database: how to reach the database, and where to listen. Everything else --
+// instances, tenants, timeouts, body limits, log level, reload interval, users
+// and roles -- lives in the database and is managed through the admin API.
 type Bootstrap struct {
-	DB             db.DSN          `yaml:"db"`
-	Gateway        GatewayBootstrap `yaml:"gateway"`
-	LogLevel       string          `yaml:"log_level"`
-	ReloadInterval Duration        `yaml:"reload_interval"`
-	Seed           yaml.RawMessage `yaml:"seed"`
-	SeedFile       string          `yaml:"seed_file"`
+	DB      db.DSN           `yaml:"db"`
+	Gateway GatewayBootstrap `yaml:"gateway"`
 }
 
-// LoadBootstrap reads the bootstrap YAML file at path and returns the parsed Bootstrap.
-// If SeedFile is provided and Seed is not, SeedFile is read relative to path's directory.
+// DataAddr returns the data listener address, defaulting to all interfaces.
+func (b *Bootstrap) DataAddr() string {
+	return b.Gateway.Listen.Addr(DefaultDataHost)
+}
+
+// AdminAddr returns the admin listener address, defaulting to loopback.
+func (b *Bootstrap) AdminAddr() string {
+	return b.Gateway.AdminListen.Addr(DefaultAdminHost)
+}
+
+// AdminIsLoopback reports whether the admin listener is confined to loopback.
+func (b *Bootstrap) AdminIsLoopback() bool {
+	return b.Gateway.AdminListen.IsLoopback(DefaultAdminHost)
+}
+
+// LoadBootstrap reads the bootstrap YAML file at path and returns the parsed
+// Bootstrap.
+//
+// Parse failures are routed through redactYAMLError: this file contains the
+// database DSN, which for Postgres embeds a password, and a raw goccy error
+// quotes the offending source line verbatim.
 func LoadBootstrap(path string) (*Bootstrap, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -37,20 +62,20 @@ func LoadBootstrap(path string) (*Bootstrap, error) {
 
 	var b Bootstrap
 	if err := yaml.Unmarshal(data, &b); err != nil {
-		return nil, fmt.Errorf("parse bootstrap %s: %w", path, err)
+		return nil, fmt.Errorf("parse bootstrap %s: %w", path, redactYAMLError(err, data))
 	}
 
-	if b.SeedFile != "" && len(b.Seed) == 0 {
-		dir := filepath.Dir(path)
-		seedPath := b.SeedFile
-		if !filepath.IsAbs(seedPath) {
-			seedPath = filepath.Join(dir, seedPath)
-		}
-		seedData, err := os.ReadFile(seedPath)
-		if err != nil {
-			return nil, fmt.Errorf("read seed file %s: %w", seedPath, err)
-		}
-		b.Seed = seedData
+	if b.Gateway.Listen.Port == 0 {
+		b.Gateway.Listen.Port = 8080
+	}
+	if b.Gateway.AdminListen.Port == 0 {
+		b.Gateway.AdminListen.Port = 9091
+	}
+	if b.DB.Type == "" {
+		return nil, fmt.Errorf("bootstrap %s: db.type is required (sqlite or postgres)", path)
+	}
+	if b.DB.DSN == "" {
+		return nil, fmt.Errorf("bootstrap %s: db.dsn is required", path)
 	}
 
 	return &b, nil

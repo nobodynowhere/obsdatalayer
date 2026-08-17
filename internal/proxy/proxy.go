@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"obsdatalayer/internal/auth"
 	"obsdatalayer/internal/config"
@@ -63,7 +65,13 @@ func (p *Proxy) ForwardQuery(w http.ResponseWriter, r *http.Request, inst *confi
 }
 
 // ForwardPush forwards a push request using the push client (Tempo single-target).
-func (p *Proxy) ForwardPush(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, upstreamPath string) {
+// maxBodyBytes caps the request body; pass 0 to leave it uncapped. The body is
+// streamed rather than buffered, so the cap is enforced by the upstream read
+// and surfaces as a 413 only once the limit is actually crossed.
+func (p *Proxy) ForwardPush(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, upstreamPath string, maxBodyBytes int64) {
+	if maxBodyBytes > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	}
 	p.forward(w, r, inst, upstreamPath, p.PushClient())
 }
 
@@ -85,13 +93,28 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, inst *config.Ins
 
 	CopyHeadersForUpstream(req, r.Header, target)
 
+	slog.Debug("forwarding upstream",
+		"instance", inst.Name, "method", r.Method, "url", upstreamURL,
+		"org_id", req.Header.Get("X-Scope-OrgID"))
+
+	started := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
-		if isTimeoutError(err) {
+		slog.Debug("upstream request failed",
+			"instance", inst.Name, "url", upstreamURL,
+			"duration", time.Since(started), "error", err)
+		var maxBytes *http.MaxBytesError
+		switch {
+		case errors.As(err, &maxBytes):
+			// The caller's body exceeded the configured limit mid-stream.
+			WriteJSONError(w, http.StatusRequestEntityTooLarge, map[string]string{
+				"error": "request body too large", "instance": inst.Name,
+			})
+		case isTimeoutError(err):
 			WriteJSONError(w, http.StatusGatewayTimeout, map[string]string{
 				"error": "upstream timeout", "instance": inst.Name,
 			})
-		} else {
+		default:
 			WriteJSONError(w, http.StatusBadGateway, map[string]string{
 				"error": "upstream unavailable", "instance": inst.Name,
 			})
@@ -99,6 +122,10 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, inst *config.Ins
 		return
 	}
 	defer resp.Body.Close()
+
+	slog.Debug("upstream responded",
+		"instance", inst.Name, "url", upstreamURL,
+		"status", resp.StatusCode, "duration", time.Since(started))
 
 	for key, vals := range resp.Header {
 		for _, v := range vals {
@@ -115,7 +142,7 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, inst *config.Ins
 // (set by BasicAuth middleware): for reads all tenant IDs are pipe-joined, for
 // writes only the first is used. Falls back to target.TenantID when no auth
 // context is present. BasicAuth credentials are injected from target config.
-func CopyHeadersForUpstream(req *http.Request, inbound http.Header, target config.ResolvedTarget) {
+func CopyHeadersForUpstream(req *http.Request, inbound http.Header, target config.PushTarget) {
 	for key, vals := range inbound {
 		if !hopByHopHeaders[key] {
 			req.Header[key] = vals
@@ -136,9 +163,14 @@ func CopyHeadersForUpstream(req *http.Request, inbound http.Header, target confi
 		} else {
 			req.Header.Set("X-Scope-OrgID", ra.TenantIDs[0])
 		}
+		slog.Debug("injected tenant scope from grant",
+			"user", ra.Username, "read", ra.IsRead, "org_id", req.Header.Get("X-Scope-OrgID"))
 	} else if target.TenantID != "" {
 		// Fallback: inject from static target config (no auth context present).
 		req.Header.Set("X-Scope-OrgID", target.TenantID)
+		slog.Debug("injected tenant scope from instance config", "org_id", target.TenantID)
+	} else {
+		slog.Debug("no tenant scope injected; upstream will see no X-Scope-OrgID")
 	}
 }
 

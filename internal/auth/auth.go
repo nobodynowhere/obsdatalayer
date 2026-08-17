@@ -1,50 +1,102 @@
-// Package auth implements bcrypt-file-based user authentication and
-// policy-driven tenant ID assignment for the observability gateway.
+// Package auth implements gateway authentication (bcrypt credentials) and
+// authorization (Casbin RBAC). Casbin is the single source of truth for
+// permissions: a policy rule carries the subject, the backend it applies to,
+// the action, and the tenant IDs to inject as X-Scope-OrgID.
 package auth
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
-	"github.com/goccy/go-yaml"
+	"github.com/gofrs/uuid/v5"
 	"golang.org/x/crypto/bcrypt"
 )
 
-// ---- types -----------------------------------------------------------------
+// Authorization vocabulary.
+//
+// Data-plane objects are backend names; the admin plane is a distinct object so
+// that a wildcard data grant can never confer administrative access.
+const (
+	BackendAny = "*"
 
-// UserFile is the parsed contents of an auth YAML file.
-type UserFile struct {
-	Users []*User `yaml:"users"`
-	// byName is populated by Load/New for O(1) lookup.
-	byName map[string]*User
-}
+	ActionRead  = "read"
+	ActionWrite = "write"
+	ActionAny   = "*"
 
-// User represents a single gateway credential with its access policies.
+	// ObjectAdmin / ActionAccess gate the admin listener.
+	ObjectAdmin  = "admin"
+	ActionAccess = "access"
+
+	// RoleAdmin is the bootstrap role granted to the initial admin user.
+	RoleAdmin = "admin"
+
+	// tenantSep separates tenant IDs inside a single Casbin policy field. It
+	// matches the X-Scope-OrgID multi-tenant separator.
+	tenantSep = "|"
+)
+
+var (
+	validBackends = map[string]bool{"loki": true, "mimir": true, "tempo": true, BackendAny: true}
+	validActions  = map[string]bool{ActionRead: true, ActionWrite: true, ActionAny: true}
+)
+
+// User is a gateway account. The password hash is never serialized.
 type User struct {
-	Name           string   `yaml:"name"`
-	PasswordBcrypt string   `yaml:"password_bcrypt"`
-	Admin          bool     `yaml:"admin"`
-	Policies       []Policy `yaml:"policies"`
+	Name           string `json:"name"`
+	PasswordBcrypt string `json:"-"`
 }
 
-// Policy grants access to one or more backends with specific actions,
-// mapping to a set of tenant IDs injected as X-Scope-OrgID.
-type Policy struct {
-	// Backends lists backend names this policy applies to ("loki", "mimir",
-	// "tempo") or ["*"] to match all backends.
-	Backends []string `yaml:"backends"`
-	// Actions lists the permitted operations: "read" and/or "write".
-	Actions []string `yaml:"actions"`
-	// TenantIDs are the X-Scope-OrgID values to inject. For write
-	// operations only TenantIDs[0] is used; for reads all are joined with "|".
-	TenantIDs []string `yaml:"tenant_ids"`
+// Grant is one authorization rule: an action on a backend, plus the tenant IDs
+// injected upstream when it matches.
+type Grant struct {
+	Backend   string   `json:"backend"`
+	Action    string   `json:"action"`
+	TenantIDs []string `json:"tenant_ids,omitempty"`
 }
 
-// ---- context ---------------------------------------------------------------
+// IsAdmin reports whether g grants admin-plane access rather than data access.
+func (g Grant) IsAdmin() bool {
+	return g.Backend == ObjectAdmin
+}
+
+// Validate checks a grant before it is written to the policy store.
+func (g Grant) Validate() error {
+	if g.IsAdmin() {
+		if g.Action != ActionAccess {
+			return fmt.Errorf("admin grant must use action %q, got %q", ActionAccess, g.Action)
+		}
+		if len(g.TenantIDs) > 0 {
+			return errors.New("admin grant must not carry tenant_ids")
+		}
+		return nil
+	}
+	if !validBackends[g.Backend] {
+		return fmt.Errorf("unknown backend %q (must be loki, mimir, tempo, admin or *)", g.Backend)
+	}
+	if !validActions[g.Action] {
+		return fmt.Errorf("unknown action %q (must be read, write or *)", g.Action)
+	}
+	if len(g.TenantIDs) == 0 {
+		return fmt.Errorf("grant on backend %q action %q has no tenant_ids", g.Backend, g.Action)
+	}
+	for _, t := range g.TenantIDs {
+		if strings.TrimSpace(t) == "" {
+			return errors.New("tenant_ids must not contain empty values")
+		}
+		// Grants reference tenants by UUID only. Names are resolved to UUIDs
+		// before they ever reach a policy, so that renaming a tenant cannot
+		// repoint an existing grant.
+		if _, err := uuid.FromString(t); err != nil {
+			return fmt.Errorf("tenant id %q is not a valid UUID: %w", t, err)
+		}
+	}
+	return nil
+}
+
+// ---- request context --------------------------------------------------------
 
 type contextKey struct{}
 
@@ -66,154 +118,93 @@ func FromContext(ctx context.Context) *RequestAuth {
 	return ra
 }
 
-// ---- loading & validation --------------------------------------------------
+// ---- credentials ------------------------------------------------------------
 
-var (
-	validBackends = map[string]bool{"loki": true, "mimir": true, "tempo": true, "*": true}
-	validActions  = map[string]bool{"read": true, "write": true}
-)
-
-// Load reads and validates an auth YAML file.
-func Load(path string) (*UserFile, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("auth: read %s: %w", path, err)
-	}
-	return LoadYAML(data)
-}
-
-// LoadYAML parses an auth YAML document into a validated UserFile.
-func LoadYAML(data []byte) (*UserFile, error) {
-	var uf UserFile
-	if err := yaml.Unmarshal(data, &uf); err != nil {
-		return nil, fmt.Errorf("auth: parse: %w", err)
-	}
-
-	if err := buildUserFile(&uf); err != nil {
-		return nil, err
-	}
-	return &uf, nil
-}
-
-// New creates a validated UserFile from a slice of users without reading a file.
-// Useful for testing and programmatic construction.
-func New(users []*User) (*UserFile, error) {
-	uf := &UserFile{Users: users}
-	if err := buildUserFile(uf); err != nil {
-		return nil, err
-	}
-	return uf, nil
-}
-
-// buildUserFile validates uf and populates the byName index.
-func buildUserFile(uf *UserFile) error {
-	if len(uf.Users) == 0 {
-		return fmt.Errorf("auth: no users defined")
-	}
-
-	names := make(map[string]struct{}, len(uf.Users))
-	for i, u := range uf.Users {
-		if u.Name == "" {
-			return fmt.Errorf("auth: user[%d] has no name", i)
-		}
-		if _, dup := names[u.Name]; dup {
-			return fmt.Errorf("auth: duplicate user name %q", u.Name)
-		}
-		names[u.Name] = struct{}{}
-
-		if u.PasswordBcrypt == "" {
-			return fmt.Errorf("auth: user %q has no password_bcrypt", u.Name)
-		}
-		if !strings.HasPrefix(u.PasswordBcrypt, "$2") {
-			return fmt.Errorf("auth: user %q password_bcrypt does not look like a bcrypt hash", u.Name)
-		}
-
-		for j, p := range u.Policies {
-			for _, b := range p.Backends {
-				if !validBackends[b] {
-					return fmt.Errorf("auth: user %q policy[%d] has unknown backend %q", u.Name, j, b)
-				}
-			}
-			for _, a := range p.Actions {
-				if !validActions[a] {
-					return fmt.Errorf("auth: user %q policy[%d] has unknown action %q", u.Name, j, a)
-				}
-			}
-			if len(p.TenantIDs) == 0 {
-				return fmt.Errorf("auth: user %q policy[%d] has no tenant_ids", u.Name, j)
-			}
-		}
-	}
-
-	uf.byName = make(map[string]*User, len(uf.Users))
-	for _, u := range uf.Users {
-		uf.byName[u.Name] = u
-	}
-	return nil
-}
-
-// ---- authentication --------------------------------------------------------
-
-// ErrInvalidCredentials is returned by Authenticate on any auth failure.
-// The same error is used regardless of whether the user exists or the
-// password is wrong, to prevent username enumeration.
+// ErrInvalidCredentials is returned for any authentication failure. The same
+// error is used whether the user is unknown or the password is wrong.
 var ErrInvalidCredentials = errors.New("invalid credentials")
 
-// Authenticate verifies username + plaintext password against stored bcrypt
-// hashes. Returns ErrInvalidCredentials on any failure.
-func Authenticate(uf *UserFile, name, password string) (*User, error) {
-	u, ok := uf.byName[name]
-	if !ok {
-		// Run bcrypt anyway to prevent timing-based username enumeration.
-		_ = bcrypt.CompareHashAndPassword([]byte("$2a$10$invalidsaltinvalidsaltinvalid.."), []byte(password))
-		return nil, ErrInvalidCredentials
+// dummyHash is a real bcrypt hash at the same cost as stored credentials. It is
+// compared against when the username does not exist so that the response time
+// for an unknown user matches that of a known one.
+//
+// This must be a well-formed hash: bcrypt rejects a malformed one during
+// parsing, before doing any key stretching, which would leave the unknown-user
+// path orders of magnitude faster and make usernames trivially enumerable.
+var dummyHash []byte
+
+func init() {
+	h, err := bcrypt.GenerateFromPassword([]byte("obsgateway-timing-equalizer"), bcrypt.DefaultCost)
+	if err != nil {
+		panic("auth: cannot generate dummy bcrypt hash: " + err.Error())
 	}
-	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordBcrypt), []byte(password)); err != nil {
-		return nil, ErrInvalidCredentials
-	}
-	return u, nil
+	dummyHash = h
 }
 
-// ---- policy matching -------------------------------------------------------
+// HashPassword returns a bcrypt hash suitable for storage.
+func HashPassword(password string) (string, error) {
+	if len(password) < 12 {
+		return "", errors.New("password must be at least 12 characters")
+	}
+	h, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", fmt.Errorf("hash password: %w", err)
+	}
+	return string(h), nil
+}
 
-// TenantIDsFor returns the merged, deduplicated, sorted tenant IDs for the
-// given backend and action across all matching policies. ok is false when no
-// policy matches (caller should return 403).
-func (u *User) TenantIDsFor(backend, action string) ([]string, bool) {
+// ---- policy matching helpers ------------------------------------------------
+
+// objectMatches reports whether a policy object covers the requested object.
+// The "*" wildcard deliberately excludes the admin plane, so a broad data-plane
+// grant can never escalate into administrative access.
+func objectMatches(policyObj, requested string) bool {
+	if policyObj == requested {
+		return true
+	}
+	return policyObj == BackendAny && requested != ObjectAdmin
+}
+
+func actionMatches(policyAct, requested string) bool {
+	return policyAct == ActionAny || policyAct == requested
+}
+
+// mergeTenants returns the sorted, deduplicated union of ids.
+func mergeTenants(sets [][]string) []string {
 	seen := make(map[string]struct{})
-	var ids []string
-	for _, p := range u.Policies {
-		if !p.matchesBackend(backend) || !p.matchesAction(action) {
-			continue
-		}
-		for _, tid := range p.TenantIDs {
-			if _, exists := seen[tid]; !exists {
-				seen[tid] = struct{}{}
-				ids = append(ids, tid)
+	var out []string
+	for _, set := range sets {
+		for _, id := range set {
+			if id == "" {
+				continue
 			}
+			if _, dup := seen[id]; dup {
+				continue
+			}
+			seen[id] = struct{}{}
+			out = append(out, id)
 		}
 	}
+	sort.Strings(out)
+	return out
+}
+
+// noTenants is stored in the tenants field of grants that carry none (admin
+// grants). An empty string cannot be used: the Casbin storage adapter drops
+// trailing empty columns, so the rule would load back with three fields and be
+// rejected as malformed.
+const noTenants = "-"
+
+func encodeTenants(ids []string) string {
 	if len(ids) == 0 {
-		return nil, false
+		return noTenants
 	}
-	sort.Strings(ids)
-	return ids, true
+	return strings.Join(ids, tenantSep)
 }
 
-func (p *Policy) matchesBackend(backend string) bool {
-	for _, b := range p.Backends {
-		if b == "*" || b == backend {
-			return true
-		}
+func decodeTenants(s string) []string {
+	if s == "" || s == noTenants {
+		return nil
 	}
-	return false
-}
-
-func (p *Policy) matchesAction(action string) bool {
-	for _, a := range p.Actions {
-		if a == action {
-			return true
-		}
-	}
-	return false
+	return strings.Split(s, tenantSep)
 }

@@ -30,7 +30,7 @@ func newTempoTestMux(cfg *config.Config, p *proxy.Proxy) http.Handler {
 	fanout.RegisterLoki(mux, h, p, m)
 	fanout.RegisterMimir(mux, h, p, m)
 	fanout.RegisterTempo(mux, h, p)
-	return middleware.BasicAuth(testUF, mux)
+	return middleware.BasicAuth(testAuth, mux)
 }
 
 func TestTempoOTLPPush(t *testing.T) {

@@ -1,0 +1,7 @@
+// DDS ships fonts and icons from dds.dell.com by default; those two entrypoints
+// are deliberately not imported. Local copies are vendored in public/ and linked
+// from index.html instead, so the UI works on an air-gapped network.
+@use "@dds/components/src/scss/dds-reboot.scss";
+@use "@dds/components/src/scss/dds-main.scss";
+@use "@dds/components/src/scss/dds-templates.scss";
+@use "@dds/components/src/components/side-nav/_side-nav.scss";

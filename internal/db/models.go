@@ -4,14 +4,19 @@ import (
 	"github.com/gofrs/uuid/v5"
 )
 
-// GatewaySetting stores a single row of global gateway configuration.
-// Version is the user-visible config schema version.
+// GatewaySetting stores the single row of global gateway configuration.
+// Everything here is hot-reloadable; only the database connection and the
+// listener addresses live outside the database, in the bootstrap file.
+//
+// Durations are stored as strings ("30s") so the row stays readable to an
+// operator inspecting the database directly.
 type GatewaySetting struct {
-	ID           uuid.UUID `gorm:"type:text;primaryKey"`
-	Version      int
-	MaxBodyBytes int64
-	QueryTimeout string
-	PushTimeout  string
+	ID             uuid.UUID `gorm:"type:text;primaryKey"`
+	MaxBodyBytes   int64
+	QueryTimeout   string
+	PushTimeout    string
+	LogLevel       string
+	ReloadInterval string
 }
 
 // Instance is a configured backend tenant.
@@ -70,43 +75,32 @@ type LabelInject struct {
 	Value         string
 }
 
-// User is an account with one or more policies.
+// Tenant is a first-class tenant identity. ID is the value injected upstream
+// as X-Scope-OrgID, so it is immutable once grants reference it.
+//
+// GrafanaID is nullable on purpose: it is reserved for the future Grafana
+// traffic proxy, and a NULL keeps unassigned tenants from colliding on the
+// unique index (NULLs do not compare equal in SQLite or Postgres).
+type Tenant struct {
+	ID        uuid.UUID `gorm:"type:text;primaryKey"`
+	Name      string    `gorm:"uniqueIndex"`
+	GrafanaID *int      `gorm:"uniqueIndex"`
+}
+
+// User is a gateway account. Authorization lives entirely in Casbin
+// (the casbin_rule table managed by the gorm adapter), so this table holds
+// only identity and the password hash.
 type User struct {
 	ID             uuid.UUID `gorm:"type:text;primaryKey"`
 	Name           string    `gorm:"uniqueIndex"`
 	PasswordBcrypt string
-	Admin          bool
-
-	Policies []Policy `gorm:"foreignKey:UserID;constraint:OnDelete:CASCADE;"`
 }
 
-// Policy is a set of backends, actions and tenants a user may access.
-type Policy struct {
-	ID     uuid.UUID `gorm:"type:text;primaryKey"`
-	UserID uuid.UUID `gorm:"type:text;index"`
-
-	Backends  []PolicyBackend  `gorm:"foreignKey:PolicyID;constraint:OnDelete:CASCADE;"`
-	Actions   []PolicyAction   `gorm:"foreignKey:PolicyID;constraint:OnDelete:CASCADE;"`
-	TenantIDs []PolicyTenantID `gorm:"foreignKey:PolicyID;constraint:OnDelete:CASCADE;"`
-}
-
-// PolicyBackend is one backend allowed by a policy.
-type PolicyBackend struct {
-	ID       uuid.UUID `gorm:"type:text;primaryKey"`
-	PolicyID uuid.UUID `gorm:"type:text;index"`
-	Backend  string
-}
-
-// PolicyAction is one action allowed by a policy.
-type PolicyAction struct {
-	ID       uuid.UUID `gorm:"type:text;primaryKey"`
-	PolicyID uuid.UUID `gorm:"type:text;index"`
-	Action   string
-}
-
-// PolicyTenantID is one tenant allowed by a policy.
-type PolicyTenantID struct {
-	ID       uuid.UUID `gorm:"type:text;primaryKey"`
-	PolicyID uuid.UUID `gorm:"type:text;index"`
-	TenantID string
+// Role makes roles first-class so they can be created, listed and described
+// through the admin API even before any grants or members are attached.
+// The grants themselves live in Casbin.
+type Role struct {
+	ID          uuid.UUID `gorm:"type:text;primaryKey"`
+	Name        string    `gorm:"uniqueIndex"`
+	Description string
 }

@@ -1,0 +1,6 @@
+export { default as TenantService } from './tenant.service'
+export { default as UserService } from './user.service'
+export { default as RoleService } from './role.service'
+export { default as ConfigService } from './config.service'
+export { default as InstanceService } from './instance.service'
+export { default as SettingsService } from './settings.service'

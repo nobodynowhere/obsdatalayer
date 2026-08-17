@@ -2,8 +2,8 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"net/url"
-	"os"
 	"regexp"
 	"time"
 
@@ -45,18 +45,56 @@ func (d Duration) MarshalYAML() ([]byte, error) {
 	return []byte(time.Duration(d).String()), nil
 }
 
+// Config is the runtime configuration read from the database. It is a
+// projection of the database tables, not a user-authored document.
 type Config struct {
-	Version   int                        `yaml:"version"`
 	Gateway   GatewayConfig              `yaml:"gateway"`
 	Instances []*InstanceConfig          `yaml:"instances"`
 	ByName    map[string]*InstanceConfig `yaml:"-"`
 }
 
+// TenantRegistry validates that tenant references name registered tenants.
+// Implemented by tenant.Store; kept as an interface so config does not depend
+// on the tenant package's concrete type.
+type TenantRegistry interface {
+	ValidateAll(refs []string) error
+}
+
+// tenantRefs returns every tenant reference in the config.
+func (c *Config) tenantRefs() []string {
+	var refs []string
+	for _, inst := range c.Instances {
+		if inst.TenantID != "" {
+			refs = append(refs, inst.TenantID)
+		}
+		for _, pt := range inst.PushURLs {
+			if pt.TenantID != "" {
+				refs = append(refs, pt.TenantID)
+			}
+		}
+	}
+	return refs
+}
+
+// ValidateTenants rejects a config that references an unregistered tenant.
+func (c *Config) ValidateTenants(reg TenantRegistry) error {
+	if reg == nil {
+		return nil
+	}
+	if err := reg.ValidateAll(c.tenantRefs()); err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+	return nil
+}
+
+// GatewayConfig is the runtime gateway configuration stored in the database.
+// Listener addresses are deliberately absent: they are process-level concerns
+// owned by the bootstrap file (see GatewayBootstrap), not hot-reloadable state.
 type GatewayConfig struct {
-	Port         int           `yaml:"port"`
-	AdminPort    int           `yaml:"admin_port"`
-	MaxBodyBytes int64         `yaml:"max_body_bytes"`
-	Timeouts     TimeoutConfig `yaml:"timeouts"`
+	MaxBodyBytes   int64         `yaml:"max_body_bytes"`
+	Timeouts       TimeoutConfig `yaml:"timeouts"`
+	LogLevel       string        `yaml:"log_level"`
+	ReloadInterval Duration      `yaml:"reload_interval"`
 }
 
 type TimeoutConfig struct {
@@ -91,31 +129,6 @@ type FilterConfig struct {
 	Names []string `yaml:"names"`
 }
 
-// ResolvedTarget is a push target with effective auth (instance defaults applied).
-type ResolvedTarget struct {
-	URL       string
-	BasicAuth string
-	TenantID  string
-}
-
-// Load reads a legacy YAML gateway config from path, validates it and builds the runtime view.
-func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read config: %w", err)
-	}
-	return LoadYAML(data)
-}
-
-// LoadYAML parses a YAML gateway config, applies defaults, validates and builds ByName.
-func LoadYAML(data []byte) (*Config, error) {
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parse config: %w", err)
-	}
-	return New(&cfg)
-}
-
 // New validates and finalizes a Config in preparation for use.
 func New(cfg *Config) (*Config, error) {
 	applyDefaults(cfg)
@@ -127,12 +140,6 @@ func New(cfg *Config) (*Config, error) {
 }
 
 func applyDefaults(cfg *Config) {
-	if cfg.Gateway.Port == 0 {
-		cfg.Gateway.Port = 8080
-	}
-	if cfg.Gateway.AdminPort == 0 {
-		cfg.Gateway.AdminPort = 9091
-	}
 	if cfg.Gateway.MaxBodyBytes == 0 {
 		cfg.Gateway.MaxBodyBytes = 32 * 1024 * 1024 // 32 MiB
 	}
@@ -141,6 +148,12 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Gateway.Timeouts.Push == 0 {
 		cfg.Gateway.Timeouts.Push = Duration(60 * time.Second)
+	}
+	if cfg.Gateway.LogLevel == "" {
+		cfg.Gateway.LogLevel = "info"
+	}
+	if cfg.Gateway.ReloadInterval == 0 {
+		cfg.Gateway.ReloadInterval = Duration(30 * time.Second)
 	}
 	for _, inst := range cfg.Instances {
 		if inst.FanOutMode == "" && len(inst.PushURLs) > 0 {
@@ -157,17 +170,32 @@ func buildByName(instances []*InstanceConfig) map[string]*InstanceConfig {
 	return byName
 }
 
+// validateGateway checks the settings that apply to the gateway as a whole.
+func validateGateway(g *GatewayConfig) error {
+	if g.MaxBodyBytes < 0 {
+		return fmt.Errorf("config: max_body_bytes must not be negative")
+	}
+	if g.Timeouts.Query <= 0 || g.Timeouts.Push <= 0 {
+		return fmt.Errorf("config: timeouts must be positive")
+	}
+	if g.ReloadInterval <= 0 {
+		return fmt.Errorf("config: reload_interval must be positive")
+	}
+	var lvl slog.Level
+	if err := lvl.UnmarshalText([]byte(g.LogLevel)); err != nil {
+		return fmt.Errorf("config: invalid log_level %q (debug, info, warn or error)", g.LogLevel)
+	}
+	return nil
+}
+
 func validate(cfg *Config) error {
-	// 1. version must be 1
-	if cfg.Version != 1 {
-		return fmt.Errorf("config: version must be 1, got %d", cfg.Version)
+	if err := validateGateway(&cfg.Gateway); err != nil {
+		return err
 	}
 
-	// 2. no instances
-	if len(cfg.Instances) == 0 {
-		return fmt.Errorf("config: no instances defined")
-	}
-
+	// An empty instance list is a legitimate state: a freshly installed gateway
+	// has none until an operator adds them through the admin API. Rejecting it
+	// would make removing the last instance an unrecoverable reload failure.
 	names := make(map[string]struct{})
 	for _, inst := range cfg.Instances {
 		// 3. invalid name pattern (checked before duplicate to give clearer errors)
@@ -236,13 +264,13 @@ func validate(cfg *Config) error {
 
 		// 14. URL format validation
 		if inst.URL != "" {
-			if _, err := url.ParseRequestURI(inst.URL); err != nil {
-				return fmt.Errorf("config: instance %q url is not a valid URL: %w", inst.Name, err)
+			if err := validateUpstreamURL(inst.URL); err != nil {
+				return fmt.Errorf("config: instance %q url is invalid: %w", inst.Name, err)
 			}
 		}
 		for i, pt := range inst.PushURLs {
-			if _, err := url.ParseRequestURI(pt.URL); err != nil {
-				return fmt.Errorf("config: instance %q push_urls[%d] is not a valid URL: %w", inst.Name, i, err)
+			if err := validateUpstreamURL(pt.URL); err != nil {
+				return fmt.Errorf("config: instance %q push_urls[%d] is invalid: %w", inst.Name, i, err)
 			}
 		}
 	}
@@ -250,8 +278,33 @@ func validate(cfg *Config) error {
 	return nil
 }
 
+// validateUpstreamURL rejects anything that cannot be used as an upstream base
+// URL. url.ParseRequestURI alone is too permissive: it accepts bare paths
+// ("/foo"), protocol-relative URLs ("//host/path") and arbitrary schemes
+// ("ftp://x"), all of which parse cleanly here and then fail at request time.
+func validateUpstreamURL(raw string) error {
+	u, err := url.ParseRequestURI(raw)
+	if err != nil {
+		return err
+	}
+	switch u.Scheme {
+	case "http", "https":
+	case "":
+		return fmt.Errorf("%q is missing an http:// or https:// scheme", raw)
+	default:
+		return fmt.Errorf("unsupported scheme %q (must be http or https)", u.Scheme)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("%q has no host", raw)
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("%q must not contain a query string or fragment", raw)
+	}
+	return nil
+}
+
 // resolveTarget merges per-target auth with instance-level defaults.
-func resolveTarget(pt PushTarget, instBasicAuth, instTenantID string) ResolvedTarget {
+func resolveTarget(pt PushTarget, instBasicAuth, instTenantID string) PushTarget {
 	basicAuth := pt.BasicAuth
 	if basicAuth == "" {
 		basicAuth = instBasicAuth
@@ -260,25 +313,25 @@ func resolveTarget(pt PushTarget, instBasicAuth, instTenantID string) ResolvedTa
 	if tenantID == "" {
 		tenantID = instTenantID
 	}
-	return ResolvedTarget{URL: pt.URL, BasicAuth: basicAuth, TenantID: tenantID}
+	return PushTarget{URL: pt.URL, BasicAuth: basicAuth, TenantID: tenantID}
 }
 
 // GetPushTargets returns resolved push targets with effective auth.
-func (inst *InstanceConfig) GetPushTargets() []ResolvedTarget {
+func (inst *InstanceConfig) GetPushTargets() []PushTarget {
 	if len(inst.PushURLs) > 0 {
-		targets := make([]ResolvedTarget, len(inst.PushURLs))
+		targets := make([]PushTarget, len(inst.PushURLs))
 		for i, pt := range inst.PushURLs {
 			targets[i] = resolveTarget(pt, inst.BasicAuth, inst.TenantID)
 		}
 		return targets
 	}
-	return []ResolvedTarget{{URL: inst.URL, BasicAuth: inst.BasicAuth, TenantID: inst.TenantID}}
+	return []PushTarget{{URL: inst.URL, BasicAuth: inst.BasicAuth, TenantID: inst.TenantID}}
 }
 
 // GetQueryTarget returns the query target (first push target or single URL).
-func (inst *InstanceConfig) GetQueryTarget() ResolvedTarget {
+func (inst *InstanceConfig) GetQueryTarget() PushTarget {
 	if len(inst.PushURLs) > 0 {
 		return resolveTarget(inst.PushURLs[0], inst.BasicAuth, inst.TenantID)
 	}
-	return ResolvedTarget{URL: inst.URL, BasicAuth: inst.BasicAuth, TenantID: inst.TenantID}
+	return PushTarget{URL: inst.URL, BasicAuth: inst.BasicAuth, TenantID: inst.TenantID}
 }

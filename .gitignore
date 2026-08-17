@@ -1,0 +1,25 @@
+# Build output
+/build/
+/gateway
+/obsgateway
+*.test
+/samples/*
+# Local state — a SQLite config DB holds bcrypt hashes and upstream credentials
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.obsgateway-admin-password
+
+# UI
+ui/node_modules/
+ui/.vite/
+
+# The embedded UI bundle is a build artifact produced by `npm run build` in ui/.
+# Only .gitkeep is tracked: it keeps the directory present so the //go:embed
+# directive compiles on a fresh clone. Until the UI is built, /ui/ answers with
+# a "ui not built" message rather than failing the Go build.
+internal/ui/dist/*
+!internal/ui/dist/.gitkeep
+
+.DS_Store

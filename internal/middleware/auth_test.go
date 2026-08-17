@@ -1,20 +1,15 @@
 package middleware_test
 
 import (
-	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"golang.org/x/crypto/bcrypt"
-
 	"obsdatalayer/internal/auth"
+	"obsdatalayer/internal/auth/authtest"
 	"obsdatalayer/internal/middleware"
 )
-
-// ---- helpers ---------------------------------------------------------------
 
 func newHandlerCalledFlag() (http.Handler, *bool) {
 	called := false
@@ -25,63 +20,24 @@ func newHandlerCalledFlag() (http.Handler, *bool) {
 	return h, &called
 }
 
-// makeTestUserFile creates a *auth.UserFile with a single user "testuser"/"testpass"
-// who has wildcard access to all backends/actions for tenant "test-tenant".
-func makeTestUserFile(t *testing.T) *auth.UserFile {
+func decodeError(t *testing.T, rec *httptest.ResponseRecorder) string {
 	t.Helper()
-	hash, err := bcrypt.GenerateFromPassword([]byte("testpass"), bcrypt.MinCost)
-	if err != nil {
-		t.Fatalf("bcrypt: %v", err)
+	var body map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode body: %v", err)
 	}
-	uf, err := auth.New([]*auth.User{{
-		Name:           "testuser",
-		PasswordBcrypt: string(hash),
-		Policies: []auth.Policy{{
-			Backends:  []string{"*"},
-			Actions:   []string{"read", "write"},
-			TenantIDs: []string{"test-tenant"},
-		}},
-	}})
-	if err != nil {
-		t.Fatalf("auth.New: %v", err)
-	}
-	return uf
+	return body["error"]
 }
 
-// makeTestUserFileNoWrite creates a user who can only read.
-func makeTestUserFileNoWrite(t *testing.T) *auth.UserFile {
-	t.Helper()
-	hash, err := bcrypt.GenerateFromPassword([]byte("testpass"), bcrypt.MinCost)
-	if err != nil {
-		t.Fatalf("bcrypt: %v", err)
-	}
-	uf, err := auth.New([]*auth.User{{
-		Name:           "readonly",
-		PasswordBcrypt: string(hash),
-		Policies: []auth.Policy{{
-			Backends:  []string{"loki"},
-			Actions:   []string{"read"},
-			TenantIDs: []string{"test-tenant"},
-		}},
-	}})
-	if err != nil {
-		t.Fatalf("auth.New: %v", err)
-	}
-	return uf
-}
-
-func basicAuthHeader(user, pass string) string {
-	return "Basic " + base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", user, pass)))
-}
-
-// ---- tests -----------------------------------------------------------------
+// ---- BasicAuth (data plane) -------------------------------------------------
 
 func TestBasicAuthValidCreds(t *testing.T) {
 	inner, called := newHandlerCalledFlag()
-	h := middleware.BasicAuth(makeTestUserFile(t), inner)
+	stub := authtest.New()
+	h := middleware.BasicAuth(stub, inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
-	req.Header.Set("Authorization", basicAuthHeader("testuser", "testpass"))
+	req.Header.Set("Authorization", stub.Header())
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -95,27 +51,10 @@ func TestBasicAuthValidCreds(t *testing.T) {
 
 func TestBasicAuthWrongPassword(t *testing.T) {
 	inner, called := newHandlerCalledFlag()
-	h := middleware.BasicAuth(makeTestUserFile(t), inner)
+	h := middleware.BasicAuth(authtest.New(), inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
-	req.Header.Set("Authorization", basicAuthHeader("testuser", "wrongpassword"))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("expected 401, got %d", rec.Code)
-	}
-	if *called {
-		t.Error("expected inner handler NOT to be called")
-	}
-}
-
-func TestBasicAuthUnknownUser(t *testing.T) {
-	inner, called := newHandlerCalledFlag()
-	h := middleware.BasicAuth(makeTestUserFile(t), inner)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
-	req.Header.Set("Authorization", basicAuthHeader("nobody", "testpass"))
+	req.Header.Set("Authorization", authtest.BasicHeader("testuser", "nope"))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -129,7 +68,7 @@ func TestBasicAuthUnknownUser(t *testing.T) {
 
 func TestBasicAuthMissingHeader(t *testing.T) {
 	inner, called := newHandlerCalledFlag()
-	h := middleware.BasicAuth(makeTestUserFile(t), inner)
+	h := middleware.BasicAuth(authtest.New(), inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
 	rec := httptest.NewRecorder()
@@ -141,22 +80,20 @@ func TestBasicAuthMissingHeader(t *testing.T) {
 	if *called {
 		t.Error("expected inner handler NOT to be called")
 	}
-	var body map[string]string
-	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
-		t.Fatalf("decode body: %v", err)
-	}
-	if body["error"] != "unauthorized" {
-		t.Errorf("expected error='unauthorized', got %q", body["error"])
+	if got := decodeError(t, rec); got != "unauthorized" {
+		t.Errorf("expected error='unauthorized', got %q", got)
 	}
 }
 
-func TestBasicAuthForbiddenNoPolicy(t *testing.T) {
+func TestBasicAuthForbiddenWhenNoGrant(t *testing.T) {
 	inner, called := newHandlerCalledFlag()
-	// User can only read loki, not write.
-	h := middleware.BasicAuth(makeTestUserFileNoWrite(t), inner)
+	stub := authtest.New()
+	// Read-only: no loki:write grant.
+	stub.Allow = map[string]bool{"loki:read": true}
+	h := middleware.BasicAuth(stub, inner)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/loki-prod/loki/push", nil)
-	req.Header.Set("Authorization", basicAuthHeader("readonly", "testpass"))
+	req.Header.Set("Authorization", stub.Header())
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -166,21 +103,16 @@ func TestBasicAuthForbiddenNoPolicy(t *testing.T) {
 	if *called {
 		t.Error("expected inner handler NOT to be called on 403")
 	}
-	var body map[string]string
-	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
-		t.Fatalf("decode body: %v", err)
-	}
-	if body["error"] != "forbidden" {
-		t.Errorf("expected error='forbidden', got %q", body["error"])
+	if got := decodeError(t, rec); got != "forbidden" {
+		t.Errorf("expected error='forbidden', got %q", got)
 	}
 }
 
 func TestBasicAuthSkipsHealthz(t *testing.T) {
 	inner, called := newHandlerCalledFlag()
-	h := middleware.BasicAuth(makeTestUserFile(t), inner)
+	h := middleware.BasicAuth(authtest.New(), inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
-	// No Authorization header
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -192,78 +124,188 @@ func TestBasicAuthSkipsHealthz(t *testing.T) {
 	}
 }
 
-func TestBasicAuthContextHasRequestAuth(t *testing.T) {
-	var capturedRA *auth.RequestAuth
+func TestBasicAuthAttachesRequestAuth(t *testing.T) {
+	var captured *auth.RequestAuth
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedRA = auth.FromContext(r.Context())
+		captured = auth.FromContext(r.Context())
 		w.WriteHeader(http.StatusOK)
 	})
-	h := middleware.BasicAuth(makeTestUserFile(t), inner)
+	stub := authtest.New()
+	h := middleware.BasicAuth(stub, inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
-	req.Header.Set("Authorization", basicAuthHeader("testuser", "testpass"))
+	req.Header.Set("Authorization", stub.Header())
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
-	}
-	if capturedRA == nil {
+	if captured == nil {
 		t.Fatal("expected RequestAuth in context, got nil")
 	}
-	if capturedRA.Username != "testuser" {
-		t.Errorf("expected username 'testuser', got %q", capturedRA.Username)
+	if captured.Username != "testuser" {
+		t.Errorf("expected username 'testuser', got %q", captured.Username)
 	}
-	if !capturedRA.IsRead {
-		t.Error("expected IsRead=true for GET request")
+	if !captured.IsRead {
+		t.Error("expected IsRead=true for GET")
 	}
-	if len(capturedRA.TenantIDs) == 0 {
-		t.Error("expected non-empty TenantIDs")
-	}
-	if capturedRA.TenantIDs[0] != "test-tenant" {
-		t.Errorf("expected TenantIDs[0]='test-tenant', got %q", capturedRA.TenantIDs[0])
+	if len(captured.TenantIDs) != 1 || captured.TenantIDs[0] != "test-tenant" {
+		t.Errorf("expected [test-tenant], got %v", captured.TenantIDs)
 	}
 }
 
-func TestBasicAuthWriteContextNotIsRead(t *testing.T) {
-	var capturedRA *auth.RequestAuth
+func TestBasicAuthPostIsWrite(t *testing.T) {
+	var captured *auth.RequestAuth
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedRA = auth.FromContext(r.Context())
+		captured = auth.FromContext(r.Context())
 		w.WriteHeader(http.StatusOK)
 	})
-	h := middleware.BasicAuth(makeTestUserFile(t), inner)
+	stub := authtest.New()
+	h := middleware.BasicAuth(stub, inner)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/loki-prod/loki/push", nil)
-	req.Header.Set("Authorization", basicAuthHeader("testuser", "testpass"))
+	req.Header.Set("Authorization", stub.Header())
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if captured == nil {
+		t.Fatal("expected RequestAuth in context")
+	}
+	if captured.IsRead {
+		t.Error("expected IsRead=false for POST")
+	}
+}
+
+func TestBasicAuthUnauthorizedHeaders(t *testing.T) {
+	inner, _ := newHandlerCalledFlag()
+	h := middleware.BasicAuth(authtest.New(), inner)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Header().Get("WWW-Authenticate") == "" {
+		t.Error("expected WWW-Authenticate header on 401")
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("expected Content-Type application/json, got %q", ct)
+	}
+}
+
+// ---- AdminAuth (admin plane) ------------------------------------------------
+
+func TestAdminAuthAllowsAdmin(t *testing.T) {
+	inner, called := newHandlerCalledFlag()
+	stub := authtest.NewAdmin()
+	h := middleware.AdminAuth(stub, inner)
+
+	req := httptest.NewRequest(http.MethodGet, "/config", nil)
+	req.Header.Set("Authorization", stub.Header())
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
+		t.Errorf("expected 200, got %d", rec.Code)
 	}
-	if capturedRA == nil {
-		t.Fatal("expected RequestAuth in context")
-	}
-	if capturedRA.IsRead {
-		t.Error("expected IsRead=false for POST request")
+	if !*called {
+		t.Error("expected inner handler to be called")
 	}
 }
 
-func TestBasicAuthUnauthorizedHasWWWAuthenticate(t *testing.T) {
-	inner, _ := newHandlerCalledFlag()
-	h := middleware.BasicAuth(makeTestUserFile(t), inner)
+func TestAdminAuthRejectsNonAdmin(t *testing.T) {
+	inner, called := newHandlerCalledFlag()
+	stub := authtest.New() // valid credentials, no admin grant
+	h := middleware.AdminAuth(stub, inner)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
+	req := httptest.NewRequest(http.MethodGet, "/config", nil)
+	req.Header.Set("Authorization", stub.Header())
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for authenticated non-admin, got %d", rec.Code)
+	}
+	if *called {
+		t.Error("expected inner handler NOT to be called")
+	}
+}
+
+// Metrics and health on the admin listener must not be reachable anonymously:
+// the fan-out metrics carry upstream backend URLs.
+func TestAdminAuthProtectsMetricsAndHealthz(t *testing.T) {
+	for _, path := range []string{"/metrics", "/healthz"} {
+		t.Run(path, func(t *testing.T) {
+			inner, called := newHandlerCalledFlag()
+			h := middleware.AdminAuth(authtest.NewAdmin(), inner)
+
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Errorf("expected 401 for anonymous %s, got %d", path, rec.Code)
+			}
+			if *called {
+				t.Errorf("expected handler NOT to be called for anonymous %s", path)
+			}
+		})
+	}
+}
+
+func TestAdminAuthRejectsBadPassword(t *testing.T) {
+	inner, _ := newHandlerCalledFlag()
+	h := middleware.AdminAuth(authtest.NewAdmin(), inner)
+
+	req := httptest.NewRequest(http.MethodGet, "/config", nil)
+	req.Header.Set("Authorization", authtest.BasicHeader("testuser", "wrong"))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401, got %d", rec.Code)
 	}
-	if rec.Header().Get("WWW-Authenticate") == "" {
-		t.Error("expected WWW-Authenticate header on 401")
+}
+
+// ---- UI bundle exemption ----------------------------------------------------
+
+// The SPA shell and its assets are served anonymously: a browser cannot supply
+// Basic auth for the initial document load, and the bundle carries no tenant
+// data. Everything it displays still comes from authenticated endpoints.
+func TestAdminAuthServesUIWithoutCredentials(t *testing.T) {
+	for _, path := range []string{"/", "/ui/", "/ui/assets/index-abc123.js", "/ui/tenants"} {
+		t.Run(path, func(t *testing.T) {
+			inner, called := newHandlerCalledFlag()
+			h := middleware.AdminAuth(authtest.NewAdmin(), inner)
+
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Errorf("expected 200 for anonymous %s, got %d", path, rec.Code)
+			}
+			if !*called {
+				t.Errorf("expected the UI handler to be reached for %s", path)
+			}
+		})
 	}
-	if rec.Header().Get("Content-Type") != "application/json" {
-		t.Errorf("expected Content-Type application/json on 401, got %q", rec.Header().Get("Content-Type"))
+}
+
+// The exemption must be scoped to the bundle and nothing else.
+func TestAdminAuthExemptionDoesNotLeakToAPI(t *testing.T) {
+	for _, path := range []string{"/tenants", "/users", "/roles", "/config", "/whoami", "/uiconfig"} {
+		t.Run(path, func(t *testing.T) {
+			inner, called := newHandlerCalledFlag()
+			h := middleware.AdminAuth(authtest.NewAdmin(), inner)
+
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Errorf("expected 401 for anonymous %s, got %d", path, rec.Code)
+			}
+			if *called {
+				t.Errorf("handler must not be reached anonymously for %s", path)
+			}
+		})
 	}
 }

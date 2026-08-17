@@ -1,0 +1,203 @@
+:root {
+  --app-header-height: 3.5rem;
+  --app-surface: #ffffff;
+  --app-surface-muted: #f7f8f9;
+  --app-border: #d2d4d6;
+  --app-text: #1f2023;
+  --app-text-muted: #6b7280;
+}
+
+.my-app-dark {
+  --app-surface: #18181b;
+  --app-surface-muted: #202024;
+  --app-border: #3f3f46;
+  --app-text: rgba(255, 255, 255, 0.87);
+  --app-text-muted: #a1a1aa;
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background: var(--app-surface-muted);
+  color: var(--app-text);
+}
+
+.dds__template--productivity,
+.app-main,
+.app-header,
+.page-title h1,
+.stat-card,
+.stat-card__value,
+.code-block,
+.login-card,
+.login-card h1 {
+  color: var(--app-text);
+}
+
+.my-app-dark body,
+.my-app-dark .dds__template--productivity {
+  background: var(--app-surface-muted);
+}
+
+/* DDS side-nav ships light-mode colours; retint it for the dark palette. */
+.my-app-dark .dds__side-nav,
+.my-app-dark .dds__side-nav__wrapper {
+  background: var(--app-surface);
+  color: var(--app-text);
+}
+
+.my-app-dark .dds__side-nav__item a,
+.my-app-dark .dds__side-nav__item a:visited {
+  color: var(--app-text);
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  height: var(--app-header-height);
+  padding: 0 1rem;
+  background: var(--app-surface);
+  border-bottom: 1px solid var(--app-border);
+}
+
+.app-header__brand {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-weight: 500;
+}
+
+.app-header__logo { height: 1.5rem; }
+
+.app-header__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.app-main {
+  padding: 1.25rem;
+  max-width: 1600px;
+}
+
+.page-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.page-title h1 {
+  font-size: 1.35rem;
+  font-weight: 500;
+  margin: 0;
+}
+
+.page-title p {
+  margin: 0.25rem 0 0;
+  color: var(--app-text-muted);
+  font-size: 0.875rem;
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.stat-card {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  padding: 1rem 1.25rem;
+}
+
+.stat-card__label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--app-text-muted);
+}
+
+.stat-card__value {
+  font-size: 1.9rem;
+  font-weight: 300;
+  line-height: 1.2;
+  margin-top: 0.25rem;
+}
+
+.stat-card__hint {
+  font-size: 0.8rem;
+  color: var(--app-text-muted);
+}
+
+.form-grid {
+  display: grid;
+  gap: 1rem;
+  min-width: 28rem;
+}
+
+.form-field { display: flex; flex-direction: column; gap: 0.35rem; }
+.form-field > label { font-size: 0.85rem; font-weight: 500; }
+.form-field small { color: var(--app-text-muted); }
+
+.grant-row {
+  display: grid;
+  grid-template-columns: 9rem 8rem minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: start;
+}
+
+/* Grid items default to min-width:auto; without this the tenant MultiSelect
+   grows with its chips and pushes the remove button outside the dialog. */
+.grant-row > * { min-width: 0; }
+.grant-row .p-multiselect { width: 100%; }
+
+.form-grid { max-width: 100%; }
+
+.mono {
+  font-family: var(--font-family-monospace, monospace);
+  font-size: 0.8rem;
+}
+
+.code-block {
+  background: var(--app-surface-muted);
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  padding: 1rem;
+  overflow: auto;
+  max-height: 70vh;
+  font-family: var(--font-family-monospace, monospace);
+  font-size: 0.8rem;
+  white-space: pre;
+  margin: 0;
+}
+
+.login-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background: var(--app-surface-muted);
+}
+
+.login-card {
+  width: min(26rem, 92vw);
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  padding: 2rem;
+}
+
+.login-card__logo { height: 1.75rem; margin-bottom: 1.25rem; }
+.login-card h1 { font-size: 1.15rem; font-weight: 500; margin: 0 0 0.25rem; }
+.login-card p { margin: 0 0 1.5rem; color: var(--app-text-muted); font-size: 0.85rem; }
+
+.empty-state {
+  padding: 2rem;
+  text-align: center;
+  color: var(--app-text-muted);
+}

@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"obsdatalayer/internal/config"
 	"obsdatalayer/internal/metrics"
@@ -63,7 +65,7 @@ func getInstance(h *config.ConfigHolder, r *http.Request, w http.ResponseWriter,
 func Do(
 	ctx context.Context,
 	inst *config.InstanceConfig,
-	targets []config.ResolvedTarget,
+	targets []config.PushTarget,
 	body []byte,
 	originalHeaders http.Header,
 	upstreamPath string,
@@ -75,7 +77,7 @@ func Do(
 	var wg sync.WaitGroup
 	for i, target := range targets {
 		wg.Add(1)
-		go func(idx int, tgt config.ResolvedTarget) {
+		go func(idx int, tgt config.PushTarget) {
 			defer wg.Done()
 			results[idx] = doSingleTarget(ctx, inst, tgt, body, originalHeaders, upstreamPath, client)
 		}(i, target)
@@ -96,6 +98,10 @@ func Do(
 				if strings.Contains(strings.ToLower(string(r.Body)), pattern) {
 					r.Suppressed = true
 					m.RecordSuppressed(inst.Name, r.URL, pattern)
+					// Suppressed errors are reported to the client as success,
+					// so leave a trace of what was swallowed.
+					slog.Debug("suppressed upstream error",
+						"instance", inst.Name, "target", r.URL, "pattern", pattern)
 					break
 				}
 			}
@@ -106,6 +112,9 @@ func Do(
 	if mode == "" {
 		mode = "any"
 	}
+	slog.Debug("fan-out complete",
+		"instance", inst.Name, "mode", mode, "targets", len(targets),
+		"body_bytes", len(body))
 	if mode == "all" {
 		return doAllMode(inst, results)
 	}
@@ -135,12 +144,19 @@ func handlePush(w http.ResponseWriter, r *http.Request, inst *config.InstanceCon
 		if errors.As(err, &mbe) {
 			status = http.StatusRequestEntityTooLarge
 			msg = "request body too large"
+			slog.Debug("push rejected: body over limit",
+				"instance", inst.Name, "limit_bytes", maxBodyBytes)
 		}
 		proxy.WriteJSONError(w, status, map[string]string{"error": msg})
 		return
 	}
 	if inst.Labels != nil {
+		before := len(body)
 		body, err = rewriteFn(body)
+		if err == nil {
+			slog.Debug("rewrote push labels",
+				"instance", inst.Name, "bytes_before", before, "bytes_after", len(body))
+		}
 		if err != nil {
 			proxy.WriteJSONError(w, http.StatusBadRequest, map[string]string{
 				"error": "label rewrite failed", "detail": err.Error(),
@@ -214,7 +230,7 @@ func doAllMode(inst *config.InstanceConfig, results []TargetResult) (int, []byte
 func doSingleTarget(
 	ctx context.Context,
 	inst *config.InstanceConfig,
-	target config.ResolvedTarget,
+	target config.PushTarget,
 	body []byte,
 	originalHeaders http.Header,
 	upstreamPath string,
@@ -229,11 +245,19 @@ func doSingleTarget(
 
 	proxy.CopyHeadersForUpstream(req, originalHeaders, target)
 
+	started := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
+		slog.Debug("fan-out target failed",
+			"instance", inst.Name, "target", url,
+			"duration", time.Since(started), "error", err)
 		return TargetResult{URL: url, Err: err}
 	}
 	defer resp.Body.Close()
+
+	slog.Debug("fan-out target responded",
+		"instance", inst.Name, "target", url,
+		"status", resp.StatusCode, "duration", time.Since(started))
 
 	respBody, _ := io.ReadAll(resp.Body)
 	headers := make(http.Header, len(resp.Header))

@@ -2,10 +2,14 @@ package db
 
 import (
 	"fmt"
+	"log"
+	"os"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 // DSN holds the database connection settings.
@@ -27,7 +31,22 @@ func Open(d DSN) (*gorm.DB, error) {
 		return nil, fmt.Errorf("unsupported db type %q", d.Type)
 	}
 
-	db, err := gorm.Open(dialector, &gorm.Config{})
+	// TranslateError maps driver-specific constraint violations onto GORM's
+	// sentinel errors (gorm.ErrDuplicatedKey and friends). Without it, callers
+	// are forced into matching driver error strings, which differ between
+	// SQLite ("UNIQUE constraint failed") and Postgres ("duplicate key value").
+	//
+	// IgnoreRecordNotFoundError keeps "record not found" out of the log: the
+	// gateway uses First() as an existence check during bootstrap and seeding,
+	// so a miss is an expected outcome, not an error worth alarming an operator.
+	db, err := gorm.Open(dialector, &gorm.Config{
+		TranslateError: true,
+		Logger: logger.New(log.New(os.Stderr, "", log.LstdFlags), logger.Config{
+			SlowThreshold:             200 * time.Millisecond,
+			LogLevel:                  logger.Warn,
+			IgnoreRecordNotFoundError: true,
+		}),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
@@ -51,10 +70,8 @@ func Migrate(db *gorm.DB) error {
 		&Filter{},
 		&FilterName{},
 		&LabelInject{},
+		&Tenant{},
 		&User{},
-		&Policy{},
-		&PolicyBackend{},
-		&PolicyAction{},
-		&PolicyTenantID{},
+		&Role{},
 	)
 }

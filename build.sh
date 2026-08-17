@@ -6,6 +6,7 @@ package_name=obsgateway
 # Parse flags
 skip_rpm=false
 skip_container=false
+skip_ui=false
 for arg in "$@"; do
     case $arg in
         -skiprpm)
@@ -13,6 +14,9 @@ for arg in "$@"; do
             ;;
         -skipcontainer)
             skip_container=true
+            ;;
+        -skipui)
+            skip_ui=true
             ;;
     esac
 done
@@ -24,6 +28,31 @@ echo Building::
 echo  - Version $package_version
 echo  - Commit $commit
 echo  - Build Time $buildtime
+
+# Build the admin UI. The bundle is compiled into the binary from
+# internal/ui/dist, so it has to be produced before the Go build below.
+# Use -skipui to reuse the bundle already in the tree.
+if [ "$skip_ui" = false ]; then
+    echo "Building UI..."
+    # npm ci needs a lock file that matches package.json. No lock is committed
+    # yet because @dds/components resolves only from Dell's internal registry;
+    # the first npm install on a machine with access writes one, and it should
+    # be committed so later builds are reproducible.
+    if [ -f ui/package-lock.json ]; then
+        (cd ui && npm ci --no-audit --no-fund && npm run build)
+    else
+        echo "No ui/package-lock.json found; using npm install (commit the lock it generates)."
+        (cd ui && npm install --no-audit --no-fund && npm run build)
+    fi
+    if [ $? -ne 0 ]; then
+        echo 'An error has occurred! Aborting the script execution...'
+        exit 1
+    fi
+fi
+
+if [ ! -f internal/ui/dist/index.html ]; then
+    echo "Warning: no UI bundle in internal/ui/dist; /ui/ will report 'ui not built'."
+fi
 
 for platform in "${platforms[@]}"
 do
