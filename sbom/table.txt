@@ -1,167 +1,169 @@
-NAME                                 VERSION                             TYPE       
-@babel/generator                     8.0.0                               npm        
-@babel/helper-string-parser          7.29.7                              npm        
-@babel/helper-string-parser          8.0.0                               npm        
-@babel/helper-validator-identifier   7.29.7                              npm        
-@babel/helper-validator-identifier   8.0.4                               npm        
-@babel/parser                        7.29.8                              npm        
-@babel/parser                        8.0.4                               npm        
-@babel/types                         7.29.8                              npm        
-@babel/types                         8.0.4                               npm        
-@jridgewell/gen-mapping              0.3.13                              npm        
-@jridgewell/remapping                2.3.5                               npm        
-@jridgewell/resolve-uri              3.1.2                               npm        
-@jridgewell/sourcemap-codec          1.5.5                               npm        
-@jridgewell/trace-mapping            0.3.31                              npm        
-@oxc-project/types                   0.144.0                             npm        
-@primeuix/styled                     0.7.4                               npm        
-@primeuix/styles                     2.0.3                               npm        
-@primeuix/themes                     2.0.3                               npm        
-@primeuix/utils                      0.6.4                               npm        
-@primevue/core                       4.5.5                               npm        
-@primevue/icons                      4.5.5                               npm        
-@rolldown/pluginutils                1.0.1                               npm        
-@types/jsesc                         2.5.1                               npm        
-@vue-macros/common                   3.1.4                               npm        
-@vue/compiler-core                   3.5.41                              npm        
-@vue/compiler-dom                    3.5.41                              npm        
-@vue/compiler-sfc                    3.5.41                              npm        
-@vue/compiler-ssr                    3.5.41                              npm        
-@vue/devtools-api                    8.2.1                               npm        
-@vue/devtools-kit                    8.2.1                               npm        
-@vue/devtools-shared                 8.2.1                               npm        
-@vue/reactivity                      3.5.41                              npm        
-@vue/runtime-core                    3.5.41                              npm        
-@vue/runtime-dom                     3.5.41                              npm        
-@vue/server-renderer                 3.5.41                              npm        
-@vue/shared                          3.5.41                              npm        
-acorn                                8.18.0                              npm        
-agent-base                           6.0.2                               npm        
-ast-kit                              2.2.0                               npm        
-ast-walker-scope                     0.9.0                               npm        
-asynckit                             0.4.0                               npm        
-axios                                1.19.0                              npm        
-birpc                                2.9.0                               npm        
-call-bind-apply-helpers              1.0.2                               npm        
-chokidar                             5.0.0                               npm        
-combined-stream                      1.0.8                               npm        
-confbox                              0.1.8                               npm        
-confbox                              0.2.4                               npm        
-csstype                              3.2.3                               npm        
-debug                                4.4.3                               npm        
-defu                                 6.1.7                               npm        
-delayed-stream                       1.0.0                               npm        
-detect-libc                          2.1.2                               npm        
-dunder-proto                         1.0.1                               npm        
-entities                             7.0.1                               npm        
-es-define-property                   1.0.1                               npm        
-es-errors                            1.3.0                               npm        
-es-object-atoms                      1.1.2                               npm        
-es-set-tostringtag                   2.1.0                               npm        
-estree-walker                        2.0.2                               npm        
-exsolve                              1.1.1                               npm        
-fdir                                 6.5.0                               npm        
-filippo.io/edwards25519              v1.2.0                              go-module  
-follow-redirects                     1.16.0                              npm        
-form-data                            4.0.6                               npm        
-function-bind                        1.1.2                               npm        
-get-intrinsic                        1.3.0                               npm        
-get-proto                            1.0.1                               npm        
-github.com/beorn7/perks              v1.0.1                              go-module  
-github.com/bmatcuk/doublestar/v4     v4.10.0                             go-module  
-github.com/casbin/casbin/v3          v3.11.0                             go-module  
-github.com/casbin/gorm-adapter/v3    v3.41.0                             go-module  
-github.com/casbin/govaluate          v1.10.0                             go-module  
-github.com/cespare/xxhash/v2         v2.3.0                              go-module  
-github.com/dustin/go-humanize        v1.0.1                              go-module  
-github.com/glebarez/go-sqlite        v1.23.0                             go-module  
-github.com/glebarez/sqlite           v1.11.0                             go-module  
-github.com/go-sql-driver/mysql       v1.10.0                             go-module  
-github.com/goccy/go-yaml             v1.19.2                             go-module  
-github.com/gofrs/uuid/v5             v5.5.1                              go-module  
-github.com/gogo/protobuf             v1.3.2                              go-module  
-github.com/golang-sql/civil          v0.0.0-20220223132316-b832511892a9  go-module  
-github.com/golang-sql/sqlexp         v0.1.0                              go-module  
-github.com/golang/snappy             v1.0.0                              go-module  
-github.com/google/uuid               v1.6.0                              go-module  
-github.com/jackc/pgpassfile          v1.0.0                              go-module  
-github.com/jackc/pgservicefile       v0.0.0-20240606120523-5a60cdf6a761  go-module  
-github.com/jackc/pgx/v5              v5.10.0                             go-module  
-github.com/jackc/puddle/v2           v2.2.2                              go-module  
-github.com/jinzhu/inflection         v1.0.0                              go-module  
-github.com/jinzhu/now                v1.1.5                              go-module  
-github.com/kylelemons/godebug        v1.1.0                              go-module  
-github.com/mattn/go-isatty           v0.0.24                             go-module  
-github.com/microsoft/go-mssqldb      v1.10.0                             go-module  
-github.com/munnerz/goautoneg         v0.0.0-20191010083416-a7dc8b61c822  go-module  
-github.com/ncruces/go-strftime       v1.0.0                              go-module  
-github.com/pkg/errors                v0.9.1                              go-module  
-github.com/prometheus/client_golang  v1.24.1                             go-module  
-github.com/prometheus/client_model   v0.6.2                              go-module  
-github.com/prometheus/common         v0.70.1                             go-module  
-github.com/prometheus/procfs         v0.21.1                             go-module  
-github.com/remyoudompheng/bigfft     v0.0.0-20230129092748-24d4a6f8daec  go-module  
-github.com/shopspring/decimal        v1.4.0                              go-module  
-go.yaml.in/yaml/v2                   v2.4.4                              go-module  
-golang.org/x/crypto                  v0.55.0                             go-module  
-golang.org/x/exp                     v0.0.0-20260813180055-c1d0aacb2297  go-module  
-golang.org/x/sync                    v0.22.0                             go-module  
-golang.org/x/sys                     v0.47.0                             go-module  
-golang.org/x/text                    v0.41.0                             go-module  
-google.golang.org/protobuf           v1.36.12                            go-module  
-gopd                                 1.2.0                               npm        
-gorm.io/driver/mysql                 v1.6.0                              go-module  
-gorm.io/driver/postgres              v1.6.2                              go-module  
-gorm.io/driver/sqlserver             v1.6.4                              go-module  
-gorm.io/gorm                         v1.31.2                             go-module  
-gorm.io/plugin/dbresolver            v1.6.2                              go-module  
-has-symbols                          1.1.0                               npm        
-has-tostringtag                      1.0.2                               npm        
-hasown                               2.0.4                               npm        
-hookable                             5.5.3                               npm        
-https-proxy-agent                    5.0.1                               npm        
-jsesc                                3.1.0                               npm        
-json5                                2.2.3                               npm        
-lightningcss                         1.33.0                              npm        
-local-pkg                            1.2.1                               npm        
-magic-string                         0.30.21                             npm        
-magic-string-ast                     1.0.3                               npm        
-math-intrinsics                      1.1.0                               npm        
-mime-db                              1.52.0                              npm        
-mime-types                           2.1.35                              npm        
-mlly                                 1.8.2                               npm        
-modernc.org/libc                     v1.75.3                             go-module  
-modernc.org/mathutil                 v1.7.1                              go-module  
-modernc.org/memory                   v1.12.0                             go-module  
-modernc.org/sqlite                   v1.56.0                             go-module  
-ms                                   2.1.3                               npm        
-muggle-string                        0.4.1                               npm        
-nanoid                               3.3.18                              npm        
-nostics                              1.2.0                               npm        
-obsgateway-ui                        1.0.0                               npm        
-pathe                                2.0.3                               npm        
-perfect-debounce                     2.1.0                               npm        
-picocolors                           1.1.1                               npm        
-picomatch                            4.0.5                               npm        
-pinia                                4.0.3                               npm        
-pinia-plugin-persistedstate          4.7.1                               npm        
-pkg-types                            1.3.1                               npm        
-pkg-types                            2.3.1                               npm        
-postcss                              8.5.26                              npm        
-primeicons                           7.0.0                               npm        
-primevue                             4.5.5                               npm        
-proxy-from-env                       2.1.0                               npm        
-quansync                             0.2.11                              npm        
-readdirp                             5.1.1                               npm        
-rolldown                             1.2.4                               npm        
-scule                                1.3.0                               npm        
-source-map-js                        1.2.1                               npm        
-tinyglobby                           0.2.17                              npm        
-ufo                                  1.6.4                               npm        
-unplugin                             3.3.0                               npm        
-unplugin-utils                       0.3.2                               npm        
-vite                                 8.2.1                               npm        
-vue                                  3.5.41                              npm        
-vue-router                           5.2.0                               npm        
-webpack-virtual-modules              0.6.2                               npm        
-yaml                                 2.9.0                               npm        
+NAME                                 VERSION                                   TYPE                       
+@babel/generator                     8.0.0                                     npm        [38;2;119;119;119m[0m                [0m
+@babel/helper-string-parser          7.29.7                                    npm        [38;2;119;119;119m[0m                [0m
+@babel/helper-string-parser          8.0.0                                     npm        [38;2;119;119;119m[0m                [0m
+@babel/helper-validator-identifier   7.29.7                                    npm        [38;2;119;119;119m[0m                [0m
+@babel/helper-validator-identifier   8.0.4                                     npm        [38;2;119;119;119m[0m                [0m
+@babel/parser                        7.29.8                                    npm        [38;2;119;119;119m[0m                [0m
+@babel/parser                        8.0.4                                     npm        [38;2;119;119;119m[0m                [0m
+@babel/types                         7.29.8                                    npm        [38;2;119;119;119m[0m                [0m
+@babel/types                         8.0.4                                     npm        [38;2;119;119;119m[0m                [0m
+@jridgewell/gen-mapping              0.3.13                                    npm        [38;2;119;119;119m[0m                [0m
+@jridgewell/remapping                2.3.5                                     npm        [38;2;119;119;119m[0m                [0m
+@jridgewell/resolve-uri              3.1.2                                     npm        [38;2;119;119;119m[0m                [0m
+@jridgewell/sourcemap-codec          1.5.5                                     npm        [38;2;119;119;119m[0m                [0m
+@jridgewell/trace-mapping            0.3.31                                    npm        [38;2;119;119;119m[0m                [0m
+@oxc-project/types                   0.144.0                                   npm        [38;2;119;119;119m[0m                [0m
+@primeuix/styled                     0.7.4                                     npm        [38;2;119;119;119m[0m                [0m
+@primeuix/styles                     2.0.3                                     npm        [38;2;119;119;119m[0m                [0m
+@primeuix/themes                     2.0.3                                     npm        [38;2;119;119;119m[0m                [0m
+@primeuix/utils                      0.6.4                                     npm        [38;2;119;119;119m[0m                [0m
+@primevue/core                       4.5.5                                     npm        [38;2;119;119;119m[0m                [0m
+@primevue/icons                      4.5.5                                     npm        [38;2;119;119;119m[0m                [0m
+@rolldown/pluginutils                1.0.1                                     npm        [38;2;119;119;119m[0m                [0m
+@types/jsesc                         2.5.1                                     npm        [38;2;119;119;119m[0m                [0m
+@vue-macros/common                   3.1.4                                     npm        [38;2;119;119;119m[0m                [0m
+@vue/compiler-core                   3.5.41                                    npm        [38;2;119;119;119m[0m                [0m
+@vue/compiler-dom                    3.5.41                                    npm        [38;2;119;119;119m[0m                [0m
+@vue/compiler-sfc                    3.5.41                                    npm        [38;2;119;119;119m[0m                [0m
+@vue/compiler-ssr                    3.5.41                                    npm        [38;2;119;119;119m[0m                [0m
+@vue/devtools-api                    8.2.1                                     npm        [38;2;119;119;119m[0m                [0m
+@vue/devtools-kit                    8.2.1                                     npm        [38;2;119;119;119m[0m                [0m
+@vue/devtools-shared                 8.2.1                                     npm        [38;2;119;119;119m[0m                [0m
+@vue/reactivity                      3.5.41                                    npm        [38;2;119;119;119m[0m                [0m
+@vue/runtime-core                    3.5.41                                    npm        [38;2;119;119;119m[0m                [0m
+@vue/runtime-dom                     3.5.41                                    npm        [38;2;119;119;119m[0m                [0m
+@vue/server-renderer                 3.5.41                                    npm        [38;2;119;119;119m[0m                [0m
+@vue/shared                          3.5.41                                    npm        [38;2;119;119;119m[0m                [0m
+acorn                                8.18.0                                    npm        [38;2;119;119;119m[0m                [0m
+agent-base                           6.0.2                                     npm        [38;2;119;119;119m[0m                [0m
+ast-kit                              2.2.0                                     npm        [38;2;119;119;119m[0m                [0m
+ast-walker-scope                     0.9.0                                     npm        [38;2;119;119;119m[0m                [0m
+asynckit                             0.4.0                                     npm        [38;2;119;119;119m[0m                [0m
+axios                                1.19.0                                    npm        [38;2;119;119;119m[0m                [0m
+birpc                                2.9.0                                     npm        [38;2;119;119;119m[0m                [0m
+call-bind-apply-helpers              1.0.2                                     npm        [38;2;119;119;119m[0m                [0m
+chokidar                             5.0.0                                     npm        [38;2;119;119;119m[0m                [0m
+combined-stream                      1.0.8                                     npm        [38;2;119;119;119m[0m                [0m
+confbox                              0.1.8                                     npm        [38;2;119;119;119m[0m                [0m
+confbox                              0.2.4                                     npm        [38;2;119;119;119m[0m                [0m
+csstype                              3.2.3                                     npm        [38;2;119;119;119m[0m                [0m
+debug                                4.4.3                                     npm        [38;2;119;119;119m[0m                [0m
+defu                                 6.1.7                                     npm        [38;2;119;119;119m[0m                [0m
+delayed-stream                       1.0.0                                     npm        [38;2;119;119;119m[0m                [0m
+detect-libc                          2.1.2                                     npm        [38;2;119;119;119m[0m                [0m
+dunder-proto                         1.0.1                                     npm        [38;2;119;119;119m[0m                [0m
+entities                             7.0.1                                     npm        [38;2;119;119;119m[0m                [0m
+es-define-property                   1.0.1                                     npm        [38;2;119;119;119m[0m                [0m
+es-errors                            1.3.0                                     npm        [38;2;119;119;119m[0m                [0m
+es-object-atoms                      1.1.2                                     npm        [38;2;119;119;119m[0m                [0m
+es-set-tostringtag                   2.1.0                                     npm        [38;2;119;119;119m[0m                [0m
+estree-walker                        2.0.2                                     npm        [38;2;119;119;119m[0m                [0m
+exsolve                              1.1.1                                     npm        [38;2;119;119;119m[0m                [0m
+fdir                                 6.5.0                                     npm        [38;2;119;119;119m[0m                [0m
+filippo.io/edwards25519              v1.2.0                                    go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+follow-redirects                     1.16.0                                    npm        [38;2;119;119;119m[0m                [0m
+form-data                            4.0.6                                     npm        [38;2;119;119;119m[0m                [0m
+function-bind                        1.1.2                                     npm        [38;2;119;119;119m[0m                [0m
+get-intrinsic                        1.3.0                                     npm        [38;2;119;119;119m[0m                [0m
+get-proto                            1.0.1                                     npm        [38;2;119;119;119m[0m                [0m
+github.com/beorn7/perks              v1.0.1                                    go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/bmatcuk/doublestar/v4     v4.10.0                                   go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/casbin/casbin/v3          v3.11.0                                   go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/casbin/gorm-adapter/v3    v3.41.0                                   go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/casbin/govaluate          v1.10.0                                   go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/cespare/xxhash/v2         v2.3.0                                    go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/dustin/go-humanize        v1.0.1                                    go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/glebarez/go-sqlite        v1.23.0                                   go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/glebarez/sqlite           v1.11.0                                   go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/go-sql-driver/mysql       v1.10.0                                   go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/goccy/go-yaml             v1.19.2                                   go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/gofrs/uuid/v5             v5.5.1                                    go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/gogo/protobuf             v1.3.2                                    go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/golang-sql/civil          v0.0.0-20220223132316-b832511892a9        go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/golang-sql/sqlexp         v0.1.0                                    go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/golang/snappy             v1.0.0                                    go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/google/uuid               v1.6.0                                    go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/jackc/pgpassfile          v1.0.0                                    go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/jackc/pgservicefile       v0.0.0-20240606120523-5a60cdf6a761        go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/jackc/pgx/v5              v5.10.0                                   go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/jackc/puddle/v2           v2.2.2                                    go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/jinzhu/inflection         v1.0.0                                    go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/jinzhu/now                v1.1.5                                    go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/kylelemons/godebug        v1.1.0                                    go-module  [38;2;119;119;119m[0m                [0m
+github.com/mattn/go-isatty           v0.0.24                                   go-module  [38;2;119;119;119m[0m                [0m
+github.com/microsoft/go-mssqldb      v1.10.0                                   go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/munnerz/goautoneg         v0.0.0-20191010083416-a7dc8b61c822        go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/ncruces/go-strftime       v1.0.0                                    go-module  [38;2;119;119;119m[0m                [0m
+github.com/pkg/errors                v0.9.1                                    go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/prometheus/client_golang  v1.24.1                                   go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/prometheus/client_model   v0.6.2                                    go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/prometheus/common         v0.70.1                                   go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/prometheus/procfs         v0.21.1                                   go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/remyoudompheng/bigfft     v0.0.0-20230129092748-24d4a6f8daec        go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+github.com/shopspring/decimal        v1.4.0                                    go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+go.yaml.in/yaml/v2                   v2.4.4                                    go-module  [38;2;119;119;119m[0m                [0m
+golang.org/x/crypto                  v0.55.0                                   go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+golang.org/x/exp                     v0.0.0-20260813180055-c1d0aacb2297        go-module  [38;2;119;119;119m[0m                [0m
+golang.org/x/sync                    v0.22.0                                   go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+golang.org/x/sys                     v0.47.0                                   go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+golang.org/x/text                    v0.41.0                                   go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+google.golang.org/protobuf           v1.36.12                                  go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+gopd                                 1.2.0                                     npm        [38;2;119;119;119m[0m                [0m
+gorm.io/driver/mysql                 v1.6.0                                    go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+gorm.io/driver/postgres              v1.6.2                                    go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+gorm.io/driver/sqlserver             v1.6.4                                    go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+gorm.io/gorm                         v1.31.2                                   go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+gorm.io/plugin/dbresolver            v1.6.2                                    go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+has-symbols                          1.1.0                                     npm        [38;2;119;119;119m[0m                [0m
+has-tostringtag                      1.0.2                                     npm        [38;2;119;119;119m[0m                [0m
+hasown                               2.0.4                                     npm        [38;2;119;119;119m[0m                [0m
+hookable                             5.5.3                                     npm        [38;2;119;119;119m[0m                [0m
+https-proxy-agent                    5.0.1                                     npm        [38;2;119;119;119m[0m                [0m
+jsesc                                3.1.0                                     npm        [38;2;119;119;119m[0m                [0m
+json5                                2.2.3                                     npm        [38;2;119;119;119m[0m                [0m
+lightningcss                         1.33.0                                    npm        [38;2;119;119;119m[0m                [0m
+local-pkg                            1.2.1                                     npm        [38;2;119;119;119m[0m                [0m
+magic-string                         0.30.21                                   npm        [38;2;119;119;119m[0m                [0m
+magic-string-ast                     1.0.3                                     npm        [38;2;119;119;119m[0m                [0m
+math-intrinsics                      1.1.0                                     npm        [38;2;119;119;119m[0m                [0m
+mime-db                              1.52.0                                    npm        [38;2;119;119;119m[0m                [0m
+mime-types                           2.1.35                                    npm        [38;2;119;119;119m[0m                [0m
+mlly                                 1.8.2                                     npm        [38;2;119;119;119m[0m                [0m
+modernc.org/libc                     v1.75.3                                   go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+modernc.org/mathutil                 v1.7.1                                    go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+modernc.org/memory                   v1.12.0                                   go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+modernc.org/sqlite                   v1.56.0                                   go-module  [38;2;119;119;119m(+1 duplicate)[0m  [0m
+ms                                   2.1.3                                     npm        [38;2;119;119;119m[0m                [0m
+muggle-string                        0.4.1                                     npm        [38;2;119;119;119m[0m                [0m
+nanoid                               3.3.18                                    npm        [38;2;119;119;119m[0m                [0m
+nostics                              1.2.0                                     npm        [38;2;119;119;119m[0m                [0m
+obsdatalayer                         v0.0.0-20260818152108-c19a23a251b2+dirty  go-module  [38;2;119;119;119m[0m                [0m
+obsgateway-ui                        1.0.0                                     npm        [38;2;119;119;119m[0m                [0m
+pathe                                2.0.3                                     npm        [38;2;119;119;119m[0m                [0m
+perfect-debounce                     2.1.0                                     npm        [38;2;119;119;119m[0m                [0m
+picocolors                           1.1.1                                     npm        [38;2;119;119;119m[0m                [0m
+picomatch                            4.0.5                                     npm        [38;2;119;119;119m[0m                [0m
+pinia                                4.0.3                                     npm        [38;2;119;119;119m[0m                [0m
+pinia-plugin-persistedstate          4.7.1                                     npm        [38;2;119;119;119m[0m                [0m
+pkg-types                            1.3.1                                     npm        [38;2;119;119;119m[0m                [0m
+pkg-types                            2.3.1                                     npm        [38;2;119;119;119m[0m                [0m
+postcss                              8.5.26                                    npm        [38;2;119;119;119m[0m                [0m
+primeicons                           7.0.0                                     npm        [38;2;119;119;119m[0m                [0m
+primevue                             4.5.5                                     npm        [38;2;119;119;119m[0m                [0m
+proxy-from-env                       2.1.0                                     npm        [38;2;119;119;119m[0m                [0m
+quansync                             0.2.11                                    npm        [38;2;119;119;119m[0m                [0m
+readdirp                             5.1.1                                     npm        [38;2;119;119;119m[0m                [0m
+rolldown                             1.2.4                                     npm        [38;2;119;119;119m[0m                [0m
+scule                                1.3.0                                     npm        [38;2;119;119;119m[0m                [0m
+source-map-js                        1.2.1                                     npm        [38;2;119;119;119m[0m                [0m
+stdlib                               go1.26.6                                  go-module  [38;2;119;119;119m[0m                [0m
+tinyglobby                           0.2.17                                    npm        [38;2;119;119;119m[0m                [0m
+ufo                                  1.6.4                                     npm        [38;2;119;119;119m[0m                [0m
+unplugin                             3.3.0                                     npm        [38;2;119;119;119m[0m                [0m
+unplugin-utils                       0.3.2                                     npm        [38;2;119;119;119m[0m                [0m
+vite                                 8.2.1                                     npm        [38;2;119;119;119m[0m                [0m
+vue                                  3.5.41                                    npm        [38;2;119;119;119m[0m                [0m
+vue-router                           5.2.0                                     npm        [38;2;119;119;119m[0m                [0m
+webpack-virtual-modules              0.6.2                                     npm        [38;2;119;119;119m[0m                [0m
+yaml                                 2.9.0                                     npm        [38;2;119;119;119m[0m                [0m

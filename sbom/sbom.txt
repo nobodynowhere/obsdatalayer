@@ -312,6 +312,11 @@
 [filippo.io/edwards25519]
  Version:	 v1.2.0
  Type:		 go-module
+ Found by:	 go-module-binary-cataloger
+
+[filippo.io/edwards25519]
+ Version:	 v1.2.0
+ Type:		 go-module
  Found by:	 go-module-file-cataloger
 
 [follow-redirects]
@@ -342,7 +347,17 @@
 [github.com/beorn7/perks]
  Version:	 v1.0.1
  Type:		 go-module
+ Found by:	 go-module-binary-cataloger
+
+[github.com/beorn7/perks]
+ Version:	 v1.0.1
+ Type:		 go-module
  Found by:	 go-module-file-cataloger
+
+[github.com/bmatcuk/doublestar/v4]
+ Version:	 v4.10.0
+ Type:		 go-module
+ Found by:	 go-module-binary-cataloger
 
 [github.com/bmatcuk/doublestar/v4]
  Version:	 v4.10.0
@@ -352,7 +367,17 @@
 [github.com/casbin/casbin/v3]
  Version:	 v3.11.0
  Type:		 go-module
+ Found by:	 go-module-binary-cataloger
+
+[github.com/casbin/casbin/v3]
+ Version:	 v3.11.0
+ Type:		 go-module
  Found by:	 go-module-file-cataloger
+
+[github.com/casbin/gorm-adapter/v3]
+ Version:	 v3.41.0
+ Type:		 go-module
+ Found by:	 go-module-binary-cataloger
 
 [github.com/casbin/gorm-adapter/v3]
  Version:	 v3.41.0
@@ -362,7 +387,17 @@
 [github.com/casbin/govaluate]
  Version:	 v1.10.0
  Type:		 go-module
+ Found by:	 go-module-binary-cataloger
+
+[github.com/casbin/govaluate]
+ Version:	 v1.10.0
+ Type:		 go-module
  Found by:	 go-module-file-cataloger
+
+[github.com/cespare/xxhash/v2]
+ Version:	 v2.3.0
+ Type:		 go-module
+ Found by:	 go-module-binary-cataloger
 
 [github.com/cespare/xxhash/v2]
  Version:	 v2.3.0
@@ -372,7 +407,17 @@
 [github.com/dustin/go-humanize]
  Version:	 v1.0.1
  Type:		 go-module
+ Found by:	 go-module-binary-cataloger
+
+[github.com/dustin/go-humanize]
+ Version:	 v1.0.1
+ Type:		 go-module
  Found by:	 go-module-file-cataloger
+
+[github.com/glebarez/go-sqlite]
+ Version:	 v1.23.0
+ Type:		 go-module
+ Found by:	 go-module-binary-cataloger
 
 [github.com/glebarez/go-sqlite]
  Version:	 v1.23.0
@@ -382,7 +427,17 @@
 [github.com/glebarez/sqlite]
  Version:	 v1.11.0
  Type:		 go-module
+ Found by:	 go-module-binary-cataloger
+
+[github.com/glebarez/sqlite]
+ Version:	 v1.11.0
+ Type:		 go-module
  Found by:	 go-module-file-cataloger
+
+[github.com/go-sql-driver/mysql]
+ Version:	 v1.10.0
+ Type:		 go-module
+ Found by:	 go-module-binary-cataloger
 
 [github.com/go-sql-driver/mysql]
  Version:	 v1.10.0
@@ -392,7 +447,17 @@
 [github.com/goccy/go-yaml]
  Version:	 v1.19.2
  Type:		 go-module
+ Found by:	 go-module-binary-cataloger
+
+[github.com/goccy/go-yaml]
+ Version:	 v1.19.2
+ Type:		 go-module
  Found by:	 go-module-file-cataloger
+
+[github.com/gofrs/uuid/v5]
+ Version:	 v5.5.1
+ Type:		 go-module
+ Found by:	 go-module-binary-cataloger
 
 [github.com/gofrs/uuid/v5]
  Version:	 v5.5.1
@@ -402,7 +467,17 @@
 [github.com/gogo/protobuf]
  Version:	 v1.3.2
  Type:		 go-module
+ Found by:	 go-module-binary-cataloger
+
+[github.com/gogo/protobuf]
+ Version:	 v1.3.2
+ Type:		 go-module
  Found by:	 go-module-file-cataloger
+
+[github.com/golang-sql/civil]
+ Version:	 v0.0.0-20220223132316-b832511892a9
+ Type:		 go-module
+ Found by:	 go-module-binary-cataloger
 
 [github.com/golang-sql/civil]
  Version:	 v0.0.0-20220223132316-b832511892a9
@@ -412,7 +487,17 @@
 [github.com/golang-sql/sqlexp]
  Version:	 v0.1.0
  Type:		 go-module
+ Found by:	 go-module-binary-cataloger
+
+[github.com/golang-sql/sqlexp]
+ Version:	 v0.1.0
+ Type:		 go-module
  Found by:	 go-module-file-cataloger
+
+[github.com/golang/snappy]
+ Version:	 v1.0.0
+ Type:		 go-module
+ Found by:	 go-module-binary-cataloger
 
 [github.com/golang/snappy]
  Version:	 v1.0.0
@@ -422,7 +507,17 @@
 [github.com/google/uuid]
  Version:	 v1.6.0
  Type:		 go-module
+ Found by:	 go-module-binary-cataloger
+
+[github.com/google/uuid]
+ Version:	 v1.6.0
+ Type:		 go-module
  Found by:	 go-module-file-cataloger
+
+[github.com/jackc/pgpassfile]
+ Version:	 v1.0.0
+ Type:		 go-module
+ Found by:	 go-module-binary-cataloger
 
 [github.com/jackc/pgpassfile]
  Version:	 v1.0.0
@@ -432,7 +527,17 @@
 [github.com/jackc/pgservicefile]
  Version:	 v0.0.0-20240606120523-5a60cdf6a761
  Type:		 go-module
+ Found by:	 go-module-binary-cataloger
+
+[github.com/jackc/pgservicefile]
+ Version:	 v0.0.0-20240606120523-5a60cdf6a761
+ Type:		 go-module
  Found by:	 go-module-file-cataloger
+
+[github.com/jackc/pgx/v5]
+ Version:	 v5.10.0
+ Type:		 go-module
+ Found by:	 go-module-binary-cataloger
 
 [github.com/jackc/pgx/v5]
  Version:	 v5.10.0
@@ -442,12 +547,27 @@
 [github.com/jackc/puddle/v2]
  Version:	 v2.2.2
  Type:		 go-module
+ Found by:	 go-module-binary-cataloger
+
+[github.com/jackc/puddle/v2]
+ Version:	 v2.2.2
+ Type:		 go-module
  Found by:	 go-module-file-cataloger
 
 [github.com/jinzhu/inflection]
  Version:	 v1.0.0
  Type:		 go-module
+ Found by:	 go-module-binary-cataloger
+
+[github.com/jinzhu/inflection]
+ Version:	 v1.0.0
+ Type:		 go-module
  Found by:	 go-module-file-cataloger
+
+[github.com/jinzhu/now]
+ Version:	 v1.1.5
+ Type:		 go-module
+ Found by:	 go-module-binary-cataloger
 
 [github.com/jinzhu/now]
  Version:	 v1.1.5
@@ -467,7 +587,17 @@
 [github.com/microsoft/go-mssqldb]
  Version:	 v1.10.0
  Type:		 go-module
+ Found by:	 go-module-binary-cataloger
+
+[github.com/microsoft/go-mssqldb]
+ Version:	 v1.10.0
+ Type:		 go-module
  Found by:	 go-module-file-cataloger
+
+[github.com/munnerz/goautoneg]
+ Version:	 v0.0.0-20191010083416-a7dc8b61c822
+ Type:		 go-module
+ Found by:	 go-module-binary-cataloger
 
 [github.com/munnerz/goautoneg]
  Version:	 v0.0.0-20191010083416-a7dc8b61c822
@@ -482,7 +612,17 @@
 [github.com/pkg/errors]
  Version:	 v0.9.1
  Type:		 go-module
+ Found by:	 go-module-binary-cataloger
+
+[github.com/pkg/errors]
+ Version:	 v0.9.1
+ Type:		 go-module
  Found by:	 go-module-file-cataloger
+
+[github.com/prometheus/client_golang]
+ Version:	 v1.24.1
+ Type:		 go-module
+ Found by:	 go-module-binary-cataloger
 
 [github.com/prometheus/client_golang]
  Version:	 v1.24.1
@@ -492,7 +632,17 @@
 [github.com/prometheus/client_model]
  Version:	 v0.6.2
  Type:		 go-module
+ Found by:	 go-module-binary-cataloger
+
+[github.com/prometheus/client_model]
+ Version:	 v0.6.2
+ Type:		 go-module
  Found by:	 go-module-file-cataloger
+
+[github.com/prometheus/common]
+ Version:	 v0.70.1
+ Type:		 go-module
+ Found by:	 go-module-binary-cataloger
 
 [github.com/prometheus/common]
  Version:	 v0.70.1
@@ -502,12 +652,27 @@
 [github.com/prometheus/procfs]
  Version:	 v0.21.1
  Type:		 go-module
+ Found by:	 go-module-binary-cataloger
+
+[github.com/prometheus/procfs]
+ Version:	 v0.21.1
+ Type:		 go-module
  Found by:	 go-module-file-cataloger
 
 [github.com/remyoudompheng/bigfft]
  Version:	 v0.0.0-20230129092748-24d4a6f8daec
  Type:		 go-module
+ Found by:	 go-module-binary-cataloger
+
+[github.com/remyoudompheng/bigfft]
+ Version:	 v0.0.0-20230129092748-24d4a6f8daec
+ Type:		 go-module
  Found by:	 go-module-file-cataloger
+
+[github.com/shopspring/decimal]
+ Version:	 v1.4.0
+ Type:		 go-module
+ Found by:	 go-module-binary-cataloger
 
 [github.com/shopspring/decimal]
  Version:	 v1.4.0
@@ -522,6 +687,11 @@
 [golang.org/x/crypto]
  Version:	 v0.55.0
  Type:		 go-module
+ Found by:	 go-module-binary-cataloger
+
+[golang.org/x/crypto]
+ Version:	 v0.55.0
+ Type:		 go-module
  Found by:	 go-module-file-cataloger
 
 [golang.org/x/exp]
@@ -532,7 +702,17 @@
 [golang.org/x/sync]
  Version:	 v0.22.0
  Type:		 go-module
+ Found by:	 go-module-binary-cataloger
+
+[golang.org/x/sync]
+ Version:	 v0.22.0
+ Type:		 go-module
  Found by:	 go-module-file-cataloger
+
+[golang.org/x/sys]
+ Version:	 v0.47.0
+ Type:		 go-module
+ Found by:	 go-module-binary-cataloger
 
 [golang.org/x/sys]
  Version:	 v0.47.0
@@ -542,7 +722,17 @@
 [golang.org/x/text]
  Version:	 v0.41.0
  Type:		 go-module
+ Found by:	 go-module-binary-cataloger
+
+[golang.org/x/text]
+ Version:	 v0.41.0
+ Type:		 go-module
  Found by:	 go-module-file-cataloger
+
+[google.golang.org/protobuf]
+ Version:	 v1.36.12
+ Type:		 go-module
+ Found by:	 go-module-binary-cataloger
 
 [google.golang.org/protobuf]
  Version:	 v1.36.12
@@ -557,7 +747,17 @@
 [gorm.io/driver/mysql]
  Version:	 v1.6.0
  Type:		 go-module
+ Found by:	 go-module-binary-cataloger
+
+[gorm.io/driver/mysql]
+ Version:	 v1.6.0
+ Type:		 go-module
  Found by:	 go-module-file-cataloger
+
+[gorm.io/driver/postgres]
+ Version:	 v1.6.2
+ Type:		 go-module
+ Found by:	 go-module-binary-cataloger
 
 [gorm.io/driver/postgres]
  Version:	 v1.6.2
@@ -567,12 +767,27 @@
 [gorm.io/driver/sqlserver]
  Version:	 v1.6.4
  Type:		 go-module
+ Found by:	 go-module-binary-cataloger
+
+[gorm.io/driver/sqlserver]
+ Version:	 v1.6.4
+ Type:		 go-module
  Found by:	 go-module-file-cataloger
 
 [gorm.io/gorm]
  Version:	 v1.31.2
  Type:		 go-module
+ Found by:	 go-module-binary-cataloger
+
+[gorm.io/gorm]
+ Version:	 v1.31.2
+ Type:		 go-module
  Found by:	 go-module-file-cataloger
+
+[gorm.io/plugin/dbresolver]
+ Version:	 v1.6.2
+ Type:		 go-module
+ Found by:	 go-module-binary-cataloger
 
 [gorm.io/plugin/dbresolver]
  Version:	 v1.6.2
@@ -657,7 +872,17 @@
 [modernc.org/libc]
  Version:	 v1.75.3
  Type:		 go-module
+ Found by:	 go-module-binary-cataloger
+
+[modernc.org/libc]
+ Version:	 v1.75.3
+ Type:		 go-module
  Found by:	 go-module-file-cataloger
+
+[modernc.org/mathutil]
+ Version:	 v1.7.1
+ Type:		 go-module
+ Found by:	 go-module-binary-cataloger
 
 [modernc.org/mathutil]
  Version:	 v1.7.1
@@ -667,7 +892,17 @@
 [modernc.org/memory]
  Version:	 v1.12.0
  Type:		 go-module
+ Found by:	 go-module-binary-cataloger
+
+[modernc.org/memory]
+ Version:	 v1.12.0
+ Type:		 go-module
  Found by:	 go-module-file-cataloger
+
+[modernc.org/sqlite]
+ Version:	 v1.56.0
+ Type:		 go-module
+ Found by:	 go-module-binary-cataloger
 
 [modernc.org/sqlite]
  Version:	 v1.56.0
@@ -693,6 +928,11 @@
  Version:	 1.2.0
  Type:		 npm
  Found by:	 javascript-lock-cataloger
+
+[obsdatalayer]
+ Version:	 v0.0.0-20260818152108-c19a23a251b2+dirty
+ Type:		 go-module
+ Found by:	 go-module-binary-cataloger
 
 [obsgateway-ui]
  Version:	 1.0.0
@@ -783,6 +1023,11 @@
  Version:	 1.2.1
  Type:		 npm
  Found by:	 javascript-lock-cataloger
+
+[stdlib]
+ Version:	 go1.26.6
+ Type:		 go-module
+ Found by:	 go-module-binary-cataloger
 
 [tinyglobby]
  Version:	 0.2.17
