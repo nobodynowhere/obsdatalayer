@@ -13,6 +13,8 @@ type Stub struct {
 	Password string
 	// Tenants is returned for any backend/action in Allow.
 	Tenants []string
+	// LabelSelectors is returned for Mimir read requests in Allow.
+	LabelSelectors []string
 	// Allow lists "backend:action" pairs the user may perform. A nil Allow
 	// permits every backend and action.
 	Allow map[string]bool
@@ -47,18 +49,22 @@ func (s *Stub) Authenticate(name, password string) (*auth.User, error) {
 	return &auth.User{Name: name}, nil
 }
 
-// TenantIDsFor implements auth.Authorizer.
-func (s *Stub) TenantIDsFor(name, backend, action string) ([]string, bool) {
+// AccessFor implements auth.Authorizer.
+func (s *Stub) AccessFor(name, backend, action string) (auth.Access, bool) {
 	if name != s.Username {
-		return nil, false
+		return auth.Access{}, false
 	}
 	if s.Allow != nil && !s.Allow[backend+":"+action] {
-		return nil, false
+		return auth.Access{}, false
 	}
 	if len(s.Tenants) == 0 {
-		return nil, false
+		return auth.Access{}, false
 	}
-	return s.Tenants, true
+	access := auth.Access{TenantIDs: s.Tenants}
+	if backend == "mimir" && action == auth.ActionRead {
+		access.LabelSelectors = s.LabelSelectors
+	}
+	return access, true
 }
 
 // CanAdmin implements auth.Authorizer.

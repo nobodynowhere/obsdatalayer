@@ -275,6 +275,7 @@ func Migrate(db *gorm.DB) error {
 		&FilterName{},
 		&LabelInject{},
 		&Tenant{},
+		&GrantReadPolicy{},
 		&User{},
 		&Role{},
 	)

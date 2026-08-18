@@ -91,6 +91,10 @@ func grant(backend, action string, tenants ...string) auth.Grant {
 	return auth.Grant{Backend: backend, Action: action, TenantIDs: tenants}
 }
 
+func readPolicyGrant(selector string, tenants ...string) auth.Grant {
+	return auth.Grant{Backend: "mimir", Action: "read", TenantIDs: tenants, ReadLabelSelector: selector}
+}
+
 // ---- authentication ---------------------------------------------------------
 
 func TestAuthenticateSuccess(t *testing.T) {
@@ -227,6 +231,128 @@ func TestTenantIDsMergedAcrossRoles(t *testing.T) {
 		if ids[i] != want[i] {
 			t.Fatalf("expected sorted, deduplicated %v, got %v", want, ids)
 		}
+	}
+}
+
+func TestMimirReadAccessResolvesGrantLabelSelector(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustRole(t, svc, "metrics-reader", readPolicyGrant(` {cluster="prod"} `, env.a))
+	mustUser(t, svc, "alice", "metrics-reader")
+
+	access, ok := svc.AccessFor("alice", "mimir", "read")
+	if !ok {
+		t.Fatal("expected mimir:read to be allowed")
+	}
+	if len(access.TenantIDs) != 1 || access.TenantIDs[0] != env.a {
+		t.Fatalf("expected [%s], got %v", env.a, access.TenantIDs)
+	}
+	if len(access.LabelSelectors) != 1 || access.LabelSelectors[0] != `{cluster="prod"}` {
+		t.Fatalf("expected label selector, got %v", access.LabelSelectors)
+	}
+}
+
+func TestMimirReadAccessRejectsMixedTenantLabelSelectors(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustRole(t, svc, "restricted-reader", readPolicyGrant(`{cluster="prod"}`, env.a))
+	mustRole(t, svc, "unrestricted-reader", grant("mimir", "read", env.b))
+	mustUser(t, svc, "alice", "restricted-reader", "unrestricted-reader")
+
+	if _, ok := svc.AccessFor("alice", "mimir", "read"); ok {
+		t.Fatal("expected mixed restricted/unrestricted tenant read to be denied")
+	}
+}
+
+func TestMimirReadAccessRejectsDifferentLabelSelectors(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustRole(t, svc, "prod-reader", readPolicyGrant(`{cluster="prod"}`, env.a))
+	mustRole(t, svc, "dev-reader", readPolicyGrant(`{cluster="dev"}`, env.b))
+	mustUser(t, svc, "alice", "prod-reader", "dev-reader")
+
+	if _, ok := svc.AccessFor("alice", "mimir", "read"); ok {
+		t.Fatal("expected different read selectors to be denied")
+	}
+}
+
+func TestWriteAccessDeniesMergedTenantsAcrossRoles(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustRole(t, svc, "writer-a", grant("mimir", "write", env.a))
+	mustRole(t, svc, "writer-b", grant("mimir", "write", env.b))
+	mustUser(t, svc, "alice", "writer-a", "writer-b")
+
+	if _, ok := svc.AccessFor("alice", "mimir", "write"); ok {
+		t.Fatal("expected merged write tenants to be denied")
+	}
+}
+
+func TestGrantValidationRejectsMultiTenantWrite(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustUser(t, svc, "alice")
+
+	err := svc.SetUserGrants("alice", []auth.Grant{grant("mimir", "write", env.a, env.b)})
+	if !errors.Is(err, auth.ErrInvalidGrant) {
+		t.Fatalf("expected ErrInvalidGrant, got %v", err)
+	}
+}
+
+func TestCreateRoleRejectsDifferentWriteTenants(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+
+	err := svc.CreateRole("writers", "", []auth.Grant{
+		grant("loki", "write", env.a),
+		grant("mimir", "write", env.b),
+	})
+	if !errors.Is(err, auth.ErrInvalidGrant) {
+		t.Fatalf("expected ErrInvalidGrant, got %v", err)
+	}
+}
+
+func TestCreateRoleAllowsReadTenantsAndSingleWriteTenant(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+
+	err := svc.CreateRole("reader-writer", "", []auth.Grant{
+		grant("loki", "read", env.a, env.b, env.c),
+		grant("mimir", "write", env.a),
+		grant("tempo", "write", env.a),
+	})
+	if err != nil {
+		t.Fatalf("expected reads to span tenants and writes to share one tenant, got %v", err)
+	}
+}
+
+func TestSetRoleGrantsRejectsDifferentWriteTenants(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustRole(t, svc, "writers", grant("loki", "write", env.a))
+
+	err := svc.SetRoleGrants("writers", []auth.Grant{
+		grant("loki", "write", env.a),
+		grant("mimir", "write", env.b),
+	})
+	if !errors.Is(err, auth.ErrInvalidGrant) {
+		t.Fatalf("expected ErrInvalidGrant, got %v", err)
+	}
+}
+
+func TestGrantValidationRejectsReadLabelSelectorOnWrite(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustUser(t, svc, "alice")
+
+	err := svc.SetUserGrants("alice", []auth.Grant{{
+		Backend:           "mimir",
+		Action:            "write",
+		TenantIDs:         []string{env.a},
+		ReadLabelSelector: `{cluster="prod"}`,
+	}})
+	if !errors.Is(err, auth.ErrInvalidGrant) {
+		t.Fatalf("expected ErrInvalidGrant, got %v", err)
 	}
 }
 

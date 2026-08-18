@@ -30,6 +30,7 @@ const newPassword = ref('')
 
 const message = (e) => e?.response?.data?.error || e.message || 'Unexpected error'
 const tenantName = (id) => tenants.value.find((t) => t.id === id)?.name ?? id.slice(0, 8) + '…'
+const readPolicy = (grant) => grant.read_label_selector?.trim()
 
 async function load() {
   loading.value = true
@@ -70,7 +71,11 @@ function openEdit(user) {
   editing.value = user
   editForm.value = {
     roles: [...(user.roles ?? [])],
-    grants: (user.grants ?? []).map((g) => ({ ...g, tenant_ids: [...(g.tenant_ids ?? [])] })),
+    grants: (user.grants ?? []).map((g) => ({
+      ...g,
+      tenant_ids: [...(g.tenant_ids ?? [])],
+      read_label_selector: g.read_label_selector ?? '',
+    })),
   }
   formError.value = ''
   editDialog.value = true
@@ -169,6 +174,7 @@ onMounted(load)
               <span v-if="g.tenant_ids?.length" class="stat-card__hint">
                 {{ g.tenant_ids.map(tenantName).join(', ') }}
               </span>
+              <div v-if="readPolicy(g)" class="stat-card__hint">{{ readPolicy(g) }}</div>
             </div>
           </template>
         </PrimeColumn>

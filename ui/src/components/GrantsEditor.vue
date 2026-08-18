@@ -1,9 +1,10 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
 
 const props = defineProps({
   modelValue: { type: Array, required: true },
   tenants: { type: Array, default: () => [] },
+  enforceSingleWriteTenant: { type: Boolean, default: false },
 })
 const emit = defineEmits(['update:modelValue'])
 
@@ -25,29 +26,93 @@ const tenantOptions = computed(() =>
   props.tenants.map((t) => ({ label: `${t.name} — ${t.id.slice(0, 8)}…`, value: t.id })),
 )
 
+function normalizeGrant(grant) {
+  if (grant.backend === 'admin') {
+    return { ...grant, action: 'access', tenant_ids: [], read_label_selector: '' }
+  }
+  const next = { ...grant }
+  if (next.action === 'access') {
+    next.action = 'read'
+  }
+  if (usesSingleTenant(next)) {
+    next.tenant_ids = (next.tenant_ids ?? []).slice(0, 1)
+  }
+  if (!isMimirRead(next)) {
+    next.read_label_selector = ''
+  }
+  return next
+}
+
+function normalizeGrants(grants, preferredWriteTenant = '') {
+  const next = grants.map(normalizeGrant)
+  if (!props.enforceSingleWriteTenant) {
+    return next
+  }
+  const writeTenant =
+    preferredWriteTenant ||
+    next.find((grant) => isWriteCapable(grant) && grant.tenant_ids?.[0])?.tenant_ids?.[0] ||
+    ''
+  if (!writeTenant) {
+    return next
+  }
+  return next.map((grant) => (isWriteCapable(grant) ? { ...grant, tenant_ids: [writeTenant] } : grant))
+}
+
+function grantsChanged(a, b) {
+  return JSON.stringify(a) !== JSON.stringify(b)
+}
+
 function update(index, patch) {
-  const next = props.modelValue.map((g, i) => (i === index ? { ...g, ...patch } : g))
+  const patchedGrant = normalizeGrant({ ...props.modelValue[index], ...patch })
+  const preferredWriteTenant = isWriteCapable(patchedGrant) ? patchedGrant.tenant_ids?.[0] ?? '' : ''
+  const next = normalizeGrants(
+    props.modelValue.map((g, i) => (i === index ? patchedGrant : g)),
+    preferredWriteTenant,
+  )
   emit('update:modelValue', next)
 }
 
 function setBackend(index, backend) {
-  // The admin plane takes a fixed action and carries no tenants.
-  if (backend === 'admin') {
-    update(index, { backend, action: 'access', tenant_ids: [] })
-    return
-  }
-  const current = props.modelValue[index]
-  const action = current.action === 'access' ? 'read' : current.action
-  update(index, { backend, action })
+  update(index, { backend })
+}
+
+function setReadLabelSelector(index, value) {
+  update(index, { read_label_selector: String(value ?? '').trim() })
+}
+
+function isMimirRead(grant) {
+  return grant.backend === 'mimir' && grant.action === 'read'
+}
+
+function isWriteCapable(grant) {
+  return grant.backend !== 'admin' && usesSingleTenant(grant)
+}
+
+function usesSingleTenant(grant) {
+  return grant.action === 'write' || grant.action === '*'
 }
 
 function add() {
-  emit('update:modelValue', [...props.modelValue, { backend: 'loki', action: 'read', tenant_ids: [] }])
+  emit(
+    'update:modelValue',
+    normalizeGrants([...props.modelValue, { backend: 'loki', action: 'read', tenant_ids: [], read_label_selector: '' }]),
+  )
 }
 
 function remove(index) {
-  emit('update:modelValue', props.modelValue.filter((_, i) => i !== index))
+  emit('update:modelValue', normalizeGrants(props.modelValue.filter((_, i) => i !== index)))
 }
+
+watch(
+  () => props.modelValue,
+  (grants) => {
+    const next = normalizeGrants(grants)
+    if (grantsChanged(next, grants)) {
+      emit('update:modelValue', next)
+    }
+  },
+  { immediate: true, deep: true },
+)
 </script>
 
 <template>
@@ -81,7 +146,7 @@ function remove(index) {
       <PrimeInputText v-else model-value="access" disabled />
 
       <PrimeMultiSelect
-        v-if="grant.backend !== 'admin'"
+        v-if="grant.backend !== 'admin' && !usesSingleTenant(grant)"
         :model-value="grant.tenant_ids"
         :options="tenantOptions"
         option-label="label"
@@ -91,9 +156,28 @@ function remove(index) {
         placeholder="Select tenants"
         @update:model-value="update(i, { tenant_ids: $event })"
       />
+      <PrimeSelect
+        v-else-if="grant.backend !== 'admin'"
+        :model-value="grant.tenant_ids?.[0] ?? null"
+        :options="tenantOptions"
+        option-label="label"
+        option-value="value"
+        placeholder="Select tenant"
+        filter
+        @update:model-value="update(i, { tenant_ids: $event ? [$event] : [] })"
+      />
       <span v-else class="stat-card__hint" style="align-self: center">no tenants</span>
 
       <PrimeButton icon="pi pi-times" text rounded severity="danger" @click="remove(i)" />
+
+      <div v-if="isMimirRead(grant)" class="grant-row__policy">
+        <label>Read label policy</label>
+        <PrimeInputText
+          :model-value="grant.read_label_selector ?? ''"
+          placeholder='{cluster="prod"}'
+          @update:model-value="setReadLabelSelector(i, $event)"
+        />
+      </div>
     </div>
 
     <div style="margin-top: 0.75rem">

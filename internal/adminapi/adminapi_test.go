@@ -233,6 +233,81 @@ func TestCreateRoleRejectsUnknownTenant(t *testing.T) {
 	}
 }
 
+func TestCreateRoleRejectsDifferentWriteTenants(t *testing.T) {
+	e := newEnv(t)
+	tenantA, err := e.tenants.Create("", "acme", nil)
+	if err != nil {
+		t.Fatalf("create tenant acme: %v", err)
+	}
+	tenantB, err := e.tenants.Create("", "globex", nil)
+	if err != nil {
+		t.Fatalf("create tenant globex: %v", err)
+	}
+
+	rec := e.do(t, http.MethodPost, "/api/roles", map[string]any{
+		"name": "writers",
+		"grants": []map[string]any{
+			{"backend": "loki", "action": "write", "tenant_ids": []string{tenantA.ID}},
+			{"backend": "mimir", "action": "write", "tenant_ids": []string{tenantB.ID}},
+		},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestCreateRoleWithMimirReadPolicy(t *testing.T) {
+	e := newEnv(t)
+	tn, err := e.tenants.Create("", "acme", nil)
+	if err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+
+	rec := e.do(t, http.MethodPost, "/api/roles", map[string]any{
+		"name": "metrics-reader",
+		"grants": []map[string]any{
+			{
+				"backend":             "mimir",
+				"action":              "read",
+				"tenant_ids":          []string{tn.ID},
+				"read_label_selector": ` {cluster="prod"} `,
+			},
+		},
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body)
+	}
+	var got auth.RoleInfo
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode role: %v", err)
+	}
+	if len(got.Grants) != 1 || got.Grants[0].ReadLabelSelector != `{cluster="prod"}` {
+		t.Fatalf("expected role grant read policy, got %+v", got.Grants)
+	}
+}
+
+func TestCreateRoleRejectsInvalidMimirReadPolicy(t *testing.T) {
+	e := newEnv(t)
+	tn, err := e.tenants.Create("", "acme", nil)
+	if err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	rec := e.do(t, http.MethodPost, "/api/roles", map[string]any{
+		"name": "metrics-reader",
+		"grants": []map[string]any{
+			{
+				"backend":             "mimir",
+				"action":              "read",
+				"tenant_ids":          []string{tn.ID},
+				"read_label_selector": `{cluster=`,
+			},
+		},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body)
+	}
+}
+
 func TestCreateUserRejectsShortPassword(t *testing.T) {
 	e := newEnv(t)
 	rec := e.do(t, http.MethodPost, "/api/users", map[string]any{"name": "alice", "password": "short"})

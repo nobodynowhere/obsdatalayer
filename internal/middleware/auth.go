@@ -43,7 +43,7 @@ func BasicAuth(a auth.Authorizer, next http.Handler) http.Handler {
 			action = auth.ActionRead
 		}
 
-		tenantIDs, allowed := a.TenantIDsFor(username, backend, action)
+		access, allowed := a.AccessFor(username, backend, action)
 		if !allowed {
 			// The single most common support question is "why did this 403?".
 			slog.Debug("data plane request denied: no matching grant",
@@ -52,12 +52,14 @@ func BasicAuth(a auth.Authorizer, next http.Handler) http.Handler {
 			return
 		}
 		slog.Debug("data plane request authorized",
-			"user", username, "backend", backend, "action", action, "tenants", tenantIDs)
+			"user", username, "backend", backend, "action", action, "tenants", access.TenantIDs,
+			"label_selectors", access.LabelSelectors)
 
 		ra := &auth.RequestAuth{
-			Username:  username,
-			TenantIDs: tenantIDs,
-			IsRead:    action == auth.ActionRead,
+			Username:       username,
+			TenantIDs:      access.TenantIDs,
+			LabelSelectors: access.LabelSelectors,
+			IsRead:         action == auth.ActionRead,
 		}
 		next.ServeHTTP(w, r.WithContext(auth.WithRequestAuth(r.Context(), ra)))
 	})

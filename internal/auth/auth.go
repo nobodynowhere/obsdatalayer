@@ -52,9 +52,10 @@ type User struct {
 // Grant is one authorization rule: an action on a backend, plus the tenant IDs
 // injected upstream when it matches.
 type Grant struct {
-	Backend   string   `json:"backend"`
-	Action    string   `json:"action"`
-	TenantIDs []string `json:"tenant_ids,omitempty"`
+	Backend           string   `json:"backend"`
+	Action            string   `json:"action"`
+	TenantIDs         []string `json:"tenant_ids,omitempty"`
+	ReadLabelSelector string   `json:"read_label_selector,omitempty"`
 }
 
 // IsAdmin reports whether g grants admin-plane access rather than data access.
@@ -71,6 +72,9 @@ func (g Grant) Validate() error {
 		if len(g.TenantIDs) > 0 {
 			return errors.New("admin grant must not carry tenant_ids")
 		}
+		if strings.TrimSpace(g.ReadLabelSelector) != "" {
+			return errors.New("admin grant must not carry read_label_selector")
+		}
 		return nil
 	}
 	if !validBackends[g.Backend] {
@@ -81,6 +85,14 @@ func (g Grant) Validate() error {
 	}
 	if len(g.TenantIDs) == 0 {
 		return fmt.Errorf("grant on backend %q action %q has no tenant_ids", g.Backend, g.Action)
+	}
+	if (g.Action == ActionWrite || g.Action == ActionAny) && len(g.TenantIDs) != 1 {
+		return fmt.Errorf("grant on backend %q action %q must carry exactly one tenant_id", g.Backend, g.Action)
+	}
+	if selector := strings.TrimSpace(g.ReadLabelSelector); selector != "" {
+		if g.Backend != "mimir" || g.Action != ActionRead {
+			return errors.New("read_label_selector is only supported on mimir read grants")
+		}
 	}
 	for _, t := range g.TenantIDs {
 		if strings.TrimSpace(t) == "" {
@@ -102,9 +114,10 @@ type contextKey struct{}
 
 // RequestAuth carries the resolved auth result for a single HTTP request.
 type RequestAuth struct {
-	Username  string
-	TenantIDs []string // resolved for this request's backend + action
-	IsRead    bool
+	Username       string
+	TenantIDs      []string // resolved for this request's backend + action
+	LabelSelectors []string // resolved Mimir read policy selectors, if any
+	IsRead         bool
 }
 
 // WithRequestAuth returns a copy of ctx carrying ra.
@@ -183,6 +196,26 @@ func mergeTenants(sets [][]string) []string {
 			}
 			seen[id] = struct{}{}
 			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func mergeLabelSelectors(sets [][]string) []string {
+	seen := make(map[string]struct{})
+	var out []string
+	for _, set := range sets {
+		for _, selector := range set {
+			selector = strings.TrimSpace(selector)
+			if selector == "" {
+				continue
+			}
+			if _, dup := seen[selector]; dup {
+				continue
+			}
+			seen[selector] = struct{}{}
+			out = append(out, selector)
 		}
 	}
 	sort.Strings(out)

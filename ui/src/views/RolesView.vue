@@ -21,6 +21,7 @@ const formError = ref('')
 
 const message = (e) => e?.response?.data?.error || e.message || 'Unexpected error'
 const tenantName = (id) => tenants.value.find((t) => t.id === id)?.name ?? id.slice(0, 8) + '…'
+const readPolicy = (grant) => grant.read_label_selector?.trim()
 
 async function load() {
   loading.value = true
@@ -47,7 +48,11 @@ function openEdit(role) {
   form.value = {
     name: role.name,
     description: role.description ?? '',
-    grants: (role.grants ?? []).map((g) => ({ ...g, tenant_ids: [...(g.tenant_ids ?? [])] })),
+    grants: (role.grants ?? []).map((g) => ({
+      ...g,
+      tenant_ids: [...(g.tenant_ids ?? [])],
+      read_label_selector: g.read_label_selector ?? '',
+    })),
   }
   formError.value = ''
   dialog.value = true
@@ -126,6 +131,7 @@ onMounted(load)
               <span v-if="g.tenant_ids?.length" class="stat-card__hint">
                 {{ g.tenant_ids.map(tenantName).join(', ') }}
               </span>
+              <div v-if="readPolicy(g)" class="stat-card__hint">{{ readPolicy(g) }}</div>
             </div>
           </template>
         </PrimeColumn>
@@ -158,7 +164,7 @@ onMounted(load)
           <PrimeInputText id="r-desc" v-model="form.description" />
         </div>
       </template>
-      <GrantsEditor v-model="form.grants" :tenants="tenants" />
+      <GrantsEditor v-model="form.grants" :tenants="tenants" enforce-single-write-tenant />
     </div>
     <template #footer>
       <PrimeButton label="Cancel" severity="secondary" outlined @click="dialog = false" />

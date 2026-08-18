@@ -75,8 +75,14 @@ var ErrInvalidGrant = errors.New("invalid grant")
 // Authorizer is the subset of Service the HTTP layer depends on.
 type Authorizer interface {
 	Authenticate(name, password string) (*User, error)
-	TenantIDsFor(name, backend, action string) ([]string, bool)
+	AccessFor(name, backend, action string) (Access, bool)
 	CanAdmin(name string) bool
+}
+
+// Access is the resolved authorization result for one backend/action request.
+type Access struct {
+	TenantIDs      []string
+	LabelSelectors []string
 }
 
 // Service owns authentication (bcrypt over the users table) and authorization
@@ -210,15 +216,16 @@ func credentialCacheKey(name, password, passwordHash string) string {
 
 // ---- authorization ----------------------------------------------------------
 
-// TenantIDsFor returns the merged tenant IDs the user may use for the given
-// backend and action. ok is false when no policy matches, which callers should
-// surface as 403.
-func (s *Service) TenantIDsFor(name, backend, action string) ([]string, bool) {
+// AccessFor returns the merged tenant IDs and read policy selectors the user
+// may use for the given backend and action. ok is false when no policy matches,
+// which callers should surface as 403.
+func (s *Service) AccessFor(name, backend, action string) (Access, bool) {
 	perms, err := s.enf.GetImplicitPermissionsForUser(userSubject(name))
 	if err != nil {
-		return nil, false
+		return Access{}, false
 	}
-	var sets [][]string
+	var tenantSets [][]string
+	perTenantReadPolicy := make(map[string]*readPolicyState)
 	matched := false
 	for _, row := range perms {
 		if len(row) < 3 {
@@ -228,14 +235,34 @@ func (s *Service) TenantIDsFor(name, backend, action string) ([]string, bool) {
 			continue
 		}
 		matched = true
+		var tenants []string
 		if len(row) >= 4 {
-			sets = append(sets, decodeTenants(row[3]))
+			tenants = decodeTenants(row[3])
+			tenantSets = append(tenantSets, tenants)
+		}
+		if backend == "mimir" && action == ActionRead {
+			selector, ok := s.grantReadPolicySelector(row, tenants)
+			if !ok {
+				return Access{}, false
+			}
+			for _, tenantID := range tenants {
+				state := perTenantReadPolicy[tenantID]
+				if state == nil {
+					state = &readPolicyState{selectors: make(map[string]struct{})}
+					perTenantReadPolicy[tenantID] = state
+				}
+				if selector == "" {
+					state.unrestricted = true
+				} else {
+					state.selectors[selector] = struct{}{}
+				}
+			}
 		}
 	}
 	if !matched {
-		return nil, false
+		return Access{}, false
 	}
-	ids := mergeTenants(sets)
+	ids := mergeTenants(tenantSets)
 
 	// Drop references whose tenant has since been deleted: sending a stale
 	// UUID upstream would scope the request to a tenant that no longer exists.
@@ -248,9 +275,91 @@ func (s *Service) TenantIDsFor(name, backend, action string) ([]string, bool) {
 	if len(live) == 0 {
 		// A matching grant with no usable tenants cannot produce an
 		// X-Scope-OrgID, so there is nothing safe to forward.
+		return Access{}, false
+	}
+	if action == ActionWrite && len(live) != 1 {
+		return Access{}, false
+	}
+
+	access := Access{TenantIDs: live}
+	if backend == "mimir" && action == ActionRead {
+		selectors, ok := effectiveReadSelectors(live, perTenantReadPolicy)
+		if !ok {
+			return Access{}, false
+		}
+		access.LabelSelectors = selectors
+	}
+	return access, true
+}
+
+// TenantIDsFor returns the merged tenant IDs the user may use for the given
+// backend and action. It is retained for callers and tests that do not need
+// Mimir read label policies.
+func (s *Service) TenantIDsFor(name, backend, action string) ([]string, bool) {
+	access, ok := s.AccessFor(name, backend, action)
+	if !ok {
 		return nil, false
 	}
-	return live, true
+	return access.TenantIDs, true
+}
+
+type readPolicyState struct {
+	unrestricted bool
+	selectors    map[string]struct{}
+}
+
+func effectiveReadSelectors(tenantIDs []string, policies map[string]*readPolicyState) ([]string, bool) {
+	var effective string
+	hasRestricted, hasUnrestricted := false, false
+	for _, id := range tenantIDs {
+		state := policies[id]
+		if state == nil {
+			return nil, false
+		}
+		if state.unrestricted {
+			hasUnrestricted = true
+			continue
+		}
+		if len(state.selectors) != 1 {
+			return nil, false
+		}
+		var next string
+		for selector := range state.selectors {
+			next = selector
+		}
+		hasRestricted = true
+		if effective == "" {
+			effective = next
+			continue
+		}
+		if effective != next {
+			return nil, false
+		}
+	}
+	if hasRestricted && hasUnrestricted {
+		return nil, false
+	}
+	if effective == "" {
+		return nil, true
+	}
+	return []string{effective}, true
+}
+
+func (s *Service) grantReadPolicySelector(policyRow, tenants []string) (string, bool) {
+	if len(policyRow) < 4 || policyRow[1] != "mimir" || policyRow[2] != ActionRead {
+		return "", true
+	}
+	var row dbstore.GrantReadPolicy
+	err := s.db.Where("subject = ? AND backend = ? AND action = ? AND tenant_key = ?",
+		policyRow[0], policyRow[1], policyRow[2], encodeTenants(tenants)).
+		First(&row).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", true
+		}
+		return "", false
+	}
+	return strings.TrimSpace(row.LabelSelector), true
 }
 
 // CanAdmin reports whether the user may reach the admin plane.
@@ -370,6 +479,9 @@ func (s *Service) DeleteUser(name string) error {
 	}
 	if _, err := s.enf.DeleteUser(userSubject(name)); err != nil {
 		return fmt.Errorf("delete user policies %q: %w", name, err)
+	}
+	if err := s.db.Where("subject = ?", userSubject(name)).Delete(&dbstore.GrantReadPolicy{}).Error; err != nil {
+		return fmt.Errorf("delete user read policies %q: %w", name, err)
 	}
 	return s.Reload()
 }
@@ -491,6 +603,9 @@ func (s *Service) CreateRole(name, description string, grants []Grant) error {
 			return fmt.Errorf("%w: on backend %q: %v", ErrInvalidGrant, g.Backend, err)
 		}
 	}
+	if err := validateRoleGrantSet(grants); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidGrant, err)
+	}
 	id, err := uuid.NewV4()
 	if err != nil {
 		return fmt.Errorf("generate role id: %w", err)
@@ -517,6 +632,9 @@ func (s *Service) DeleteRole(name string) error {
 	if _, err := s.enf.DeleteRole(roleSubject(name)); err != nil {
 		return fmt.Errorf("delete role policies %q: %w", name, err)
 	}
+	if err := s.db.Where("subject = ?", roleSubject(name)).Delete(&dbstore.GrantReadPolicy{}).Error; err != nil {
+		return fmt.Errorf("delete role read policies %q: %w", name, err)
+	}
 	return s.Reload()
 }
 
@@ -524,6 +642,9 @@ func (s *Service) DeleteRole(name string) error {
 func (s *Service) SetRoleGrants(name string, grants []Grant) error {
 	if _, err := s.findRole(name); err != nil {
 		return err
+	}
+	if err := validateRoleGrantSet(grants); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidGrant, err)
 	}
 	return s.replaceGrants(roleSubject(name), grants)
 }
@@ -551,6 +672,27 @@ func (s *Service) assertRolesExist(roles []string) error {
 	return nil
 }
 
+func validateRoleGrantSet(grants []Grant) error {
+	var writeTenant string
+	for _, g := range grants {
+		if g.IsAdmin() || (g.Action != ActionWrite && g.Action != ActionAny) {
+			continue
+		}
+		if len(g.TenantIDs) != 1 {
+			return fmt.Errorf("role write grant on backend %q must carry exactly one tenant_id", g.Backend)
+		}
+		tenantID := g.TenantIDs[0]
+		if writeTenant == "" {
+			writeTenant = tenantID
+			continue
+		}
+		if tenantID != writeTenant {
+			return errors.New("role write grants must target a single tenant")
+		}
+	}
+	return nil
+}
+
 // ---- shared policy helpers --------------------------------------------------
 
 // grantsFor returns the grants attached directly to a subject (not inherited).
@@ -558,6 +700,10 @@ func (s *Service) grantsFor(subject string) ([]Grant, error) {
 	rows, err := s.enf.GetFilteredPolicy(0, subject)
 	if err != nil {
 		return nil, fmt.Errorf("policies for %q: %w", subject, err)
+	}
+	readPolicies, err := s.readPoliciesFor(subject)
+	if err != nil {
+		return nil, err
 	}
 	grants := make([]Grant, 0, len(rows))
 	for _, row := range rows {
@@ -567,10 +713,24 @@ func (s *Service) grantsFor(subject string) ([]Grant, error) {
 		g := Grant{Backend: row[1], Action: row[2]}
 		if len(row) >= 4 {
 			g.TenantIDs = decodeTenants(row[3])
+			g.ReadLabelSelector = readPolicies[grantReadPolicyKey(subject, g.Backend, g.Action, g.TenantIDs)]
 		}
 		grants = append(grants, g)
 	}
 	return grants, nil
+}
+
+func (s *Service) readPoliciesFor(subject string) (map[string]string, error) {
+	var rows []dbstore.GrantReadPolicy
+	if err := s.db.Where("subject = ?", subject).Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("read policies for %q: %w", subject, err)
+	}
+	out := make(map[string]string, len(rows))
+	for _, row := range rows {
+		key := grantReadPolicyKeyFromTenantKey(row.Subject, row.Backend, row.Action, row.TenantKey)
+		out[key] = strings.TrimSpace(row.LabelSelector)
+	}
+	return out, nil
 }
 
 // replaceGrants swaps all direct grants for subject, then refreshes the snapshot.
@@ -586,10 +746,38 @@ func (s *Service) replaceGrants(subject string, grants []Grant) error {
 	if _, err := s.enf.DeletePermissionsForUser(subject); err != nil {
 		return fmt.Errorf("clear grants for %q: %w", subject, err)
 	}
+	if err := s.db.Where("subject = ?", subject).Delete(&dbstore.GrantReadPolicy{}).Error; err != nil {
+		return fmt.Errorf("clear read policies for %q: %w", subject, err)
+	}
 	for _, g := range grants {
 		if _, err := s.enf.AddPolicy(subject, g.Backend, g.Action, encodeTenants(g.TenantIDs)); err != nil {
 			return fmt.Errorf("add grant for %q: %w", subject, err)
 		}
+		if selector := strings.TrimSpace(g.ReadLabelSelector); selector != "" {
+			id, err := uuid.NewV4()
+			if err != nil {
+				return fmt.Errorf("generate read policy id: %w", err)
+			}
+			row := dbstore.GrantReadPolicy{
+				ID:            id,
+				Subject:       subject,
+				Backend:       g.Backend,
+				Action:        g.Action,
+				TenantKey:     encodeTenants(g.TenantIDs),
+				LabelSelector: selector,
+			}
+			if err := s.db.Create(&row).Error; err != nil {
+				return fmt.Errorf("add read policy for %q: %w", subject, err)
+			}
+		}
 	}
 	return s.Reload()
+}
+
+func grantReadPolicyKey(subject, backend, action string, tenantIDs []string) string {
+	return grantReadPolicyKeyFromTenantKey(subject, backend, action, encodeTenants(tenantIDs))
+}
+
+func grantReadPolicyKeyFromTenantKey(subject, backend, action, tenantKey string) string {
+	return subject + "\x00" + backend + "\x00" + action + "\x00" + tenantKey
 }

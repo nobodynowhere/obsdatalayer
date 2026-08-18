@@ -89,6 +89,18 @@ type Tenant struct {
 	GrafanaID *int      `gorm:"uniqueIndex"`
 }
 
+// GrantReadPolicy stores optional read-time policy metadata for a Casbin grant
+// without changing the Casbin policy row shape. Subject, backend, action and
+// tenant_key match the four Casbin policy fields.
+type GrantReadPolicy struct {
+	ID            uuid.UUID `gorm:"type:text;primaryKey"`
+	Subject       string    `gorm:"uniqueIndex:idx_grant_read_policy"`
+	Backend       string    `gorm:"uniqueIndex:idx_grant_read_policy"`
+	Action        string    `gorm:"uniqueIndex:idx_grant_read_policy"`
+	TenantKey     string    `gorm:"uniqueIndex:idx_grant_read_policy"`
+	LabelSelector string
+}
+
 // User is a gateway account. Authorization lives entirely in Casbin
 // (the casbin_rule table managed by the gorm adapter), so this table holds
 // only identity and the password hash.

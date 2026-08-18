@@ -11,6 +11,7 @@ import (
 
 	"obsdatalayer/internal/auth"
 	"obsdatalayer/internal/config"
+	"obsdatalayer/internal/rewrite"
 	"obsdatalayer/internal/tenant"
 )
 
@@ -235,6 +236,10 @@ func (h *handler) setUserGrants(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := h.svc.GetUser(name); err != nil {
+		writeErr(w, err)
+		return
+	}
+	if err := rewrite.ValidateGrantReadPolicies(req.Grants); err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -494,6 +499,10 @@ func (h *handler) createRole(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+	if err := rewrite.ValidateGrantReadPolicies(req.Grants); err != nil {
+		writeErr(w, err)
+		return
+	}
 	if err := h.svc.CreateRole(req.Name, req.Description, req.Grants); err != nil {
 		writeErr(w, err)
 		return
@@ -548,6 +557,10 @@ func (h *handler) setRoleGrants(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{
 			"error": "the built-in admin role must retain admin access",
 		})
+		return
+	}
+	if err := rewrite.ValidateGrantReadPolicies(req.Grants); err != nil {
+		writeErr(w, err)
 		return
 	}
 	if _, err := h.svc.GetRole(name); err != nil {

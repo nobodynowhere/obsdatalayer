@@ -240,6 +240,17 @@ body {
    grows with its chips and pushes the remove button outside the dialog. */
 .grant-row > * { min-width: 0; }
 .grant-row .p-multiselect { width: 100%; }
+.grant-row__policy {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 9rem minmax(0, 1fr);
+  gap: 0.5rem;
+  align-items: center;
+}
+.grant-row__policy > label {
+  color: var(--app-text-muted);
+  font-size: 0.8rem;
+}
 
 .target-row {
   display: grid;
