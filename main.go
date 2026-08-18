@@ -495,7 +495,9 @@ func dataHandler(holder *config.ConfigHolder, authSvc *auth.Service, p *proxy.Pr
 	fanout.RegisterMimir(mux, holder, p, m)
 	fanout.RegisterTempo(mux, holder, p)
 
-	return middleware.Logging(middleware.BasicAuth(authSvc, mux))
+	// Order matters: BasicAuth consumes Authorization, then SanitizeHeaders
+	// drops it along with everything else outside the forwarding allowlist.
+	return middleware.Logging(middleware.BasicAuth(authSvc, middleware.SanitizeHeaders(mux)))
 }
 
 func makeClient(d config.Duration) *http.Client {

@@ -25,21 +25,6 @@ func WithSkipTLSVerify(ctx context.Context) context.Context {
 	return context.WithValue(ctx, skipTLSVerifyKey{}, true)
 }
 
-// hopByHopHeaders is the set of headers that must never be forwarded upstream.
-// Includes standard hop-by-hop headers (RFC 7230 §6.1) plus gateway auth headers.
-var hopByHopHeaders = map[string]bool{
-	"Authorization":       true,
-	"X-Scope-Orgid":       true, // canonical form of X-Scope-OrgID
-	"Connection":          true,
-	"Keep-Alive":          true,
-	"Transfer-Encoding":   true,
-	"Te":                  true,
-	"Trailers":            true,
-	"Upgrade":             true,
-	"Proxy-Authorization": true,
-	"Proxy-Authenticate":  true,
-}
-
 type clients struct {
 	query *http.Client
 	push  *http.Client
@@ -175,9 +160,10 @@ func (t *tlsSwitchTransport) RoundTrip(req *http.Request) (*http.Response, error
 	return t.base.RoundTrip(req)
 }
 
-// CopyHeadersForUpstream copies safe inbound headers to the upstream request.
-// Hop-by-hop headers (Authorization, X-Scope-OrgID, Connection, etc.) are
-// stripped. X-Scope-OrgID is then re-injected from the request's auth context
+// CopyHeadersForUpstream copies relayable inbound headers to the upstream
+// request. Only headers on the forwardable allowlist are copied; everything
+// else -- including Authorization, X-Scope-OrgID, and any header nobody
+// anticipated -- is dropped. X-Scope-OrgID is then injected from the auth context
 // (set by BasicAuth middleware): configured target tenant wins, reads otherwise
 // pipe-join all resolved tenant IDs, and writes otherwise use the single
 // resolved tenant chosen by the fan-out layer. Falls back to target.TenantID
@@ -185,7 +171,7 @@ func (t *tlsSwitchTransport) RoundTrip(req *http.Request) (*http.Response, error
 // target config.
 func CopyHeadersForUpstream(req *http.Request, inbound http.Header, target config.PushTarget) {
 	for key, vals := range inbound {
-		if !hopByHopHeaders[key] {
+		if forwardableHeaders[key] {
 			req.Header[key] = vals
 		}
 	}
