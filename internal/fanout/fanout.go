@@ -163,6 +163,14 @@ func requireSingleTenant(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
+func forwardByMethod(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, upstreamPath string, maxBodyBytes int64, p *proxy.Proxy) {
+	if r.Method == http.MethodGet {
+		p.ForwardQuery(w, r, inst, upstreamPath)
+		return
+	}
+	p.ForwardPush(w, r, inst, upstreamPath, maxBodyBytes)
+}
+
 func scopeRequestToInstance(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig) bool {
 	ra := auth.FromContext(r.Context())
 	if ra == nil || len(ra.TenantIDs) == 0 {
@@ -302,7 +310,8 @@ func copyResponseHeaders(w http.ResponseWriter, headers http.Header) {
 }
 
 // handlePush reads the body (limited to maxBodyBytes), optionally rewrites labels,
-// fans out, and writes the response. rewriteFn is called only when inst.Labels != nil.
+// fans out, and writes the response. rewriteFn is called only when it is non-nil
+// and inst.Labels is configured.
 func handlePush(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, upstreamPath string, rewriteFn func([]byte) ([]byte, error), maxBodyBytes int64, p *proxy.Proxy, m *metrics.Metrics) {
 	if maxBodyBytes > 0 {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
@@ -321,7 +330,7 @@ func handlePush(w http.ResponseWriter, r *http.Request, inst *config.InstanceCon
 		proxy.WriteJSONError(w, status, map[string]string{"error": msg})
 		return
 	}
-	if inst.Labels != nil {
+	if rewriteFn != nil && inst.Labels != nil {
 		before := len(body)
 		body, err = rewriteFn(body)
 		if err == nil {

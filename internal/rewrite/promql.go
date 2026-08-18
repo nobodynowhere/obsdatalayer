@@ -53,7 +53,7 @@ func ApplyMimirReadPolicy(r *http.Request, endpoint string) error {
 		return err
 	}
 	switch endpoint {
-	case "query", "query_range":
+	case "query", "query_range", "query_exemplars":
 		query := strings.TrimSpace(values.Get("query"))
 		if query == "" {
 			return errors.New("query parameter is required for a restricted Mimir read")
@@ -67,7 +67,7 @@ func ApplyMimirReadPolicy(r *http.Request, endpoint string) error {
 		if err := ConstrainMetricSelectorParams(values, ra.LabelSelectors); err != nil {
 			return err
 		}
-	case "metadata":
+	case "metadata", "read", "cardinality":
 		return ErrReadPolicyUnsupported
 	default:
 		return fmt.Errorf("unknown Mimir read endpoint %q", endpoint)

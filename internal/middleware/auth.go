@@ -123,18 +123,35 @@ func isQueryPost(path string) bool {
 	switch path {
 	case "/api/mimir/query",
 		"/api/mimir/query_range",
+		"/api/mimir/query_exemplars",
 		"/api/mimir/labels",
 		"/api/mimir/series",
 		"/api/mimir/metadata",
+		"/api/mimir/read",
+		"/api/mimir/cardinality/active_series",
+		"/api/mimir/cardinality/label_names",
+		"/api/mimir/cardinality/label_values",
+		"/api/mimir/format_query",
 		"/api/mimir/prometheus/api/v1/query",
 		"/api/mimir/prometheus/api/v1/query_range",
+		"/api/mimir/prometheus/api/v1/query_exemplars",
 		"/api/mimir/prometheus/api/v1/labels",
 		"/api/mimir/prometheus/api/v1/series",
 		"/api/mimir/prometheus/api/v1/metadata",
+		"/api/mimir/prometheus/api/v1/read",
+		"/api/mimir/prometheus/api/v1/cardinality/active_series",
+		"/api/mimir/prometheus/api/v1/cardinality/label_names",
+		"/api/mimir/prometheus/api/v1/cardinality/label_values",
+		"/api/mimir/prometheus/api/v1/format_query",
 		"/api/loki/query",
 		"/api/loki/query_range",
 		"/api/loki/labels",
-		"/api/loki/series":
+		"/api/loki/series",
+		"/api/loki/index/stats",
+		"/api/loki/index/volume",
+		"/api/loki/index/volume_range",
+		"/api/loki/patterns",
+		"/api/loki/format_query":
 		return true
 	default:
 		return strings.HasPrefix(path, "/api/mimir/label/") && strings.HasSuffix(path, "/values") ||
