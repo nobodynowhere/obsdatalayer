@@ -80,6 +80,16 @@ From the repository root, `build.sh` builds the UI as part of a normal build:
 ./build.sh -skipui -skiprpm -skipcontainer    # binary only, reuse existing bundle
 ```
 
+On Windows, use the PowerShell build script from the repository root:
+
+```powershell
+.\build.ps1
+.\build.ps1 -SkipRpm -SkipContainer
+.\build.ps1 -SkipUi -SkipRpm -SkipContainer
+```
+
+`build.bat` is a `cmd.exe` wrapper around the same PowerShell script.
+
 `-skipui` follows the same convention as the script's existing `-skiprpm` and
 `-skipcontainer` flags: everything is built by default, and each stage has an
 opt-out.
