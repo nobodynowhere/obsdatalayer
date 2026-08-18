@@ -36,7 +36,7 @@ func TestBasicAuthValidCreds(t *testing.T) {
 	stub := authtest.New()
 	h := middleware.BasicAuth(stub, inner)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/loki/labels", nil)
 	req.Header.Set("Authorization", stub.Header())
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -53,7 +53,7 @@ func TestBasicAuthWrongPassword(t *testing.T) {
 	inner, called := newHandlerCalledFlag()
 	h := middleware.BasicAuth(authtest.New(), inner)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/loki/labels", nil)
 	req.Header.Set("Authorization", authtest.BasicHeader("testuser", "nope"))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -70,7 +70,7 @@ func TestBasicAuthMissingHeader(t *testing.T) {
 	inner, called := newHandlerCalledFlag()
 	h := middleware.BasicAuth(authtest.New(), inner)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/loki/labels", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -92,7 +92,7 @@ func TestBasicAuthForbiddenWhenNoGrant(t *testing.T) {
 	stub.Allow = map[string]bool{"loki:read": true}
 	h := middleware.BasicAuth(stub, inner)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/loki-prod/loki/push", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/loki/push", nil)
 	req.Header.Set("Authorization", stub.Header())
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -133,7 +133,7 @@ func TestBasicAuthAttachesRequestAuth(t *testing.T) {
 	stub := authtest.New()
 	h := middleware.BasicAuth(stub, inner)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/loki/labels", nil)
 	req.Header.Set("Authorization", stub.Header())
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -161,7 +161,7 @@ func TestBasicAuthPostIsWrite(t *testing.T) {
 	stub := authtest.New()
 	h := middleware.BasicAuth(stub, inner)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/loki-prod/loki/push", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/loki/push", nil)
 	req.Header.Set("Authorization", stub.Header())
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -174,11 +174,37 @@ func TestBasicAuthPostIsWrite(t *testing.T) {
 	}
 }
 
+func TestBasicAuthPrometheusPostQueryIsRead(t *testing.T) {
+	var captured *auth.RequestAuth
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = auth.FromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})
+	stub := authtest.New()
+	stub.Allow = map[string]bool{"mimir:read": true}
+	h := middleware.BasicAuth(stub, inner)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/mimir/prometheus/api/v1/query", nil)
+	req.Header.Set("Authorization", stub.Header())
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if captured == nil {
+		t.Fatal("expected RequestAuth in context")
+	}
+	if !captured.IsRead {
+		t.Error("expected Prometheus POST query to be read")
+	}
+}
+
 func TestBasicAuthUnauthorizedHeaders(t *testing.T) {
 	inner, _ := newHandlerCalledFlag()
 	h := middleware.BasicAuth(authtest.New(), inner)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/loki/labels", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 

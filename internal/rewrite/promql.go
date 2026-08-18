@@ -1,9 +1,13 @@
 package rewrite
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
+	"mime"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -44,7 +48,10 @@ func ApplyMimirReadPolicy(r *http.Request, endpoint string) error {
 		return nil
 	}
 
-	values := r.URL.Query()
+	values, commit, err := mutableRequestValues(r)
+	if err != nil {
+		return err
+	}
 	switch endpoint {
 	case "query", "query_range":
 		query := strings.TrimSpace(values.Get("query"))
@@ -65,8 +72,50 @@ func ApplyMimirReadPolicy(r *http.Request, endpoint string) error {
 	default:
 		return fmt.Errorf("unknown Mimir read endpoint %q", endpoint)
 	}
-	r.URL.RawQuery = values.Encode()
+	commit(values)
 	return nil
+}
+
+func mutableRequestValues(r *http.Request) (url.Values, func(url.Values), error) {
+	if r.Method != http.MethodPost {
+		return r.URL.Query(), func(values url.Values) {
+			r.URL.RawQuery = values.Encode()
+		}, nil
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read form body: %w", err)
+	}
+	_ = r.Body.Close()
+
+	bodyValues := url.Values{}
+	if len(body) > 0 {
+		mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if mediaType != "" && mediaType != "application/x-www-form-urlencoded" {
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			return nil, nil, fmt.Errorf("restricted Mimir POST queries must use application/x-www-form-urlencoded")
+		}
+		bodyValues, err = url.ParseQuery(string(body))
+		if err != nil {
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			return nil, nil, fmt.Errorf("parse form body: %w", err)
+		}
+	}
+
+	if len(bodyValues) > 0 {
+		return bodyValues, func(values url.Values) {
+			encoded := values.Encode()
+			r.Body = io.NopCloser(strings.NewReader(encoded))
+			r.ContentLength = int64(len(encoded))
+			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		}, nil
+	}
+
+	return r.URL.Query(), func(values url.Values) {
+		r.URL.RawQuery = values.Encode()
+		r.Body = io.NopCloser(bytes.NewReader(nil))
+		r.ContentLength = 0
+	}, nil
 }
 
 // ConstrainPromQL parses query and appends the policy selector's matchers to

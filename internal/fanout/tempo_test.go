@@ -46,7 +46,7 @@ func TestTempoOTLPPush(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newTempoTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/tempo-prod/tempo/otlp/v1/traces", strings.NewReader("trace data"))
+	req := httptest.NewRequest(http.MethodPost, "/api/tempo/otlp/v1/traces", strings.NewReader("trace data"))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/x-protobuf")
 	rec := httptest.NewRecorder()
@@ -74,7 +74,7 @@ func TestTempoJaegerPush(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newTempoTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/tempo-prod/tempo/jaeger/v1/traces", strings.NewReader("trace data"))
+	req := httptest.NewRequest(http.MethodPost, "/api/tempo/jaeger/v1/traces", strings.NewReader("trace data"))
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -102,7 +102,7 @@ func TestTempoSearch(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newTempoTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/tempo-prod/tempo/search?q=xxx", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/tempo/search?q=xxx", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -132,7 +132,7 @@ func TestTempoGetTrace(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newTempoTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/tempo-prod/tempo/traces/abc123", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/tempo/traces/abc123", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -159,7 +159,7 @@ func TestTempoSearchTagsV2(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newTempoTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/tempo-prod/tempo/v2/search/tags", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/tempo/v2/search/tags", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -186,7 +186,7 @@ func TestTempoSearchTagValuesV2(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newTempoTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/tempo-prod/tempo/v2/search/tag/service.name/values", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/tempo/v2/search/tag/service.name/values", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -200,13 +200,13 @@ func TestTempoSearchTagValuesV2(t *testing.T) {
 	}
 }
 
-func TestTempoUnknownInstance(t *testing.T) {
+func TestTempoNoMatchingInstance(t *testing.T) {
 	cfg := newTestConfig([]*config.InstanceConfig{})
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
 	h := newTempoTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/unknown/tempo/otlp/v1/traces", strings.NewReader("data"))
+	req := httptest.NewRequest(http.MethodPost, "/api/tempo/otlp/v1/traces", strings.NewReader("data"))
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -219,8 +219,8 @@ func TestTempoUnknownInstance(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
-	if body["error"] != "unknown instance" {
-		t.Errorf("expected error='unknown instance', got %q", body["error"])
+	if body["error"] != "no matching instance" {
+		t.Errorf("expected error='no matching instance', got %q", body["error"])
 	}
 }
 
@@ -239,7 +239,7 @@ func TestTempoPushBodyStreamedVerbatim(t *testing.T) {
 	h := newTempoTestMux(cfg, p)
 
 	sendBody := "binary trace data \x00\x01\x02"
-	req := httptest.NewRequest(http.MethodPost, "/api/tempo-prod/tempo/otlp/v1/traces", strings.NewReader(sendBody))
+	req := httptest.NewRequest(http.MethodPost, "/api/tempo/otlp/v1/traces", strings.NewReader(sendBody))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/x-protobuf")
 	rec := httptest.NewRecorder()

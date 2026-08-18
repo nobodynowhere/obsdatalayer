@@ -78,7 +78,7 @@ func TestLokiPushSuccess(t *testing.T) {
 	h := newTestMux(cfg, p, m)
 
 	body := `{"streams":[{"stream":{"app":"foo"},"values":[["1","log"]]}]}`
-	req := httptest.NewRequest(http.MethodPost, "/api/loki-prod/loki/push", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/loki/push", strings.NewReader(body))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -117,7 +117,7 @@ func TestLokiPushWithLabelsRewrite(t *testing.T) {
 	h := newTestMux(cfg, p, m)
 
 	body := `{"streams":[{"stream":{"app":"foo","env":"staging"},"values":[["1","log"]]}]}`
-	req := httptest.NewRequest(http.MethodPost, "/api/loki-prod/loki/push", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/loki/push", strings.NewReader(body))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -136,14 +136,14 @@ func TestLokiPushWithLabelsRewrite(t *testing.T) {
 	}
 }
 
-func TestLokiPushUnknownInstance(t *testing.T) {
+func TestLokiPushNoMatchingInstance(t *testing.T) {
 	cfg := newTestConfig([]*config.InstanceConfig{})
 	m := newTestMetrics()
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
 	h := newTestMux(cfg, p, m)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/unknown/loki/push", strings.NewReader("{}"))
+	req := httptest.NewRequest(http.MethodPost, "/api/loki/push", strings.NewReader("{}"))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -157,8 +157,8 @@ func TestLokiPushUnknownInstance(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
-	if body["error"] != "unknown instance" {
-		t.Errorf("expected error='unknown instance', got %q", body["error"])
+	if body["error"] != "no matching instance" {
+		t.Errorf("expected error='no matching instance', got %q", body["error"])
 	}
 }
 
@@ -178,7 +178,7 @@ func TestLokiQueryRange(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newTestMux(cfg, p, m)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/query_range?query=xxx&start=1&end=2&step=1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/loki/query_range?query=xxx&start=1&end=2&step=1", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -209,7 +209,7 @@ func TestLokiInstantQuery(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newTestMux(cfg, p, m)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/query?query=xxx", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/loki/query?query=xxx", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -237,7 +237,7 @@ func TestLokiLabels(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newTestMux(cfg, p, m)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/loki/labels", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -265,7 +265,7 @@ func TestLokiLabelValues(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newTestMux(cfg, p, m)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/label/app/values", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/loki/label/app/values", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -293,7 +293,7 @@ func TestLokiSeries(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newTestMux(cfg, p, m)
 
-	req := httptest.NewRequest(http.MethodGet, `/api/loki-prod/loki/series?match[]=xxx`, nil)
+	req := httptest.NewRequest(http.MethodGet, `/api/loki/series?match[]=xxx`, nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -319,7 +319,7 @@ func TestLokiMissingAuth(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newTestMux(cfg, p, m)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/loki/labels", nil)
 	// No Authorization header
 	rec := httptest.NewRecorder()
 
@@ -361,7 +361,7 @@ func TestLokiPushFanoutMultipleTargets(t *testing.T) {
 	h := newTestMux(cfg, p, m)
 
 	body := `{"streams":[{"stream":{"app":"foo"},"values":[["1","log"]]}]}`
-	req := httptest.NewRequest(http.MethodPost, "/api/loki-prod/loki/push", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/loki/push", strings.NewReader(body))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

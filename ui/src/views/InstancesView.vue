@@ -184,7 +184,8 @@ onMounted(load)
     <div>
       <h1>Instances</h1>
       <p>
-        Backend targets clients reach as <span class="mono">/api/&lt;instance&gt;/&lt;backend&gt;/…</span>
+        Clients reach each backend at <span class="mono">/api/&lt;backend&gt;/…</span>;
+        instances stay behind the gateway.
       </p>
     </div>
     <PrimeButton icon="pi pi-plus" label="New instance" @click="openCreate" />
@@ -261,7 +262,7 @@ onMounted(load)
       <div class="form-field">
         <label for="i-name">Name</label>
         <PrimeInputText id="i-name" v-model="form.name" autofocus />
-        <small>Used in the request path. Letters, digits, dashes and underscores.</small>
+        <small>Operator-facing name. Letters, digits, dashes and underscores.</small>
       </div>
 
       <div class="form-field">

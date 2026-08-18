@@ -55,7 +55,7 @@ func TestMimirPushSuccess(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/mimir-prod/mimir/push", strings.NewReader("body"))
+	req := httptest.NewRequest(http.MethodPost, "/api/mimir/push", strings.NewReader("body"))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/x-protobuf")
 	rec := httptest.NewRecorder()
@@ -92,7 +92,7 @@ func TestMimirPushInjectsConfiguredTenantWhenGranted(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/mimir-prod/mimir/push", strings.NewReader("body"))
+	req := httptest.NewRequest(http.MethodPost, "/api/mimir/push", strings.NewReader("body"))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/x-protobuf")
 	rec := httptest.NewRecorder()
@@ -129,15 +129,15 @@ func TestMimirPushRejectsConfiguredTenantWithoutGrant(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/mimir-prod/mimir/push", strings.NewReader("body"))
+	req := httptest.NewRequest(http.MethodPost, "/api/mimir/push", strings.NewReader("body"))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/x-protobuf")
 	rec := httptest.NewRecorder()
 
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d", rec.Code)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
 	}
 	if called {
 		t.Error("upstream should not be called when the configured tenant is not granted")
@@ -159,7 +159,7 @@ func TestMimirPushInjectsSingleGrantedTenantWhenInstanceIsUnscoped(t *testing.T)
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/mimir-prod/mimir/push", strings.NewReader("body"))
+	req := httptest.NewRequest(http.MethodPost, "/api/mimir/push", strings.NewReader("body"))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/x-protobuf")
 	rec := httptest.NewRecorder()
@@ -171,6 +171,82 @@ func TestMimirPushInjectsSingleGrantedTenantWhenInstanceIsUnscoped(t *testing.T)
 	}
 	if receivedOrgID != "tenant-a" {
 		t.Errorf("expected granted tenant tenant-a to be injected, got %q", receivedOrgID)
+	}
+}
+
+func TestMimirPushPrefersTenantDedicatedInstance(t *testing.T) {
+	withAuthTenants(t, "tenant-a")
+
+	var dedicatedCalls, sharedCalls int
+	dedicated := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dedicatedCalls++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(dedicated.Close)
+	shared := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sharedCalls++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(shared.Close)
+
+	cfg := newTestConfig([]*config.InstanceConfig{
+		{Name: "mimir-tenant-a", Backend: "mimir", URL: dedicated.URL, TenantID: "tenant-a"},
+		mimirInst("mimir-shared", shared.URL),
+	})
+	client := &http.Client{Timeout: 5 * time.Second}
+	p := proxy.New(client, client)
+	h := newMimirTestMux(cfg, p)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/mimir/push", strings.NewReader("body"))
+	req.Header.Set("Authorization", authHeader())
+	req.Header.Set("Content-Type", "application/x-protobuf")
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", rec.Code)
+	}
+	if dedicatedCalls != 1 || sharedCalls != 0 {
+		t.Fatalf("expected only dedicated instance to be used, dedicated=%d shared=%d", dedicatedCalls, sharedCalls)
+	}
+}
+
+func TestMimirPushFallsBackToSharedInstance(t *testing.T) {
+	withAuthTenants(t, "tenant-b")
+
+	var dedicatedCalls, sharedCalls int
+	dedicated := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dedicatedCalls++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(dedicated.Close)
+	shared := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sharedCalls++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(shared.Close)
+
+	cfg := newTestConfig([]*config.InstanceConfig{
+		{Name: "mimir-tenant-a", Backend: "mimir", URL: dedicated.URL, TenantID: "tenant-a"},
+		mimirInst("mimir-shared", shared.URL),
+	})
+	client := &http.Client{Timeout: 5 * time.Second}
+	p := proxy.New(client, client)
+	h := newMimirTestMux(cfg, p)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/mimir/push", strings.NewReader("body"))
+	req.Header.Set("Authorization", authHeader())
+	req.Header.Set("Content-Type", "application/x-protobuf")
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", rec.Code)
+	}
+	if dedicatedCalls != 0 || sharedCalls != 1 {
+		t.Fatalf("expected only shared instance to be used, dedicated=%d shared=%d", dedicatedCalls, sharedCalls)
 	}
 }
 
@@ -189,7 +265,7 @@ func TestMimirPushRejectsAmbiguousUnscopedWrite(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/mimir-prod/mimir/push", strings.NewReader("body"))
+	req := httptest.NewRequest(http.MethodPost, "/api/mimir/push", strings.NewReader("body"))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/x-protobuf")
 	rec := httptest.NewRecorder()
@@ -221,7 +297,7 @@ func TestMimirQueryRange(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/mimir-prod/mimir/query_range?query=up&start=1&end=2&step=1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/mimir/query_range?query=up&start=1&end=2&step=1", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -248,7 +324,34 @@ func TestMimirInstantQuery(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/mimir-prod/mimir/query?query=up", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/mimir/query?query=up", nil)
+	req.Header.Set("Authorization", authHeader())
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+	if receivedPath != "/prometheus/api/v1/query" {
+		t.Errorf("expected path /prometheus/api/v1/query, got %q", receivedPath)
+	}
+}
+
+func TestMimirPrometheusInstantQuery(t *testing.T) {
+	var receivedPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	cfg := newTestConfig([]*config.InstanceConfig{mimirInst("mimir-prod", upstream.URL)})
+	client := &http.Client{Timeout: 5 * time.Second}
+	p := proxy.New(client, client)
+	h := newMimirTestMux(cfg, p)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/mimir/prometheus/api/v1/query?query=up", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -275,7 +378,7 @@ func TestMimirLabels(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/mimir-prod/mimir/labels", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/mimir/labels", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -302,7 +405,7 @@ func TestMimirLabelValues(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/mimir-prod/mimir/label/job/values", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/mimir/label/job/values", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -329,7 +432,7 @@ func TestMimirSeries(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/mimir-prod/mimir/series", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/mimir/series", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -356,7 +459,7 @@ func TestMimirMetadata(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/mimir-prod/mimir/metadata", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/mimir/metadata", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -395,7 +498,7 @@ func TestMimirPushPartialFailureHeader(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/mimir-prod/mimir/push", strings.NewReader("body"))
+	req := httptest.NewRequest(http.MethodPost, "/api/mimir/push", strings.NewReader("body"))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/x-protobuf")
 	rec := httptest.NewRecorder()
@@ -414,13 +517,13 @@ func TestMimirPushPartialFailureHeader(t *testing.T) {
 	}
 }
 
-func TestMimirPushUnknownInstance(t *testing.T) {
+func TestMimirPushNoMatchingInstance(t *testing.T) {
 	cfg := newTestConfig([]*config.InstanceConfig{})
 	client := &http.Client{Timeout: 5 * time.Second}
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/unknown/mimir/push", strings.NewReader("body"))
+	req := httptest.NewRequest(http.MethodPost, "/api/mimir/push", strings.NewReader("body"))
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -433,7 +536,7 @@ func TestMimirPushUnknownInstance(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
-	if body["error"] != "unknown instance" {
-		t.Errorf("expected error='unknown instance', got %q", body["error"])
+	if body["error"] != "no matching instance" {
+		t.Errorf("expected error='no matching instance', got %q", body["error"])
 	}
 }

@@ -82,7 +82,7 @@ Add `labels:` to a tempo instance.
 ### 2.1 No token → 401
 
 ```bash
-curl -i -X POST http://localhost:8080/api/loki-prod/loki/push \
+curl -i -X POST http://localhost:8080/api/loki/push \
   -H "Content-Type: application/json" \
   -d '{"streams":[]}'
 ```
@@ -92,7 +92,7 @@ curl -i -X POST http://localhost:8080/api/loki-prod/loki/push \
 ### 2.2 Wrong token → 401
 
 ```bash
-curl -i -X POST http://localhost:8080/api/loki-prod/loki/push \
+curl -i -X POST http://localhost:8080/api/loki/push \
   -H "Authorization: Bearer wrong-token" \
   -H "Content-Type: application/json" \
   -d '{"streams":[]}'
@@ -104,7 +104,7 @@ curl -i -X POST http://localhost:8080/api/loki-prod/loki/push \
 
 ```bash
 TS=$(date +%s)000000000
-curl -i -X POST http://localhost:8080/api/loki-prod/loki/push \
+curl -i -X POST http://localhost:8080/api/loki/push \
   -H "Authorization: Bearer lab-token" \
   -H "Content-Type: application/json" \
   -d "{\"streams\":[{\"stream\":{\"app\":\"test\"},\"values\":[[\"$TS\",\"hello lab\"]]}]}"
@@ -136,38 +136,33 @@ curl -s http://localhost:8080/metrics | grep gateway_
 
 ```bash
 TS=$(date +%s)000000000
-curl -s -X POST http://localhost:8080/api/loki-prod/loki/push \
+curl -s -X POST http://localhost:8080/api/loki/push \
   -H "Authorization: Bearer lab-token" \
   -H "Content-Type: application/json" \
   -d "{\"streams\":[{\"stream\":{\"app\":\"gateway-lab\"},\"values\":[[\"$TS\",\"hello from lab\"]]}]}"
 
 # Query back
-curl -s "http://localhost:8080/api/loki-prod/loki/query_range?query={app=%22gateway-lab%22}&limit=5&start=$(date -v-5M +%s 2>/dev/null || date -d '-5 minutes' +%s)000000000&end=$(date +%s)000000000" \
+curl -s "http://localhost:8080/api/loki/query_range?query={app=%22gateway-lab%22}&limit=5&start=$(date -v-5M +%s 2>/dev/null || date -d '-5 minutes' +%s)000000000&end=$(date +%s)000000000" \
   -H "Authorization: Bearer lab-token"
 ```
 
 ✅ Expect: `204` on push; query returns the log line `"hello from lab"`.
 
-### 3.2 Unknown instance → 404
+### 3.2 No matching instance → 404
 
 ```bash
-curl -i -X POST http://localhost:8080/api/nonexistent/loki/push \
+curl -i -X POST http://localhost:8080/api/loki/push \
   -H "Authorization: Bearer lab-token" \
   -H "Content-Type: application/json" \
   -d '{"streams":[]}'
 ```
 
-✅ Expect: `404`, JSON `{"error":"unknown instance"}`.
+✅ Expect: `404`, JSON `{"error":"no matching instance"}`.
 
-### 3.3 Wrong backend → 404
-
-Send to `/api/mimir-prod/loki/push` (mimir-prod is a `mimir` instance).
-✅ Expect: `404`.
-
-### 3.4 Labels endpoint
+### 3.3 Labels endpoint
 
 ```bash
-curl -s "http://localhost:8080/api/loki-prod/loki/labels" \
+curl -s "http://localhost:8080/api/loki/labels" \
   -H "Authorization: Bearer lab-token"
 ```
 
@@ -176,7 +171,7 @@ curl -s "http://localhost:8080/api/loki-prod/loki/labels" \
 ### 3.5 Series endpoint
 
 ```bash
-curl -s "http://localhost:8080/api/loki-prod/loki/series?match[]={app=%22gateway-lab%22}" \
+curl -s "http://localhost:8080/api/loki/series?match[]={app=%22gateway-lab%22}" \
   -H "Authorization: Bearer lab-token"
 ```
 
@@ -208,7 +203,7 @@ Restart the gateway.
 
 ```bash
 TS=$(date +%s)000000000
-curl -s -X POST http://localhost:8080/api/loki-prod/loki/push \
+curl -s -X POST http://localhost:8080/api/loki/push \
   -H "Authorization: Bearer lab-token" \
   -H "Content-Type: application/json" \
   -d "{\"streams\":[{\"stream\":{\"app\":\"rewrite-test\",\"secret_key\":\"abc123\"},\"values\":[[\"$TS\",\"label rewrite test\"]]}]}"
@@ -236,12 +231,12 @@ Push with labels `{app: "x", noise: "y"}`. Query Loki directly.
 
 Configure a Prometheus instance to remote_write to:
 ```
-http://localhost:8080/api/mimir-prod/mimir/push
+http://localhost:8080/api/mimir/push
 ```
 With header `Authorization: Bearer lab-token`. Let it scrape for 30 seconds, then:
 
 ```bash
-curl -s "http://localhost:8080/api/mimir-prod/mimir/query?query=up" \
+curl -s "http://localhost:8080/api/mimir/query?query=up" \
   -H "Authorization: Bearer lab-token"
 ```
 
@@ -285,7 +280,7 @@ instances:
 ### 6.1 `any` mode — both targets alive → clean 204
 
 ```bash
-curl -i -X POST http://localhost:8080/api/loki-fanout/loki/push \
+curl -i -X POST http://localhost:8080/api/loki/push \
   -H "Authorization: Bearer lab-token" \
   -H "Content-Type: application/json" \
   -d '{"streams":[{"stream":{"app":"fanout-test"},"values":[["'"$(date +%s)000000000"'","fanout ok"]]}]}'
@@ -341,14 +336,14 @@ Use tcpdump or an access log on the upstream to verify each target receives its 
 
 Push a trace via otelcol or a test sender to:
 ```
-POST http://localhost:8080/api/tempo-prod/tempo/otlp/v1/traces
+POST http://localhost:8080/api/tempo/otlp/v1/traces
 Authorization: Bearer lab-token
 ```
 
 Capture the trace ID, then query back:
 
 ```bash
-curl -s "http://localhost:8080/api/tempo-prod/tempo/traces/<TRACE_ID>" \
+curl -s "http://localhost:8080/api/tempo/traces/<TRACE_ID>" \
   -H "Authorization: Bearer lab-token"
 ```
 
@@ -357,7 +352,7 @@ curl -s "http://localhost:8080/api/tempo-prod/tempo/traces/<TRACE_ID>" \
 ### 7.2 Tempo search
 
 ```bash
-curl -s "http://localhost:8080/api/tempo-prod/tempo/search?tags=service.name=my-service" \
+curl -s "http://localhost:8080/api/tempo/search?tags=service.name=my-service" \
   -H "Authorization: Bearer lab-token"
 ```
 
@@ -366,7 +361,7 @@ curl -s "http://localhost:8080/api/tempo-prod/tempo/search?tags=service.name=my-
 ### 7.3 Tag names
 
 ```bash
-curl -s "http://localhost:8080/api/tempo-prod/tempo/v2/search/tags" \
+curl -s "http://localhost:8080/api/tempo/v2/search/tags" \
   -H "Authorization: Bearer lab-token"
 ```
 
@@ -375,7 +370,7 @@ curl -s "http://localhost:8080/api/tempo-prod/tempo/v2/search/tags" \
 ### 7.4 Tag values
 
 ```bash
-curl -s "http://localhost:8080/api/tempo-prod/tempo/v2/search/tag/service.name/values" \
+curl -s "http://localhost:8080/api/tempo/v2/search/tag/service.name/values" \
   -H "Authorization: Bearer lab-token"
 ```
 
@@ -398,7 +393,7 @@ instances:
 ### 8.1 Client Authorization header forwarded
 
 ```bash
-curl -i -X POST http://localhost:8080/api/loki-passthrough/loki/push \
+curl -i -X POST http://localhost:8080/api/loki/push \
   -H "Authorization: Bearer lab-token" \
   -H "Content-Type: application/json" \
   -d '{"streams":[]}'
@@ -410,7 +405,7 @@ Capture the request at the Loki access log.
 ### 8.2 `X-Scope-OrgID` forwarded
 
 ```bash
-curl -i -X POST http://localhost:8080/api/loki-passthrough/loki/push \
+curl -i -X POST http://localhost:8080/api/loki/push \
   -H "Authorization: Bearer lab-token" \
   -H "X-Scope-OrgID: my-tenant" \
   -H "Content-Type: application/json" \
@@ -441,7 +436,7 @@ gateway:
 Point instance at a server that sleeps 5 seconds. Issue a query.
 
 ```bash
-curl -i "http://localhost:8080/api/loki-prod/loki/query_range?query={app=%22test%22}&start=1&end=2" \
+curl -i "http://localhost:8080/api/loki/query_range?query={app=%22test%22}&start=1&end=2" \
   -H "Authorization: Bearer lab-token"
 ```
 

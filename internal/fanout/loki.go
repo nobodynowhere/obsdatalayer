@@ -11,7 +11,7 @@ import (
 
 // RegisterLoki registers all Loki routes on mux.
 func RegisterLoki(mux *http.ServeMux, h *config.ConfigHolder, p *proxy.Proxy, m *metrics.Metrics) {
-	mux.HandleFunc("POST /api/{instance}/loki/push", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/loki/push", func(w http.ResponseWriter, r *http.Request) {
 		inst := getInstance(h, r, w, "loki")
 		if inst == nil {
 			return
@@ -23,27 +23,27 @@ func RegisterLoki(mux *http.ServeMux, h *config.ConfigHolder, p *proxy.Proxy, m 
 		}, maxBytes, p, m)
 	})
 
-	mux.HandleFunc("GET /api/{instance}/loki/query_range", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/loki/query_range", func(w http.ResponseWriter, r *http.Request) {
 		if inst := getInstance(h, r, w, "loki"); inst != nil {
 			p.ForwardQuery(w, r, inst, "/loki/api/v1/query_range")
 		}
 	})
-	mux.HandleFunc("GET /api/{instance}/loki/query", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/loki/query", func(w http.ResponseWriter, r *http.Request) {
 		if inst := getInstance(h, r, w, "loki"); inst != nil {
 			p.ForwardQuery(w, r, inst, "/loki/api/v1/query")
 		}
 	})
-	mux.HandleFunc("GET /api/{instance}/loki/labels", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/loki/labels", func(w http.ResponseWriter, r *http.Request) {
 		if inst := getInstance(h, r, w, "loki"); inst != nil {
 			p.ForwardQuery(w, r, inst, "/loki/api/v1/labels")
 		}
 	})
-	mux.HandleFunc("GET /api/{instance}/loki/label/{name}/values", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/loki/label/{name}/values", func(w http.ResponseWriter, r *http.Request) {
 		if inst := getInstance(h, r, w, "loki"); inst != nil {
 			p.ForwardQuery(w, r, inst, "/loki/api/v1/label/"+r.PathValue("name")+"/values")
 		}
 	})
-	mux.HandleFunc("GET /api/{instance}/loki/series", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/loki/series", func(w http.ResponseWriter, r *http.Request) {
 		if inst := getInstance(h, r, w, "loki"); inst != nil {
 			p.ForwardQuery(w, r, inst, "/loki/api/v1/series")
 		}

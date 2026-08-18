@@ -53,7 +53,7 @@ func TestForwardQueryBasicSuccess(t *testing.T) {
 	p := newProxy(&http.Client{Timeout: 5 * time.Second})
 	inst := newInst("loki-prod", "loki", upstream.URL)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/loki/labels", nil)
 	req.Header.Set("Authorization", "Bearer token")
 	rec := httptest.NewRecorder()
 
@@ -77,7 +77,7 @@ func TestForwardQueryResponseHeadersCopied(t *testing.T) {
 	p := newProxy(&http.Client{Timeout: 5 * time.Second})
 	inst := newInst("loki-prod", "loki", upstream.URL)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/loki/labels", nil)
 	req.Header.Set("Authorization", "Bearer token")
 	rec := httptest.NewRecorder()
 
@@ -95,7 +95,7 @@ func TestForwardQueryQueryParamsForwarded(t *testing.T) {
 	p := newProxy(&http.Client{Timeout: 5 * time.Second})
 	inst := newInst("loki-prod", "loki", upstream.URL)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/query_range?query=xxx&start=1&end=2", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/loki/query_range?query=xxx&start=1&end=2", nil)
 	req.Header.Set("Authorization", "Bearer token")
 	rec := httptest.NewRecorder()
 
@@ -114,7 +114,7 @@ func TestForwardQueryAuthHeaderNotSentWithoutPassthrough(t *testing.T) {
 	p := newProxy(&http.Client{Timeout: 5 * time.Second})
 	inst := newInst("loki-prod", "loki", upstream.URL)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/loki/labels", nil)
 	req.Header.Set("Authorization", "Bearer client-token")
 	rec := httptest.NewRecorder()
 
@@ -139,7 +139,7 @@ func TestForwardQueryBasicAuthInjected(t *testing.T) {
 		BasicAuth: "user:pass",
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/loki/labels", nil)
 	req.Header.Set("Authorization", "Bearer client-token")
 	rec := httptest.NewRecorder()
 
@@ -164,7 +164,7 @@ func TestForwardQueryTenantIDInjected(t *testing.T) {
 		TenantID: "my-tenant",
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/loki/labels", nil)
 	req.Header.Set("Authorization", "Bearer client-token")
 	rec := httptest.NewRecorder()
 
@@ -183,7 +183,7 @@ func TestForwardQueryNoAuthWithoutPassthroughOrConfig(t *testing.T) {
 	p := newProxy(&http.Client{Timeout: 5 * time.Second})
 	inst := newInst("loki-prod", "loki", upstream.URL)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/loki/labels", nil)
 	req.Header.Set("Authorization", "Bearer client-token")
 	rec := httptest.NewRecorder()
 
@@ -208,7 +208,7 @@ func TestForwardQueryUpstream404(t *testing.T) {
 	p := newProxy(&http.Client{Timeout: 5 * time.Second})
 	inst := newInst("loki-prod", "loki", upstream.URL)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/loki/labels", nil)
 	req.Header.Set("Authorization", "Bearer token")
 	rec := httptest.NewRecorder()
 
@@ -228,7 +228,7 @@ func TestForwardQueryUpstream204(t *testing.T) {
 	p := newProxy(&http.Client{Timeout: 5 * time.Second})
 	inst := newInst("loki-prod", "loki", upstream.URL)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/loki/labels", nil)
 	req.Header.Set("Authorization", "Bearer token")
 	rec := httptest.NewRecorder()
 
@@ -244,7 +244,7 @@ func TestForwardQueryUpstreamUnreachable(t *testing.T) {
 	p := newProxy(&http.Client{Timeout: 2 * time.Second})
 	inst := newInst("loki-prod", "loki", "http://127.0.0.1:1") // port 1 should be unreachable
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/loki/labels", nil)
 	req.Header.Set("Authorization", "Bearer token")
 	rec := httptest.NewRecorder()
 
@@ -278,7 +278,7 @@ func TestForwardQueryUpstreamTimeout(t *testing.T) {
 	p := newProxy(&http.Client{Timeout: 50 * time.Millisecond})
 	inst := newInst("loki-prod", "loki", upstream.URL)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/loki/labels", nil)
 	req.Header.Set("Authorization", "Bearer token")
 	rec := httptest.NewRecorder()
 
@@ -296,7 +296,7 @@ func TestForwardQueryOrgIDStrippedWithoutPassthrough(t *testing.T) {
 	p := newProxy(&http.Client{Timeout: 5 * time.Second})
 	inst := newInst("loki-prod", "loki", upstream.URL)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/loki/labels", nil)
 	req.Header.Set("Authorization", "Bearer token")
 	req.Header.Set("X-Scope-OrgID", "client-tenant")
 	rec := httptest.NewRecorder()
@@ -324,7 +324,7 @@ func TestForwardQueryWrappedTimeoutError(t *testing.T) {
 	p := proxy.New(client, client)
 	inst := newInst("loki-prod", "loki", "http://x")
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki-prod/loki/labels", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/loki/labels", nil)
 	rec := httptest.NewRecorder()
 
 	p.ForwardQuery(rec, req, inst, "/loki/api/v1/labels")

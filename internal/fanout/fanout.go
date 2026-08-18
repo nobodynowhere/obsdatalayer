@@ -50,19 +50,117 @@ func FormatPartialFailureHeader(failures []PartialFailure) string {
 	return strings.Join(parts, ", ")
 }
 
-// getInstance looks up an instance by URL path value and validates its backend type.
-// Writes a 404 and returns nil if the instance is unknown or has the wrong backend.
+var errAmbiguousInstance = errors.New("ambiguous backend instances")
+
+// getInstance selects an operator-configured instance for a public
+// /api/{backend}/... request. Tenant-bound instances win over shared instances
+// when the request resolves to exactly one tenant; multi-tenant reads require a
+// shared instance because this gateway does not merge query results across
+// separate upstream systems.
 func getInstance(h *config.ConfigHolder, r *http.Request, w http.ResponseWriter, backend string) *config.InstanceConfig {
-	cfg := h.Get()
-	inst, ok := cfg.ByName[r.PathValue("instance")]
-	if !ok || inst.Backend != backend {
-		proxy.WriteJSONError(w, http.StatusNotFound, map[string]string{"error": "unknown instance"})
+	inst, err := selectInstance(h.Get(), auth.FromContext(r.Context()), backend)
+	if err != nil {
+		status := http.StatusNotFound
+		msg := "no matching instance"
+		if errors.Is(err, errAmbiguousInstance) {
+			status = http.StatusConflict
+			msg = errAmbiguousInstance.Error()
+		}
+		proxy.WriteJSONError(w, status, map[string]string{"error": msg})
 		return nil
 	}
 	if !scopeRequestToInstance(w, r, inst) {
 		return nil
 	}
 	return inst
+}
+
+func selectInstance(cfg *config.Config, ra *auth.RequestAuth, backend string) (*config.InstanceConfig, error) {
+	var shared []*config.InstanceConfig
+	var dedicated []*config.InstanceConfig
+	write := ra == nil || !ra.IsRead
+
+	for _, inst := range cfg.Instances {
+		if inst.Backend != backend {
+			continue
+		}
+		wanted := targetTenantIDs(inst, write)
+		if len(wanted) == 0 {
+			shared = append(shared, inst)
+			continue
+		}
+		if tenantSetAllowed(wanted, raTenantIDs(ra)) {
+			dedicated = append(dedicated, inst)
+		}
+	}
+
+	if ra != nil && ra.IsRead && len(ra.TenantIDs) > 1 {
+		switch len(shared) {
+		case 0:
+			if len(dedicated) > 0 {
+				return nil, errAmbiguousInstance
+			}
+			return nil, config.ErrNotFound
+		case 1:
+			return shared[0], nil
+		default:
+			return nil, errAmbiguousInstance
+		}
+	}
+
+	switch len(dedicated) {
+	case 0:
+	case 1:
+		return dedicated[0], nil
+	default:
+		return nil, errAmbiguousInstance
+	}
+
+	switch len(shared) {
+	case 0:
+		return nil, config.ErrNotFound
+	case 1:
+		return shared[0], nil
+	default:
+		return nil, errAmbiguousInstance
+	}
+}
+
+func raTenantIDs(ra *auth.RequestAuth) []string {
+	if ra == nil {
+		return nil
+	}
+	return ra.TenantIDs
+}
+
+func tenantSetAllowed(wanted []string, allowed []string) bool {
+	if len(wanted) == 0 {
+		return true
+	}
+	if len(allowed) == 0 {
+		return false
+	}
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, id := range allowed {
+		allowedSet[id] = struct{}{}
+	}
+	for _, id := range wanted {
+		if _, ok := allowedSet[id]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func requireSingleTenant(w http.ResponseWriter, r *http.Request) bool {
+	ra := auth.FromContext(r.Context())
+	if ra == nil || len(ra.TenantIDs) == 1 {
+		return true
+	}
+	proxy.WriteJSONError(w, http.StatusForbidden, map[string]string{
+		"error": "tenant is ambiguous for this endpoint",
+	})
+	return false
 }
 
 func scopeRequestToInstance(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig) bool {
