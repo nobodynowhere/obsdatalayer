@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, watchEffect } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watchEffect } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '@/stores'
@@ -26,12 +26,46 @@ function toggleDark() {
   darkMode.value = !darkMode.value
 }
 
+// Keyboard shortcuts follow the reference UI: Ctrl/Cmd + Alt + <key>.
+// Ctrl/Cmd + Alt + 1 toggles the theme.
+const isTypingTarget = (el) => {
+  if (!(el instanceof HTMLElement)) return false
+  const tag = el.tagName
+  const editable = el.getAttribute('contenteditable')
+  return (
+    tag === 'INPUT' ||
+    tag === 'TEXTAREA' ||
+    editable === '' ||
+    editable === 'true' ||
+    el.closest('[role="textbox"]') !== null
+  )
+}
+
+const onKeyDown = (e) => {
+  // Never steal a keystroke that is being typed into a field.
+  if (isTypingTarget(e.target)) return
+
+  const k = e.key.toLowerCase()
+  const primary = e.ctrlKey || e.metaKey
+  const alt = e.altKey
+
+  if (primary && alt) {
+    if (k === '1') {
+      e.preventDefault()
+      toggleDark()
+      return
+    }
+  }
+}
+
 watchEffect(() => {
   document.documentElement.classList.toggle('my-app-dark', darkMode.value)
   localStorage.setItem('obsgateway-dark', String(darkMode.value))
 })
 
 onMounted(() => {
+  window.addEventListener('keydown', onKeyDown)
+
   // DDS's SideNav enhancer is optional here: the nav is a flat list, so it
   // renders correctly as plain markup if the module is unavailable.
   import('@dds/components/esm/index.js')
@@ -40,6 +74,10 @@ onMounted(() => {
       if (el && SideNav) SideNav(el, { fixed: false, expand: true })
     })
     .catch(() => {})
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeyDown)
 })
 </script>
 
@@ -62,7 +100,7 @@ onMounted(() => {
           text
           rounded
           :aria-label="darkMode ? 'Switch to light theme' : 'Switch to dark theme'"
-          v-tooltip.bottom="darkMode ? 'Light theme' : 'Dark theme'"
+          v-tooltip.bottom="(darkMode ? 'Light theme' : 'Dark theme') + ' (Ctrl+Alt+1)'"
           @click="toggleDark"
         />
         <PrimeButton

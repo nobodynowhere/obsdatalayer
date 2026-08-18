@@ -1,18 +1,21 @@
 :root {
   --app-header-height: 3.5rem;
-  --app-surface: #ffffff;
-  --app-surface-muted: #f7f8f9;
-  --app-border: #d2d4d6;
-  --app-text: #1f2023;
-  --app-text-muted: #6b7280;
+  /* Derived from PrimeVue's surface scale so the app chrome tracks the Dell
+     preset. The scale does not invert between schemes -- 0 is lightest and 950
+     darkest in both -- so each scheme picks its own steps below. */
+  --app-surface: var(--p-surface-0);
+  --app-surface-muted: var(--p-surface-50);
+  --app-border: var(--p-surface-300);
+  --app-text: var(--p-surface-900);
+  --app-text-muted: var(--p-surface-500);
 }
 
 .my-app-dark {
-  --app-surface: #18181b;
-  --app-surface-muted: #202024;
-  --app-border: #3f3f46;
-  --app-text: rgba(255, 255, 255, 0.87);
-  --app-text-muted: #a1a1aa;
+  --app-surface: var(--p-surface-900);
+  --app-surface-muted: var(--p-surface-950);
+  --app-border: var(--p-surface-700);
+  --app-text: var(--p-surface-100);
+  --app-text-muted: var(--p-surface-400);
   color-scheme: dark;
 }
 
@@ -34,21 +37,100 @@ body {
   color: var(--app-text);
 }
 
-.my-app-dark body,
-.my-app-dark .dds__template--productivity {
-  background: var(--app-surface-muted);
+/* ============================================================
+   Dark mode
+   ------------------------------------------------------------
+   DDS ships light-mode colours as hardcoded element rules, so a
+   dark theme cannot be achieved with variables alone. Two layers
+   are needed, matching the approach in the reference UI:
+
+     1. reassign our own semantic tokens (above), and
+     2. override the DDS chrome that hardcodes colours.
+
+   The overrides use !important and attribute selectors because
+   DDS styles bare elements (`main`, `body`) and a long tail of
+   generated class names that cannot practically be enumerated.
+   PrimeVue's --p-surface-* tokens are used as the palette so the
+   two systems stay in step.
+   ============================================================ */
+
+/* dds-reboot.scss sets `main { background-color: $gray-100 }` and a light
+   background/color pair on `body`. Those are bare element selectors, so
+   nothing in the app competes with them until they are overridden here.
+   DDS's own source marks the `main` rule deprecated for this reason. */
+.my-app-dark body {
+  background-color: var(--p-surface-950) !important;
+  color: var(--p-surface-100) !important;
 }
 
-/* DDS side-nav ships light-mode colours; retint it for the dark palette. */
-.my-app-dark .dds__side-nav,
-.my-app-dark .dds__side-nav__wrapper {
-  background: var(--app-surface);
-  color: var(--app-text);
+.my-app-dark main {
+  background-color: var(--p-surface-950) !important;
+  color: var(--p-surface-100) !important;
 }
 
-.my-app-dark .dds__side-nav__item a,
-.my-app-dark .dds__side-nav__item a:visited {
-  color: var(--app-text);
+/* DDS root variables used by shadows and some components. */
+.my-app-dark {
+  --background-color--primary: var(--p-surface-950);
+  --shadow-color: rgba(0, 0, 0, 0.4);
+}
+
+/* Header */
+.my-app-dark [class*="dds__header"],
+.my-app-dark .app-header {
+  background-color: var(--p-surface-900) !important;
+  border-color: var(--p-surface-700) !important;
+}
+
+/* Side nav */
+.my-app-dark [class*="dds__side-nav"] {
+  background-color: var(--p-surface-900) !important;
+  border-color: var(--p-surface-700) !important;
+}
+
+.my-app-dark [class*="dds__side-nav"] a,
+.my-app-dark [class*="dds__side-nav"] button,
+.my-app-dark [class*="dds__side-nav"] span,
+.my-app-dark [class*="dds__side-nav"] li {
+  color: var(--p-surface-100) !important;
+  background-color: transparent !important;
+}
+
+.my-app-dark [class*="dds__side-nav"] a:hover,
+.my-app-dark [class*="dds__side-nav"] button:hover {
+  background-color: var(--p-surface-800) !important;
+  color: var(--p-surface-0) !important;
+}
+
+.my-app-dark [class*="dds__side-nav"] [class*="active"],
+.my-app-dark [class*="dds__side-nav"] [class*="selected"] {
+  background-color: var(--p-surface-800) !important;
+  color: var(--p-primary-color) !important;
+}
+
+/* Icons in the side nav are a font, so they follow `color`. */
+.my-app-dark .dds__side-nav__icon,
+.my-app-dark .dds__side-nav__icon * {
+  color: var(--p-surface-100) !important;
+  fill: var(--p-surface-100) !important;
+}
+
+/* Borders and dividers — DDS hardcodes #e1e1e1 throughout. */
+.my-app-dark [class^="dds__"] hr,
+.my-app-dark [class*=" dds__"] hr {
+  border-color: var(--p-surface-700) !important;
+}
+
+/* Labels — DDS hardcodes #636363. */
+.my-app-dark [class^="dds__"] label,
+.my-app-dark [class*=" dds__"] label,
+.my-app-dark .dds__label {
+  color: var(--p-surface-300) !important;
+}
+
+/* Links inside DDS chrome. */
+.my-app-dark [class^="dds__"] a,
+.my-app-dark [class*=" dds__"] a {
+  color: var(--p-primary-400) !important;
 }
 
 .app-header {
@@ -80,6 +162,8 @@ body {
 .app-main {
   padding: 1.25rem;
   max-width: 1600px;
+  background: var(--app-surface-muted);
+  color: var(--app-text);
 }
 
 .page-title {
