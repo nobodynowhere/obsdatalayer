@@ -39,3 +39,18 @@
 
 - Uses the pure-Go SQLite driver `github.com/glebarez/sqlite` so the binary can
   be built with `CGO_ENABLED=0`.
+
+## Security Scanning
+
+- The build script (`build.sh`) automatically includes SBOM generation and vulnerability scanning after building the binary
+- SBOM generation uses Syft with version extracted from `obsgateway.yml` (currently v26.8.1)
+- Vulnerability scanning uses Grype on the generated SBOM
+- For manual scanning, you can run:
+  ```bash
+  # Extract version from obsgateway.yml
+  package_version=$(grep 'version:' obsgateway.yml | awk '{print $2}' | tr -d '"' | sed 's/^v//')
+  syft scan dir:. --source-name "obsgateway" --source-version "$package_version" --exclude ./.git --exclude ./ui/node_modules -o syft-json=sbom/syft.json -o spdx-json=sbom/spdx.json -o syft-text=sbom/sbom.txt -o syft-table=sbom/table.txt
+  grype sbom/syft.json
+  ```
+- This generates SBOM files in the `sbom/` directory and checks for known vulnerabilities
+- Run these commands after every build unless explicitly told otherwise

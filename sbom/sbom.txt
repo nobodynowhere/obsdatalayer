@@ -1,0 +1,831 @@
+[Path: .]
+[@babel/generator]
+ Version:	 8.0.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@babel/helper-string-parser]
+ Version:	 7.29.7
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@babel/helper-string-parser]
+ Version:	 8.0.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@babel/helper-validator-identifier]
+ Version:	 7.29.7
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@babel/helper-validator-identifier]
+ Version:	 8.0.4
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@babel/parser]
+ Version:	 7.29.8
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@babel/parser]
+ Version:	 8.0.4
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@babel/types]
+ Version:	 7.29.8
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@babel/types]
+ Version:	 8.0.4
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@jridgewell/gen-mapping]
+ Version:	 0.3.13
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@jridgewell/remapping]
+ Version:	 2.3.5
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@jridgewell/resolve-uri]
+ Version:	 3.1.2
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@jridgewell/sourcemap-codec]
+ Version:	 1.5.5
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@jridgewell/trace-mapping]
+ Version:	 0.3.31
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@oxc-project/types]
+ Version:	 0.144.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@primeuix/styled]
+ Version:	 0.7.4
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@primeuix/styles]
+ Version:	 2.0.3
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@primeuix/themes]
+ Version:	 2.0.3
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@primeuix/utils]
+ Version:	 0.6.4
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@primevue/core]
+ Version:	 4.5.5
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@primevue/icons]
+ Version:	 4.5.5
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@rolldown/pluginutils]
+ Version:	 1.0.1
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@types/jsesc]
+ Version:	 2.5.1
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@vue-macros/common]
+ Version:	 3.1.4
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@vue/compiler-core]
+ Version:	 3.5.41
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@vue/compiler-dom]
+ Version:	 3.5.41
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@vue/compiler-sfc]
+ Version:	 3.5.41
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@vue/compiler-ssr]
+ Version:	 3.5.41
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@vue/devtools-api]
+ Version:	 8.2.1
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@vue/devtools-kit]
+ Version:	 8.2.1
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@vue/devtools-shared]
+ Version:	 8.2.1
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@vue/reactivity]
+ Version:	 3.5.41
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@vue/runtime-core]
+ Version:	 3.5.41
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@vue/runtime-dom]
+ Version:	 3.5.41
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@vue/server-renderer]
+ Version:	 3.5.41
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[@vue/shared]
+ Version:	 3.5.41
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[acorn]
+ Version:	 8.18.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[agent-base]
+ Version:	 6.0.2
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[ast-kit]
+ Version:	 2.2.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[ast-walker-scope]
+ Version:	 0.9.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[asynckit]
+ Version:	 0.4.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[axios]
+ Version:	 1.19.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[birpc]
+ Version:	 2.9.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[call-bind-apply-helpers]
+ Version:	 1.0.2
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[chokidar]
+ Version:	 5.0.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[combined-stream]
+ Version:	 1.0.8
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[confbox]
+ Version:	 0.1.8
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[confbox]
+ Version:	 0.2.4
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[csstype]
+ Version:	 3.2.3
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[debug]
+ Version:	 4.4.3
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[defu]
+ Version:	 6.1.7
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[delayed-stream]
+ Version:	 1.0.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[detect-libc]
+ Version:	 2.1.2
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[dunder-proto]
+ Version:	 1.0.1
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[entities]
+ Version:	 7.0.1
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[es-define-property]
+ Version:	 1.0.1
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[es-errors]
+ Version:	 1.3.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[es-object-atoms]
+ Version:	 1.1.2
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[es-set-tostringtag]
+ Version:	 2.1.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[estree-walker]
+ Version:	 2.0.2
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[exsolve]
+ Version:	 1.1.1
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[fdir]
+ Version:	 6.5.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[filippo.io/edwards25519]
+ Version:	 v1.2.0
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[follow-redirects]
+ Version:	 1.16.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[form-data]
+ Version:	 4.0.6
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[function-bind]
+ Version:	 1.1.2
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[get-intrinsic]
+ Version:	 1.3.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[get-proto]
+ Version:	 1.0.1
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[github.com/beorn7/perks]
+ Version:	 v1.0.1
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/bmatcuk/doublestar/v4]
+ Version:	 v4.10.0
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/casbin/casbin/v3]
+ Version:	 v3.11.0
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/casbin/gorm-adapter/v3]
+ Version:	 v3.41.0
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/casbin/govaluate]
+ Version:	 v1.10.0
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/cespare/xxhash/v2]
+ Version:	 v2.3.0
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/dustin/go-humanize]
+ Version:	 v1.0.1
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/glebarez/go-sqlite]
+ Version:	 v1.23.0
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/glebarez/sqlite]
+ Version:	 v1.11.0
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/go-sql-driver/mysql]
+ Version:	 v1.10.0
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/goccy/go-yaml]
+ Version:	 v1.19.2
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/gofrs/uuid/v5]
+ Version:	 v5.5.1
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/gogo/protobuf]
+ Version:	 v1.3.2
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/golang-sql/civil]
+ Version:	 v0.0.0-20220223132316-b832511892a9
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/golang-sql/sqlexp]
+ Version:	 v0.1.0
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/golang/snappy]
+ Version:	 v1.0.0
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/google/uuid]
+ Version:	 v1.6.0
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/jackc/pgpassfile]
+ Version:	 v1.0.0
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/jackc/pgservicefile]
+ Version:	 v0.0.0-20240606120523-5a60cdf6a761
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/jackc/pgx/v5]
+ Version:	 v5.10.0
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/jackc/puddle/v2]
+ Version:	 v2.2.2
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/jinzhu/inflection]
+ Version:	 v1.0.0
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/jinzhu/now]
+ Version:	 v1.1.5
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/kylelemons/godebug]
+ Version:	 v1.1.0
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/mattn/go-isatty]
+ Version:	 v0.0.24
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/microsoft/go-mssqldb]
+ Version:	 v1.10.0
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/munnerz/goautoneg]
+ Version:	 v0.0.0-20191010083416-a7dc8b61c822
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/ncruces/go-strftime]
+ Version:	 v1.0.0
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/pkg/errors]
+ Version:	 v0.9.1
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/prometheus/client_golang]
+ Version:	 v1.24.1
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/prometheus/client_model]
+ Version:	 v0.6.2
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/prometheus/common]
+ Version:	 v0.70.1
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/prometheus/procfs]
+ Version:	 v0.21.1
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/remyoudompheng/bigfft]
+ Version:	 v0.0.0-20230129092748-24d4a6f8daec
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[github.com/shopspring/decimal]
+ Version:	 v1.4.0
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[go.yaml.in/yaml/v2]
+ Version:	 v2.4.4
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[golang.org/x/crypto]
+ Version:	 v0.55.0
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[golang.org/x/exp]
+ Version:	 v0.0.0-20260813180055-c1d0aacb2297
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[golang.org/x/sync]
+ Version:	 v0.22.0
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[golang.org/x/sys]
+ Version:	 v0.47.0
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[golang.org/x/text]
+ Version:	 v0.41.0
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[google.golang.org/protobuf]
+ Version:	 v1.36.12
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[gopd]
+ Version:	 1.2.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[gorm.io/driver/mysql]
+ Version:	 v1.6.0
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[gorm.io/driver/postgres]
+ Version:	 v1.6.2
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[gorm.io/driver/sqlserver]
+ Version:	 v1.6.4
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[gorm.io/gorm]
+ Version:	 v1.31.2
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[gorm.io/plugin/dbresolver]
+ Version:	 v1.6.2
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[has-symbols]
+ Version:	 1.1.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[has-tostringtag]
+ Version:	 1.0.2
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[hasown]
+ Version:	 2.0.4
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[hookable]
+ Version:	 5.5.3
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[https-proxy-agent]
+ Version:	 5.0.1
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[jsesc]
+ Version:	 3.1.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[json5]
+ Version:	 2.2.3
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[lightningcss]
+ Version:	 1.33.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[local-pkg]
+ Version:	 1.2.1
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[magic-string]
+ Version:	 0.30.21
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[magic-string-ast]
+ Version:	 1.0.3
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[math-intrinsics]
+ Version:	 1.1.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[mime-db]
+ Version:	 1.52.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[mime-types]
+ Version:	 2.1.35
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[mlly]
+ Version:	 1.8.2
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[modernc.org/libc]
+ Version:	 v1.75.3
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[modernc.org/mathutil]
+ Version:	 v1.7.1
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[modernc.org/memory]
+ Version:	 v1.12.0
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[modernc.org/sqlite]
+ Version:	 v1.56.0
+ Type:		 go-module
+ Found by:	 go-module-file-cataloger
+
+[ms]
+ Version:	 2.1.3
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[muggle-string]
+ Version:	 0.4.1
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[nanoid]
+ Version:	 3.3.18
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[nostics]
+ Version:	 1.2.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[obsgateway-ui]
+ Version:	 1.0.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[pathe]
+ Version:	 2.0.3
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[perfect-debounce]
+ Version:	 2.1.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[picocolors]
+ Version:	 1.1.1
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[picomatch]
+ Version:	 4.0.5
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[pinia]
+ Version:	 4.0.3
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[pinia-plugin-persistedstate]
+ Version:	 4.7.1
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[pkg-types]
+ Version:	 1.3.1
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[pkg-types]
+ Version:	 2.3.1
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[postcss]
+ Version:	 8.5.26
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[primeicons]
+ Version:	 7.0.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[primevue]
+ Version:	 4.5.5
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[proxy-from-env]
+ Version:	 2.1.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[quansync]
+ Version:	 0.2.11
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[readdirp]
+ Version:	 5.1.1
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[rolldown]
+ Version:	 1.2.4
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[scule]
+ Version:	 1.3.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[source-map-js]
+ Version:	 1.2.1
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[tinyglobby]
+ Version:	 0.2.17
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[ufo]
+ Version:	 1.6.4
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[unplugin]
+ Version:	 3.3.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[unplugin-utils]
+ Version:	 0.3.2
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[vite]
+ Version:	 8.2.1
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[vue]
+ Version:	 3.5.41
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[vue-router]
+ Version:	 5.2.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[webpack-virtual-modules]
+ Version:	 0.6.2
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+
+[yaml]
+ Version:	 2.9.0
+ Type:		 npm
+ Found by:	 javascript-lock-cataloger
+

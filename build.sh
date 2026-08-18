@@ -72,6 +72,17 @@ do
    fi
 done
 
+# Generate SBOM and run security scanning
+echo "Generating SBOM and running security scanning..."
+mkdir -p sbom
+syft scan dir:. --source-name "$package_name" --source-version "$package_version" --exclude ./.git --exclude ./ui/node_modules -o syft-json=sbom/syft.json -o spdx-json=sbom/spdx.json -o syft-text=sbom/sbom.txt -o syft-table=sbom/table.txt
+grype sbom/syft.json
+if [ $? -ne 0 ]; then
+    echo 'Security scanning completed with warnings/errors'
+else
+    echo 'Security scanning completed successfully'
+fi
+
 # Added RPM Build
 if [ "$skip_rpm" = false ]; then
     nfpm package --config $package_name.yml --packager rpm --target build/
