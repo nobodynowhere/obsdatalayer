@@ -101,19 +101,7 @@ try {
 }
 
 Write-Host "Generating SBOM and running security scanning..."
-New-Item -ItemType Directory -Force -Path sbom | Out-Null
-Get-CommandOrFail syft
-syft scan dir:. --source-name "$packageName" --source-version "$packageVersion" --exclude ./.git --exclude ./ui/node_modules -o syft-json=sbom/syft.json -o spdx-json=sbom/spdx.json -o syft-text=sbom/sbom.txt -o syft-table=sbom/table.txt
-if ($LASTEXITCODE -ne 0) {
-    throw "SBOM generation failed."
-}
-Get-CommandOrFail grype
-grype sbom/syft.json
-if ($LASTEXITCODE -ne 0) {
-    Write-Warning "Security scanning completed with warnings/errors"
-} else {
-    Write-Host "Security scanning completed successfully"
-}
+& "$PSScriptRoot/sbom.ps1"
 
 if (-not $SkipRpm) {
     Get-CommandOrFail nfpm
