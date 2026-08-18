@@ -40,9 +40,11 @@ gateway:
   tls:
     enabled: false
     # Generate a local test certificate:
-    # obsgateway -config gateway.yaml --generate-self-signed --self-signed-hosts localhost,127.0.0.1
-    cert_file: ./certs/obsgateway.crt
-    key_file: ./certs/obsgateway.key
+    # obsgateway -config gateway.yaml --generate-self-signed --self-signed-hosts localhost,127.0.0.1 --update-config
+    # By default this writes obsgateway.crt and obsgateway.key in /etc/obsgateway.
+    # Use --self-signed-dir . to write them in the working directory instead.
+    cert_file: /etc/obsgateway/obsgateway.crt
+    key_file: /etc/obsgateway/obsgateway.key
     min_version: TLS1.2
     cipher_suites:
       - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256

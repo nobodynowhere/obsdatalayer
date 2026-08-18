@@ -229,6 +229,21 @@ Impact: adding backend behaviour will keep growing conditionals and inconsistent
 feature support. A clearer design would define a capability contract per backend
 covering push, query, tenant header handling, rewrite support and fan-out.
 
+## P2 - Dark mode is incomplete
+
+The admin UI exposes dark mode, but not every surface renders correctly under
+the dark palette. Some controls, text, tables or nested panels have insufficient
+contrast or retain light-mode assumptions.
+
+Impact: operators using dark mode can miss important configuration state or find
+parts of the UI hard to read. For an admin console that edits tenants, roles,
+credentials and upstream routing, dark-mode readability is a usability and
+operational-safety issue, not just cosmetic polish.
+
+Fix direction: audit every admin view in dark mode, especially modal forms,
+tables, empty states, select/dropdown menus and inline hints. Add visual
+regression coverage or a screenshot checklist for both light and dark themes.
+
 ---
 
 ## Deliberate design decisions

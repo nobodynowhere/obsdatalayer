@@ -67,6 +67,17 @@ func (b *Bootstrap) AdminIsLoopback() bool {
 // database password, and a raw goccy error quotes the offending source line
 // verbatim.
 func LoadBootstrap(path string) (*Bootstrap, error) {
+	return loadBootstrap(path, false)
+}
+
+// LoadBootstrapForTLSGeneration loads the bootstrap file for the certificate
+// helper. It permits missing certificate paths because the helper can choose
+// them and optionally write them back to the file.
+func LoadBootstrapForTLSGeneration(path string) (*Bootstrap, error) {
+	return loadBootstrap(path, true)
+}
+
+func loadBootstrap(path string, allowMissingTLSFiles bool) (*Bootstrap, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read bootstrap %s: %w", path, err)
@@ -90,7 +101,7 @@ func LoadBootstrap(path string) (*Bootstrap, error) {
 	if _, err := b.DB.DSN(); err != nil {
 		return nil, fmt.Errorf("bootstrap %s: %w", path, err)
 	}
-	if err := b.Gateway.TLS.Validate(); err != nil {
+	if err := b.Gateway.TLS.validate(!allowMissingTLSFiles); err != nil {
 		return nil, fmt.Errorf("bootstrap %s: %w", path, err)
 	}
 
@@ -108,13 +119,20 @@ func (t *TLSConfig) applyDefaults() {
 
 // Validate checks that TLS settings are complete and supported.
 func (t TLSConfig) Validate() error {
+	return t.validate(true)
+}
+
+func (t TLSConfig) validate(requireFiles bool) error {
+	if !t.Enabled && !requireFiles {
+		return nil
+	}
 	if !t.Enabled {
 		return nil
 	}
-	if t.CertFile == "" {
+	if requireFiles && t.CertFile == "" {
 		return fmt.Errorf("gateway.tls.cert_file is required when TLS is enabled")
 	}
-	if t.KeyFile == "" {
+	if requireFiles && t.KeyFile == "" {
 		return fmt.Errorf("gateway.tls.key_file is required when TLS is enabled")
 	}
 	if _, err := TLSVersion(t.MinVersion); err != nil {

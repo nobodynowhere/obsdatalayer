@@ -40,12 +40,14 @@ var commit = "unknown"
 var buildTime = "unknown"
 
 func main() {
-	configPath := flag.String("config", "./gateway.yaml", "path to bootstrap config file")
+	configPath := flag.String("config", "/etc/obsgateway/gateway.yml", "path to bootstrap config file")
 	showVersion := flag.Bool("version", false, "print version and exit")
-	generateSelfSigned := flag.Bool("generate-self-signed", false, "generate a self-signed TLS certificate from gateway.tls cert paths and exit")
+	generateSelfSigned := flag.Bool("generate-self-signed", false, "generate a self-signed TLS certificate and exit")
 	selfSignedHosts := flag.String("self-signed-hosts", "localhost,127.0.0.1,::1", "comma-separated DNS names or IP addresses for --generate-self-signed")
 	selfSignedDays := flag.Int("self-signed-valid-days", 365, "validity period in days for --generate-self-signed")
+	selfSignedDir := flag.String("self-signed-dir", "/etc/obsgateway", "directory for generated certificate files")
 	overwriteSelfSigned := flag.Bool("overwrite-self-signed", false, "overwrite existing certificate files when using --generate-self-signed")
+	updateConfig := flag.Bool("update-config", false, "update gateway.tls in the bootstrap config when using --generate-self-signed")
 	flag.Parse()
 
 	if *showVersion {
@@ -53,12 +55,28 @@ func main() {
 		return
 	}
 
-	bootstrap, err := config.LoadBootstrap(*configPath)
+	var (
+		bootstrap *config.Bootstrap
+		err       error
+	)
+	if *generateSelfSigned {
+		bootstrap, err = config.LoadBootstrapForTLSGeneration(*configPath)
+	} else {
+		bootstrap, err = config.LoadBootstrap(*configPath)
+	}
 	if err != nil {
 		log.Fatalf("config bootstrap: %v", err)
 	}
 	if *generateSelfSigned {
-		if err := generateSelfSignedCertificate(bootstrap.Gateway.TLS, *selfSignedHosts, *selfSignedDays, *overwriteSelfSigned); err != nil {
+		if err := generateSelfSignedCertificate(selfSignedOptions{
+			ConfigPath:   *configPath,
+			Bootstrap:    bootstrap,
+			Hosts:        *selfSignedHosts,
+			Days:         *selfSignedDays,
+			Dir:          *selfSignedDir,
+			Overwrite:    *overwriteSelfSigned,
+			UpdateConfig: *updateConfig,
+		}); err != nil {
 			log.Fatalf("generate self-signed certificate: %v", err)
 		}
 		return
@@ -231,28 +249,86 @@ func shutdown(servers ...*http.Server) {
 	wg.Wait()
 }
 
-func generateSelfSignedCertificate(tlsConfig config.TLSConfig, hosts string, days int, overwrite bool) error {
-	if tlsConfig.CertFile == "" || tlsConfig.KeyFile == "" {
-		return fmt.Errorf("set gateway.tls.cert_file and gateway.tls.key_file in the bootstrap config")
+type selfSignedOptions struct {
+	ConfigPath   string
+	Bootstrap    *config.Bootstrap
+	Hosts        string
+	Days         int
+	Dir          string
+	Overwrite    bool
+	UpdateConfig bool
+}
+
+func generateSelfSignedCertificate(opts selfSignedOptions) error {
+	if opts.Bootstrap == nil {
+		return fmt.Errorf("bootstrap config is required")
 	}
-	if days <= 0 {
+	if opts.Days <= 0 {
 		return fmt.Errorf("self-signed validity days must be positive")
 	}
-	names := splitCSV(hosts)
+	names := splitCSV(opts.Hosts)
 	if len(names) == 0 {
 		return fmt.Errorf("self-signed hosts must include at least one DNS name or IP address")
 	}
+	certFile, keyFile, err := selfSignedFiles(opts.Dir)
+	if err != nil {
+		return err
+	}
 	if err := certutil.GenerateSelfSigned(certutil.SelfSignedRequest{
-		CertFile:  tlsConfig.CertFile,
-		KeyFile:   tlsConfig.KeyFile,
+		CertFile:  certFile,
+		KeyFile:   keyFile,
 		Hosts:     names,
-		ValidFor:  time.Duration(days) * 24 * time.Hour,
-		Overwrite: overwrite,
+		ValidFor:  time.Duration(opts.Days) * 24 * time.Hour,
+		Overwrite: opts.Overwrite,
 	}); err != nil {
 		return err
 	}
+	if opts.UpdateConfig {
+		if err := updateBootstrapTLS(opts.ConfigPath, opts.Bootstrap, certFile, keyFile); err != nil {
+			return err
+		}
+	}
 	slog.Info("generated self-signed TLS certificate",
-		"cert_file", tlsConfig.CertFile, "key_file", tlsConfig.KeyFile, "hosts", names, "valid_days", days)
+		"cert_file", certFile, "key_file", keyFile, "hosts", names, "valid_days", opts.Days,
+		"updated_config", opts.UpdateConfig)
+	return nil
+}
+
+func selfSignedFiles(dir string) (string, string, error) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return "", "", fmt.Errorf("self-signed directory is required")
+	}
+	dir = os.ExpandEnv(dir)
+	if !filepath.IsAbs(dir) {
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			return "", "", fmt.Errorf("resolve self-signed directory %s: %w", dir, err)
+		}
+		dir = abs
+	}
+	return filepath.Join(dir, "obsgateway.crt"), filepath.Join(dir, "obsgateway.key"), nil
+}
+
+func updateBootstrapTLS(configPath string, bootstrap *config.Bootstrap, certFile, keyFile string) error {
+	bootstrap.Gateway.TLS.Enabled = true
+	bootstrap.Gateway.TLS.CertFile = certFile
+	bootstrap.Gateway.TLS.KeyFile = keyFile
+	if err := bootstrap.Gateway.TLS.Validate(); err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(bootstrap)
+	if err != nil {
+		return fmt.Errorf("marshal updated bootstrap config: %w", err)
+	}
+	path := os.ExpandEnv(configPath)
+	perm := os.FileMode(0o644)
+	if info, err := os.Stat(path); err == nil {
+		perm = info.Mode().Perm()
+	}
+	if err := os.WriteFile(path, data, perm); err != nil {
+		return fmt.Errorf("write updated bootstrap config %s: %w", path, err)
+	}
 	return nil
 }
 

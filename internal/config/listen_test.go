@@ -252,6 +252,24 @@ gateway:
 	}
 }
 
+func TestBootstrapForTLSGenerationAllowsMissingCertificate(t *testing.T) {
+	path := writeConfig(t, `
+db:
+  type: sqlite
+  path: /tmp/test.db
+gateway:
+  tls:
+    enabled: true
+`)
+	b, err := config.LoadBootstrapForTLSGeneration(path)
+	if err != nil {
+		t.Fatalf("load bootstrap for TLS generation: %v", err)
+	}
+	if !b.Gateway.TLS.Enabled {
+		t.Fatal("expected TLS enabled flag to survive helper load")
+	}
+}
+
 func TestBootstrapTLSRejectsWeakMinimumVersion(t *testing.T) {
 	path := writeConfig(t, `
 db:
