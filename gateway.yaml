@@ -1,7 +1,7 @@
 # Local development bootstrap.
 #
 # This file holds only what cannot be read from the database: how to reach the
-# database, and where to listen. Everything else -- instances, tenants,
+# database, where to listen, and listener TLS. Everything else -- instances, tenants,
 # timeouts, body limits, log level, reload interval, users and roles -- lives in
 # the database and is managed through the admin UI at http://127.0.0.1:9091/ui/
 # or the admin API.
@@ -11,7 +11,25 @@
 
 db:
   type: sqlite
-  dsn: ./gateway.db
+  path: ./gateway.db
+  # Optional SQLite tuning:
+  # mode: rwc
+  # cache: shared
+  # pragmas:
+  #   busy_timeout: 5000
+  #   journal_mode: WAL
+
+# Postgres example:
+# db:
+#   type: postgres
+#   host: postgres.example.com
+#   port: 5432
+#   database: obsgateway
+#   user: obsgateway
+#   password: ${OBSGATEWAY_DB_PASSWORD}
+#   sslmode: require
+#   timezone: UTC
+#   connect_timeout: 10
 
 gateway:
   # Listeners accept a bare port, "*:port" for every interface, or "IP:port".
@@ -19,3 +37,17 @@ gateway:
   # the admin plane. Use "*:9091" to expose the admin plane deliberately.
   listen: 8080
   admin_listen: 9091
+  tls:
+    enabled: false
+    # Generate a local test certificate:
+    # obsgateway -config gateway.yaml --generate-self-signed --self-signed-hosts localhost,127.0.0.1
+    cert_file: ./certs/obsgateway.crt
+    key_file: ./certs/obsgateway.key
+    min_version: TLS1.2
+    cipher_suites:
+      - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+      - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+      - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+      - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+      - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+      - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256

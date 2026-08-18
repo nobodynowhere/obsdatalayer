@@ -39,7 +39,7 @@ func (h *ConfigHolder) Get() *Config {
 	return h.cfg
 }
 
-// Path returns the source identifier for the config (file path or DB DSN description).
+// Path returns the source identifier for the config.
 func (h *ConfigHolder) Path() string { return h.source }
 
 // Stage re-reads and validates the config from the database without publishing

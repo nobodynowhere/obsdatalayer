@@ -235,9 +235,12 @@ covering push, query, tenant header handling, rewrite support and fan-out.
 
 Recorded so they are not re-reported as defects.
 
-- **The bootstrap file holds five keys.** `db.type`, `db.dsn`, `gateway.listen`
-  and `gateway.admin_listen` are the only things that cannot be read from the
-  database. Everything else lives in the database and hot-reloads.
+- **The bootstrap file holds only database connection fields, listener addresses
+  and listener TLS.** `db.type` selects SQLite or Postgres; SQLite uses `db.path`
+  plus optional SQLite settings, while Postgres uses host, port, database, user
+  and related connection fields. `gateway.listen`, `gateway.admin_listen` and
+  `gateway.tls` are process-level values that cannot be read from the database.
+  Everything else lives in the database and hot-reloads.
 - **Listener addresses require a restart.** They are process-level concerns, so
   they are deliberately absent from the reloadable config.
 - **The admin plane defaults to loopback.** A bare port binds `127.0.0.1`;

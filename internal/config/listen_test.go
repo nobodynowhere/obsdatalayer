@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"crypto/tls"
 	"testing"
 
 	"github.com/goccy/go-yaml"
@@ -86,7 +87,7 @@ func TestBootstrapAdminDefaultsToLoopback(t *testing.T) {
 	path := writeConfig(t, `
 db:
   type: sqlite
-  dsn: /tmp/test.db
+  path: /tmp/test.db
 gateway:
   listen: 8080
   admin_listen: 9091
@@ -110,7 +111,7 @@ func TestBootstrapAdminExplicitWildcard(t *testing.T) {
 	path := writeConfig(t, `
 db:
   type: sqlite
-  dsn: /tmp/test.db
+  path: /tmp/test.db
 gateway:
   admin_listen: "*:9099"
 `)
@@ -130,7 +131,7 @@ func TestBootstrapPortDefaults(t *testing.T) {
 	path := writeConfig(t, `
 db:
   type: sqlite
-  dsn: /tmp/test.db
+  path: /tmp/test.db
 `)
 	b, err := config.LoadBootstrap(path)
 	if err != nil {
@@ -141,5 +142,149 @@ db:
 	}
 	if got := b.AdminAddr(); got != "127.0.0.1:9091" {
 		t.Errorf("expected default admin 127.0.0.1:9091, got %q", got)
+	}
+}
+
+func TestBootstrapAcceptsStructuredPostgres(t *testing.T) {
+	path := writeConfig(t, `
+db:
+  type: postgres
+  host: db.example.com
+  port: 5432
+  database: obsgateway
+  user: obsgateway
+  password: ${OBSGATEWAY_DB_PASSWORD}
+  sslmode: require
+  timezone: UTC
+`)
+	t.Setenv("OBSGATEWAY_DB_PASSWORD", "secret")
+
+	b, err := config.LoadBootstrap(path)
+	if err != nil {
+		t.Fatalf("load bootstrap: %v", err)
+	}
+	dsn, err := b.DB.DSN()
+	if err != nil {
+		t.Fatalf("dsn: %v", err)
+	}
+	if dsn != "host=db.example.com user=obsgateway dbname=obsgateway port=5432 password=secret sslmode=require TimeZone=UTC" {
+		t.Errorf("unexpected postgres dsn: %q", dsn)
+	}
+}
+
+func TestBootstrapRejectsSQLiteWithoutPath(t *testing.T) {
+	path := writeConfig(t, `
+db:
+  type: sqlite
+`)
+	_, err := config.LoadBootstrap(path)
+	if err == nil {
+		t.Fatal("expected missing sqlite path to fail")
+	}
+}
+
+func TestBootstrapAcceptsSQLitePragmas(t *testing.T) {
+	path := writeConfig(t, `
+db:
+  type: sqlite
+  path: /tmp/test.db
+  mode: rwc
+  cache: shared
+  pragmas:
+    busy_timeout: 5000
+    journal_mode: WAL
+`)
+	b, err := config.LoadBootstrap(path)
+	if err != nil {
+		t.Fatalf("load bootstrap: %v", err)
+	}
+	dsn, err := b.DB.DSN()
+	if err != nil {
+		t.Fatalf("dsn: %v", err)
+	}
+	if dsn != "file:/tmp/test.db?_pragma=busy_timeout%285000%29&_pragma=journal_mode%28WAL%29&cache=shared&mode=rwc" {
+		t.Errorf("unexpected sqlite dsn: %q", dsn)
+	}
+}
+
+func TestBootstrapTLSDefaults(t *testing.T) {
+	path := writeConfig(t, `
+db:
+  type: sqlite
+  path: /tmp/test.db
+gateway:
+  tls:
+    enabled: true
+    cert_file: /tmp/obsgateway.crt
+    key_file: /tmp/obsgateway.key
+`)
+	b, err := config.LoadBootstrap(path)
+	if err != nil {
+		t.Fatalf("load bootstrap: %v", err)
+	}
+	if b.Gateway.TLS.MinVersion != "TLS1.2" {
+		t.Errorf("expected TLS1.2 default, got %q", b.Gateway.TLS.MinVersion)
+	}
+	if len(b.Gateway.TLS.CipherSuites) == 0 {
+		t.Fatal("expected default TLS cipher suites")
+	}
+	tlsConfig, err := b.Gateway.TLS.ServerTLSConfig()
+	if err != nil {
+		t.Fatalf("server tls config: %v", err)
+	}
+	if tlsConfig.MinVersion != tls.VersionTLS12 {
+		t.Errorf("expected TLS 1.2 minimum, got %x", tlsConfig.MinVersion)
+	}
+}
+
+func TestBootstrapTLSRejectsMissingCertificate(t *testing.T) {
+	path := writeConfig(t, `
+db:
+  type: sqlite
+  path: /tmp/test.db
+gateway:
+  tls:
+    enabled: true
+`)
+	_, err := config.LoadBootstrap(path)
+	if err == nil {
+		t.Fatal("expected missing certificate paths to fail")
+	}
+}
+
+func TestBootstrapTLSRejectsWeakMinimumVersion(t *testing.T) {
+	path := writeConfig(t, `
+db:
+  type: sqlite
+  path: /tmp/test.db
+gateway:
+  tls:
+    enabled: true
+    cert_file: /tmp/obsgateway.crt
+    key_file: /tmp/obsgateway.key
+    min_version: TLS1.1
+`)
+	_, err := config.LoadBootstrap(path)
+	if err == nil {
+		t.Fatal("expected weak TLS version to fail")
+	}
+}
+
+func TestBootstrapTLSRejectsUnknownCipher(t *testing.T) {
+	path := writeConfig(t, `
+db:
+  type: sqlite
+  path: /tmp/test.db
+gateway:
+  tls:
+    enabled: true
+    cert_file: /tmp/obsgateway.crt
+    key_file: /tmp/obsgateway.key
+    cipher_suites:
+      - TLS_RSA_WITH_3DES_EDE_CBC_SHA
+`)
+	_, err := config.LoadBootstrap(path)
+	if err == nil {
+		t.Fatal("expected unknown cipher suite to fail")
 	}
 }

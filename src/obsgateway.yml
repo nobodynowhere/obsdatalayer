@@ -1,16 +1,34 @@
 # Bootstrap configuration for obsgateway.
 #
-# Only the database connection and the listener addresses live here. All runtime
-# configuration -- instances, tenants, timeouts, body limits, log level, reload
-# interval, users and roles -- is stored in the database and managed through the
-# admin UI or the admin API on the admin listener.
+# Only the database connection, listener addresses and listener TLS live here.
+# All runtime configuration -- instances, tenants, timeouts, body limits, log
+# level, reload interval, users and roles -- is stored in the database and
+# managed through the admin UI or the admin API on the admin listener.
 #
 # On first start the gateway creates an admin account and writes the generated
 # password to /var/lib/obsgateway/.obsgateway-admin-password.
 
 db:
   type: sqlite
-  dsn: /var/lib/obsgateway/gateway.db
+  path: /var/lib/obsgateway/gateway.db
+  # Optional SQLite tuning:
+  # mode: rwc
+  # cache: shared
+  # pragmas:
+  #   busy_timeout: 5000
+  #   journal_mode: WAL
+
+# Postgres example:
+# db:
+#   type: postgres
+#   host: postgres.example.com
+#   port: 5432
+#   database: obsgateway
+#   user: obsgateway
+#   password: ${OBSGATEWAY_DB_PASSWORD}
+#   sslmode: require
+#   timezone: UTC
+#   connect_timeout: 10
 
 gateway:
   # Listeners accept a bare port, "*:port" for every interface, or "IP:port".
@@ -19,3 +37,17 @@ gateway:
   # The admin plane carries config, user, role and tenant management. A bare
   # port binds loopback only; set "*:9091" to expose it, and firewall it.
   admin_listen: 9091
+  tls:
+    enabled: false
+    # Generate a local test certificate:
+    # obsgateway -config /etc/obsgateway/obsgateway.yml --generate-self-signed --self-signed-hosts localhost,127.0.0.1
+    cert_file: /etc/obsgateway/tls/obsgateway.crt
+    key_file: /etc/obsgateway/tls/obsgateway.key
+    min_version: TLS1.2
+    cipher_suites:
+      - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+      - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+      - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+      - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+      - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+      - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256

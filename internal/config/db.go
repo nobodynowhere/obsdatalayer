@@ -286,21 +286,23 @@ func mapConfig(setting *dbstore.GatewaySetting, instances []dbstore.Instance) (*
 
 func mapInstance(inst *dbstore.Instance) *InstanceConfig {
 	ic := &InstanceConfig{
-		Name:       inst.Name,
-		Backend:    inst.Backend,
-		URL:        inst.URL,
-		FanOutMode: inst.FanOutMode,
-		BasicAuth:  inst.BasicAuth,
-		TenantID:   inst.TenantID,
+		Name:          inst.Name,
+		Backend:       inst.Backend,
+		URL:           inst.URL,
+		FanOutMode:    inst.FanOutMode,
+		BasicAuth:     inst.BasicAuth,
+		TenantID:      inst.TenantID,
+		SkipTLSVerify: inst.SkipTLSVerify,
 	}
 
 	if len(inst.PushTargets) > 0 {
 		ic.PushURLs = make([]PushTarget, 0, len(inst.PushTargets))
 		for _, pt := range inst.PushTargets {
 			ic.PushURLs = append(ic.PushURLs, PushTarget{
-				URL:       pt.URL,
-				BasicAuth: pt.BasicAuth,
-				TenantID:  pt.TenantID,
+				URL:           pt.URL,
+				BasicAuth:     pt.BasicAuth,
+				TenantID:      pt.TenantID,
+				SkipTLSVerify: pt.SkipTLSVerify,
 			})
 		}
 	}
@@ -337,13 +339,14 @@ func saveInstance(tx *gorm.DB, inst *InstanceConfig) error {
 	}
 
 	dbInst := dbstore.Instance{
-		ID:         instID,
-		Name:       inst.Name,
-		Backend:    inst.Backend,
-		URL:        inst.URL,
-		FanOutMode: inst.FanOutMode,
-		BasicAuth:  inst.BasicAuth,
-		TenantID:   inst.TenantID,
+		ID:            instID,
+		Name:          inst.Name,
+		Backend:       inst.Backend,
+		URL:           inst.URL,
+		FanOutMode:    inst.FanOutMode,
+		BasicAuth:     inst.BasicAuth,
+		TenantID:      inst.TenantID,
+		SkipTLSVerify: inst.SkipTLSVerify,
 	}
 	if err := tx.Create(&dbInst).Error; err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
@@ -373,11 +376,12 @@ func savePushTarget(tx *gorm.DB, instID uuid.UUID, pt PushTarget) error {
 		return fmt.Errorf("generate push target id: %w", err)
 	}
 	dbPt := dbstore.PushTarget{
-		ID:         ptID,
-		InstanceID: instID,
-		URL:        pt.URL,
-		BasicAuth:  pt.BasicAuth,
-		TenantID:   pt.TenantID,
+		ID:            ptID,
+		InstanceID:    instID,
+		URL:           pt.URL,
+		BasicAuth:     pt.BasicAuth,
+		TenantID:      pt.TenantID,
+		SkipTLSVerify: pt.SkipTLSVerify,
 	}
 	if err := tx.Create(&dbPt).Error; err != nil {
 		return fmt.Errorf("create push target: %w", err)

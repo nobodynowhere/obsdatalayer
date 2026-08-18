@@ -29,7 +29,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	// A private in-memory database per test, shared across the pool's
 	// connections so the Casbin adapter and the user table see the same data.
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())
-	gormDB, err := db.Open(db.DSN{Type: "sqlite", DSN: dsn})
+	gormDB, err := db.Open(db.Config{Type: "sqlite", Path: dsn})
 	if err != nil {
 		t.Fatalf("open test db: %v", err)
 	}
@@ -582,7 +582,7 @@ func TestReloadPicksUpExternalChanges(t *testing.T) {
 func serviceDB(t *testing.T, _ *auth.Service) *gorm.DB {
 	t.Helper()
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())
-	gormDB, err := db.Open(db.DSN{Type: "sqlite", DSN: dsn})
+	gormDB, err := db.Open(db.Config{Type: "sqlite", Path: dsn})
 	if err != nil {
 		t.Fatalf("reopen test db: %v", err)
 	}

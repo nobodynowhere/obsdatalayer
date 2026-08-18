@@ -27,7 +27,7 @@ type env struct {
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())
-	gormDB, err := db.Open(db.DSN{Type: "sqlite", DSN: dsn})
+	gormDB, err := db.Open(db.Config{Type: "sqlite", Path: dsn})
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -499,6 +499,28 @@ func TestAuditRedactsNestedSecrets(t *testing.T) {
 	}
 	if !strings.Contains(out, "http://a.local") {
 		t.Errorf("expected non-sensitive nested fields to survive, got:\n%s", out)
+	}
+}
+
+func TestCreateInstancePersistsSkipTLSVerify(t *testing.T) {
+	e := newEnv(t)
+	rec := e.do(t, http.MethodPost, "/api/instances", map[string]any{
+		"name":            "mimir-prod",
+		"backend":         "mimir",
+		"url":             "https://mimir.local",
+		"skip_tls_verify": true,
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body)
+	}
+	inst := e.cfg.Get().ByName["mimir-prod"]
+	if inst == nil || !inst.SkipTLSVerify {
+		t.Fatalf("expected skip_tls_verify to be persisted, got %+v", inst)
+	}
+	var body map[string]any
+	decodeInto(t, rec, &body)
+	if body["skip_tls_verify"] != true {
+		t.Errorf("expected API response to include skip_tls_verify=true, got %+v", body)
 	}
 }
 

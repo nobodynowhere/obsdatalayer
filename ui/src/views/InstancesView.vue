@@ -40,6 +40,7 @@ const blank = () => ({
   fan_out_mode: 'any',
   basic_auth: '',
   tenant_id: '',
+  skip_tls_verify: false,
   labelsEnabled: false,
   filterEnabled: false,
   filter: { mode: 'allowlist', names: [] },
@@ -85,6 +86,7 @@ function openEdit(inst) {
     fan_out_mode: inst.fan_out_mode || 'any',
     basic_auth: inst.basic_auth ?? '',
     tenant_id: inst.tenant_id ?? '',
+    skip_tls_verify: !!inst.skip_tls_verify,
     labelsEnabled: !!inst.labels,
     filterEnabled: !!inst.labels?.filter,
     filter: inst.labels?.filter
@@ -104,6 +106,7 @@ function toPayload() {
     backend: f.backend,
     basic_auth: f.basic_auth || undefined,
     tenant_id: f.tenant_id || undefined,
+    skip_tls_verify: f.skip_tls_verify || undefined,
   }
   if (isTempo.value || f.mode === 'single') {
     doc.url = f.url
@@ -112,6 +115,7 @@ function toPayload() {
       url: t.url,
       basic_auth: t.basic_auth || undefined,
       tenant_id: t.tenant_id || undefined,
+      skip_tls_verify: t.skip_tls_verify || undefined,
     }))
     doc.fan_out_mode = f.fan_out_mode
   }
@@ -167,7 +171,7 @@ function remove(inst) {
   })
 }
 
-const addTarget = () => form.value.push_urls.push({ url: '', basic_auth: '', tenant_id: '' })
+const addTarget = () => form.value.push_urls.push({ url: '', basic_auth: '', tenant_id: '', skip_tls_verify: false })
 const removeTarget = (i) => form.value.push_urls.splice(i, 1)
 const addInject = () => form.value.injectPairs.push({ key: '', value: '' })
 const removeInject = (i) => form.value.injectPairs.splice(i, 1)
@@ -203,7 +207,10 @@ onMounted(load)
         <PrimeColumn header="Targets">
           <template #body="{ data }">
             <div v-if="data.url" class="mono">{{ data.url }}</div>
-            <div v-for="(t, i) in data.push_urls" :key="i" class="mono">{{ t.url }}</div>
+            <div v-if="data.skip_tls_verify" class="stat-card__hint">TLS verification skipped</div>
+            <div v-for="(t, i) in data.push_urls" :key="i" class="mono">
+              {{ t.url }}<span v-if="t.skip_tls_verify" class="stat-card__hint"> TLS verification skipped</span>
+            </div>
             <div v-if="data.push_urls?.length" class="stat-card__hint">
               fan-out: {{ data.fan_out_mode }}
             </div>
@@ -291,8 +298,13 @@ onMounted(load)
           <div v-if="!form.push_urls.length" class="empty-state" style="padding: 1rem">
             No targets yet.
           </div>
-          <div v-for="(t, i) in form.push_urls" :key="i" class="grant-row" style="margin-top: 0.5rem">
-            <PrimeInputText v-model="t.url" placeholder="http://target.local" class="mono" style="grid-column: span 2" />
+          <div
+            v-for="(t, i) in form.push_urls"
+            :key="i"
+            class="target-row"
+            style="margin-top: 0.5rem"
+          >
+            <PrimeInputText v-model="t.url" placeholder="http://target.local" class="mono" />
             <PrimeSelect
               v-model="t.tenant_id"
               :options="tenantOptions"
@@ -300,6 +312,15 @@ onMounted(load)
               option-value="value"
               placeholder="Tenant (optional)"
               show-clear
+            />
+            <PrimeSelect
+              v-model="t.skip_tls_verify"
+              :options="[
+                { label: 'Use instance setting', value: false },
+                { label: 'Skip TLS verify', value: true },
+              ]"
+              option-label="label"
+              option-value="value"
             />
             <PrimeButton icon="pi pi-times" text rounded severity="danger" @click="removeTarget(i)" />
           </div>
@@ -329,6 +350,20 @@ onMounted(load)
           show-clear
         />
         <small>Only used when a request carries no resolved tenant of its own.</small>
+      </div>
+
+      <div class="form-field">
+        <label>Upstream TLS verification</label>
+        <PrimeSelect
+          v-model="form.skip_tls_verify"
+          :options="[
+            { label: 'Verify certificates', value: false },
+            { label: 'Skip certificate verification', value: true },
+          ]"
+          option-label="label"
+          option-value="value"
+        />
+        <small>Only affects HTTPS upstream URLs for this instance.</small>
       </div>
 
       <template v-if="!isTempo">

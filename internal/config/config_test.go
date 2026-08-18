@@ -262,7 +262,7 @@ func TestPushTargetURLValidation(t *testing.T) {
 func TestGetPushTargetsPerTargetOverride(t *testing.T) {
 	i := &config.InstanceConfig{
 		Name: "loki-prod", Backend: "loki",
-		BasicAuth: "default:pass", TenantID: "default-tenant",
+		BasicAuth: "default:pass", TenantID: "default-tenant", SkipTLSVerify: true,
 		PushURLs: []config.PushTarget{
 			{URL: "http://a.local", BasicAuth: "override:secret", TenantID: "tenant-a"},
 			{URL: "http://b.local"},
@@ -272,10 +272,10 @@ func TestGetPushTargetsPerTargetOverride(t *testing.T) {
 	if len(targets) != 2 {
 		t.Fatalf("expected 2 targets, got %d", len(targets))
 	}
-	if targets[0].BasicAuth != "override:secret" || targets[0].TenantID != "tenant-a" {
+	if targets[0].BasicAuth != "override:secret" || targets[0].TenantID != "tenant-a" || !targets[0].SkipTLSVerify {
 		t.Errorf("expected per-target override, got %+v", targets[0])
 	}
-	if targets[1].BasicAuth != "default:pass" || targets[1].TenantID != "default-tenant" {
+	if targets[1].BasicAuth != "default:pass" || targets[1].TenantID != "default-tenant" || !targets[1].SkipTLSVerify {
 		t.Errorf("expected fallback to instance defaults, got %+v", targets[1])
 	}
 }
@@ -283,13 +283,13 @@ func TestGetPushTargetsPerTargetOverride(t *testing.T) {
 func TestGetPushTargetsSingleURL(t *testing.T) {
 	i := &config.InstanceConfig{
 		Name: "loki-prod", Backend: "loki", URL: "http://loki.local",
-		BasicAuth: "user:pass", TenantID: "my-tenant",
+		BasicAuth: "user:pass", TenantID: "my-tenant", SkipTLSVerify: true,
 	}
 	targets := i.GetPushTargets()
 	if len(targets) != 1 {
 		t.Fatalf("expected 1 target, got %d", len(targets))
 	}
-	if targets[0].URL != "http://loki.local" || targets[0].TenantID != "my-tenant" {
+	if targets[0].URL != "http://loki.local" || targets[0].TenantID != "my-tenant" || !targets[0].SkipTLSVerify {
 		t.Errorf("unexpected target %+v", targets[0])
 	}
 }

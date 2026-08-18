@@ -24,6 +24,7 @@ import (
 
 	"obsdatalayer/internal/adminapi"
 	"obsdatalayer/internal/auth"
+	"obsdatalayer/internal/certutil"
 	"obsdatalayer/internal/config"
 	"obsdatalayer/internal/db"
 	"obsdatalayer/internal/fanout"
@@ -41,6 +42,10 @@ var buildTime = "unknown"
 func main() {
 	configPath := flag.String("config", "./gateway.yaml", "path to bootstrap config file")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	generateSelfSigned := flag.Bool("generate-self-signed", false, "generate a self-signed TLS certificate from gateway.tls cert paths and exit")
+	selfSignedHosts := flag.String("self-signed-hosts", "localhost,127.0.0.1,::1", "comma-separated DNS names or IP addresses for --generate-self-signed")
+	selfSignedDays := flag.Int("self-signed-valid-days", 365, "validity period in days for --generate-self-signed")
+	overwriteSelfSigned := flag.Bool("overwrite-self-signed", false, "overwrite existing certificate files when using --generate-self-signed")
 	flag.Parse()
 
 	if *showVersion {
@@ -51,6 +56,12 @@ func main() {
 	bootstrap, err := config.LoadBootstrap(*configPath)
 	if err != nil {
 		log.Fatalf("config bootstrap: %v", err)
+	}
+	if *generateSelfSigned {
+		if err := generateSelfSignedCertificate(bootstrap.Gateway.TLS, *selfSignedHosts, *selfSignedDays, *overwriteSelfSigned); err != nil {
+			log.Fatalf("generate self-signed certificate: %v", err)
+		}
+		return
 	}
 
 	logLevel := setupLogging()
@@ -137,15 +148,32 @@ func main() {
 			"addr", adminAddr)
 	}
 
-	adminSrv := &http.Server{Addr: adminAddr, Handler: adminHandler(gormDB, holder, authSvc, tenants, reload)}
-	dataSrv := &http.Server{Addr: bootstrap.DataAddr(), Handler: dataHandler(holder, authSvc, p, m)}
+	adminTLSConfig, err := bootstrap.Gateway.TLS.ServerTLSConfig()
+	if err != nil {
+		log.Fatalf("tls config: %v", err)
+	}
+	dataTLSConfig, err := bootstrap.Gateway.TLS.ServerTLSConfig()
+	if err != nil {
+		log.Fatalf("tls config: %v", err)
+	}
+	adminSrv := &http.Server{Addr: adminAddr, Handler: adminHandler(gormDB, holder, authSvc, tenants, reload), TLSConfig: adminTLSConfig}
+	dataSrv := &http.Server{Addr: bootstrap.DataAddr(), Handler: dataHandler(holder, authSvc, p, m), TLSConfig: dataTLSConfig}
 
 	// A listener that dies on its own (port already bound, for example) has to
 	// bring the process down rather than leaving it half-serving.
 	fatal := make(chan error, 2)
 	serve := func(name string, srv *http.Server) {
-		slog.Info("starting listener", "name", name, "addr", srv.Addr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		slog.Info("starting listener", "name", name, "addr", srv.Addr, "tls", bootstrap.Gateway.TLS.Enabled)
+		var err error
+		if bootstrap.Gateway.TLS.Enabled {
+			err = srv.ListenAndServeTLS(
+				os.ExpandEnv(bootstrap.Gateway.TLS.CertFile),
+				os.ExpandEnv(bootstrap.Gateway.TLS.KeyFile),
+			)
+		} else {
+			err = srv.ListenAndServe()
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			fatal <- fmt.Errorf("%s listener: %w", name, err)
 		}
 	}
@@ -201,6 +229,43 @@ func shutdown(servers ...*http.Server) {
 		}(srv)
 	}
 	wg.Wait()
+}
+
+func generateSelfSignedCertificate(tlsConfig config.TLSConfig, hosts string, days int, overwrite bool) error {
+	if tlsConfig.CertFile == "" || tlsConfig.KeyFile == "" {
+		return fmt.Errorf("set gateway.tls.cert_file and gateway.tls.key_file in the bootstrap config")
+	}
+	if days <= 0 {
+		return fmt.Errorf("self-signed validity days must be positive")
+	}
+	names := splitCSV(hosts)
+	if len(names) == 0 {
+		return fmt.Errorf("self-signed hosts must include at least one DNS name or IP address")
+	}
+	if err := certutil.GenerateSelfSigned(certutil.SelfSignedRequest{
+		CertFile:  tlsConfig.CertFile,
+		KeyFile:   tlsConfig.KeyFile,
+		Hosts:     names,
+		ValidFor:  time.Duration(days) * 24 * time.Hour,
+		Overwrite: overwrite,
+	}); err != nil {
+		return err
+	}
+	slog.Info("generated self-signed TLS certificate",
+		"cert_file", tlsConfig.CertFile, "key_file", tlsConfig.KeyFile, "hosts", names, "valid_days", days)
+	return nil
+}
+
+func splitCSV(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 // setupLogging installs the default logger and returns the level handle. The
@@ -358,13 +423,13 @@ func dataHandler(holder *config.ConfigHolder, authSvc *auth.Service, p *proxy.Pr
 }
 
 func makeClient(d config.Duration) *http.Client {
-	return &http.Client{Timeout: d.Duration()}
+	return proxy.NewHTTPClient(d.Duration())
 }
 
 // ---- bootstrap credentials --------------------------------------------------
 
-func reportBootstrapCredentials(dsn db.DSN, res auth.BootstrapResult) {
-	passFile := adminPasswordFile(dsn)
+func reportBootstrapCredentials(dbConfig db.Config, res auth.BootstrapResult) {
+	passFile := adminPasswordFile(dbConfig)
 	content := fmt.Sprintf("username: %s\npassword: %s\n", res.Username, res.Password)
 	if err := os.WriteFile(passFile, []byte(content), 0o600); err != nil {
 		slog.Error("failed to write admin credentials file; printing to stderr", "error", err)
@@ -377,11 +442,11 @@ func reportBootstrapCredentials(dsn db.DSN, res auth.BootstrapResult) {
 
 // adminPasswordFile picks a predictable location for the generated admin
 // credentials, preferring the directory that already holds gateway state.
-func adminPasswordFile(d db.DSN) string {
+func adminPasswordFile(d db.Config) string {
 	const name = ".obsgateway-admin-password"
 
-	if d.Type == "sqlite" && d.DSN != ":memory:" && !strings.HasPrefix(d.DSN, "file::memory:") {
-		if dir := filepath.Dir(d.DSN); dir != "" {
+	if path := d.SQLitePath(); path != "" {
+		if dir := filepath.Dir(path); dir != "" {
 			return filepath.Join(dir, name)
 		}
 	}

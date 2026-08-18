@@ -11,20 +11,22 @@ import (
 // with JSON tags, so the wire format stays stable even if the YAML projection
 // used elsewhere changes.
 type instanceDoc struct {
-	Name       string      `json:"name"`
-	Backend    string      `json:"backend"`
-	URL        string      `json:"url,omitempty"`
-	PushURLs   []targetDoc `json:"push_urls,omitempty"`
-	FanOutMode string      `json:"fan_out_mode,omitempty"`
-	BasicAuth  string      `json:"basic_auth,omitempty"`
-	TenantID   string      `json:"tenant_id,omitempty"`
-	Labels     *labelsDoc  `json:"labels,omitempty"`
+	Name          string      `json:"name"`
+	Backend       string      `json:"backend"`
+	URL           string      `json:"url,omitempty"`
+	PushURLs      []targetDoc `json:"push_urls,omitempty"`
+	FanOutMode    string      `json:"fan_out_mode,omitempty"`
+	BasicAuth     string      `json:"basic_auth,omitempty"`
+	TenantID      string      `json:"tenant_id,omitempty"`
+	SkipTLSVerify bool        `json:"skip_tls_verify,omitempty"`
+	Labels        *labelsDoc  `json:"labels,omitempty"`
 }
 
 type targetDoc struct {
-	URL       string `json:"url"`
-	BasicAuth string `json:"basic_auth,omitempty"`
-	TenantID  string `json:"tenant_id,omitempty"`
+	URL           string `json:"url"`
+	BasicAuth     string `json:"basic_auth,omitempty"`
+	TenantID      string `json:"tenant_id,omitempty"`
+	SkipTLSVerify bool   `json:"skip_tls_verify,omitempty"`
 }
 
 type labelsDoc struct {
@@ -44,17 +46,18 @@ const redacted = "<redacted>"
 // revealing it, and distinguish "unchanged" from "cleared" on the way back in.
 func toDoc(inst *config.InstanceConfig) instanceDoc {
 	d := instanceDoc{
-		Name:       inst.Name,
-		Backend:    inst.Backend,
-		URL:        inst.URL,
-		FanOutMode: inst.FanOutMode,
-		TenantID:   inst.TenantID,
+		Name:          inst.Name,
+		Backend:       inst.Backend,
+		URL:           inst.URL,
+		FanOutMode:    inst.FanOutMode,
+		TenantID:      inst.TenantID,
+		SkipTLSVerify: inst.SkipTLSVerify,
 	}
 	if inst.BasicAuth != "" {
 		d.BasicAuth = redacted
 	}
 	for _, pt := range inst.PushURLs {
-		t := targetDoc{URL: pt.URL, TenantID: pt.TenantID}
+		t := targetDoc{URL: pt.URL, TenantID: pt.TenantID, SkipTLSVerify: pt.SkipTLSVerify}
 		if pt.BasicAuth != "" {
 			t.BasicAuth = redacted
 		}
@@ -82,12 +85,13 @@ func toDoc(inst *config.InstanceConfig) instanceDoc {
 // the wrong backend.
 func fromDoc(d instanceDoc, prev *config.InstanceConfig) (*config.InstanceConfig, error) {
 	inst := &config.InstanceConfig{
-		Name:       d.Name,
-		Backend:    d.Backend,
-		URL:        d.URL,
-		FanOutMode: d.FanOutMode,
-		BasicAuth:  d.BasicAuth,
-		TenantID:   d.TenantID,
+		Name:          d.Name,
+		Backend:       d.Backend,
+		URL:           d.URL,
+		FanOutMode:    d.FanOutMode,
+		BasicAuth:     d.BasicAuth,
+		TenantID:      d.TenantID,
+		SkipTLSVerify: d.SkipTLSVerify,
 	}
 	// The instance-level credential is unambiguous: the instance is identified
 	// by the request path, so there is nothing to mismatch.
@@ -103,7 +107,12 @@ func fromDoc(d instanceDoc, prev *config.InstanceConfig) (*config.InstanceConfig
 	}
 
 	for _, t := range d.PushURLs {
-		target := config.PushTarget{URL: t.URL, BasicAuth: t.BasicAuth, TenantID: t.TenantID}
+		target := config.PushTarget{
+			URL:           t.URL,
+			BasicAuth:     t.BasicAuth,
+			TenantID:      t.TenantID,
+			SkipTLSVerify: t.SkipTLSVerify,
+		}
 		if t.BasicAuth == redacted {
 			stored, ok := prevByURL[t.URL]
 			if !ok {

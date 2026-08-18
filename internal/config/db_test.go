@@ -14,7 +14,7 @@ import (
 func openTestConfigDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())
-	gormDB, err := db.Open(db.DSN{Type: "sqlite", DSN: dsn})
+	gormDB, err := db.Open(db.Config{Type: "sqlite", Path: dsn})
 	if err != nil {
 		t.Fatalf("open test db: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestInstanceRoundTrip(t *testing.T) {
 
 	original := &config.InstanceConfig{
 		Name: "loki-prod", Backend: "loki", URL: "http://loki.local",
-		BasicAuth: "user:pass", TenantID: "",
+		BasicAuth: "user:pass", TenantID: "", SkipTLSVerify: true,
 		Labels: &config.LabelsConfig{
 			Filter: &config.FilterConfig{Mode: "allowlist", Names: []string{"env", "cluster"}},
 			Inject: map[string]string{"env": "prod"},
@@ -89,7 +89,7 @@ func TestInstanceRoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatal("expected loki-prod in the loaded config")
 	}
-	if got.URL != original.URL || got.BasicAuth != original.BasicAuth {
+	if got.URL != original.URL || got.BasicAuth != original.BasicAuth || got.SkipTLSVerify != original.SkipTLSVerify {
 		t.Errorf("instance did not round-trip: %+v", got)
 	}
 	if got.Labels == nil || got.Labels.Filter == nil {
@@ -146,7 +146,7 @@ func TestUpdateInstanceReplacesChildren(t *testing.T) {
 
 	updated := &config.InstanceConfig{
 		Name: "mimir-prod", Backend: "mimir",
-		PushURLs: []config.PushTarget{{URL: "http://c.local"}},
+		PushURLs: []config.PushTarget{{URL: "https://c.local", SkipTLSVerify: true}},
 	}
 	if err := config.UpdateInstance(gormDB, "mimir-prod", updated, nil); err != nil {
 		t.Fatalf("update: %v", err)
@@ -157,7 +157,7 @@ func TestUpdateInstanceReplacesChildren(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 	got := cfg.ByName["mimir-prod"]
-	if len(got.PushURLs) != 1 || got.PushURLs[0].URL != "http://c.local" {
+	if len(got.PushURLs) != 1 || got.PushURLs[0].URL != "https://c.local" || !got.PushURLs[0].SkipTLSVerify {
 		t.Errorf("expected push targets to be replaced, got %+v", got.PushURLs)
 	}
 	if got.Labels != nil {

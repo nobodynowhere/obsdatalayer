@@ -12,7 +12,7 @@ import (
 func newStore(t *testing.T) *tenant.Store {
 	t.Helper()
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())
-	gormDB, err := db.Open(db.DSN{Type: "sqlite", DSN: dsn})
+	gormDB, err := db.Open(db.Config{Type: "sqlite", Path: dsn})
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

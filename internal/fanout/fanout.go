@@ -311,6 +311,9 @@ func doSingleTarget(
 ) TargetResult {
 	url := target.URL + upstreamPath
 
+	if target.SkipTLSVerify {
+		ctx = proxy.WithSkipTLSVerify(ctx)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return TargetResult{URL: url, Err: err}

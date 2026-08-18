@@ -21,13 +21,14 @@ type GatewaySetting struct {
 
 // Instance is a configured backend tenant.
 type Instance struct {
-	ID         uuid.UUID `gorm:"type:text;primaryKey"`
-	Name       string    `gorm:"uniqueIndex"`
-	Backend    string
-	URL        string
-	FanOutMode string
-	BasicAuth  string
-	TenantID   string
+	ID            uuid.UUID `gorm:"type:text;primaryKey"`
+	Name          string    `gorm:"uniqueIndex"`
+	Backend       string
+	URL           string
+	FanOutMode    string
+	BasicAuth     string
+	TenantID      string
+	SkipTLSVerify bool
 
 	LabelsGroup *LabelsGroup `gorm:"foreignKey:InstanceID;constraint:OnDelete:CASCADE;"`
 	PushTargets []PushTarget `gorm:"foreignKey:InstanceID;constraint:OnDelete:CASCADE;"`
@@ -35,11 +36,12 @@ type Instance struct {
 
 // PushTarget is an explicit fan-out target for an instance.
 type PushTarget struct {
-	ID         uuid.UUID `gorm:"type:text;primaryKey"`
-	InstanceID uuid.UUID `gorm:"type:text;index"`
-	URL        string
-	BasicAuth  string
-	TenantID   string
+	ID            uuid.UUID `gorm:"type:text;primaryKey"`
+	InstanceID    uuid.UUID `gorm:"type:text;index"`
+	URL           string
+	BasicAuth     string
+	TenantID      string
+	SkipTLSVerify bool
 }
 
 // LabelsGroup stores the label filter/inject configuration for an instance.

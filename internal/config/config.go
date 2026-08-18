@@ -103,20 +103,22 @@ type TimeoutConfig struct {
 }
 
 type InstanceConfig struct {
-	Name       string        `yaml:"name"`
-	Backend    string        `yaml:"backend"`
-	URL        string        `yaml:"url"`
-	PushURLs   []PushTarget  `yaml:"push_urls"`
-	FanOutMode string        `yaml:"fan_out_mode"`
-	BasicAuth  string        `yaml:"basic_auth"`
-	TenantID   string        `yaml:"tenant_id"`
-	Labels     *LabelsConfig `yaml:"labels"`
+	Name          string        `yaml:"name"`
+	Backend       string        `yaml:"backend"`
+	URL           string        `yaml:"url"`
+	PushURLs      []PushTarget  `yaml:"push_urls"`
+	FanOutMode    string        `yaml:"fan_out_mode"`
+	BasicAuth     string        `yaml:"basic_auth"`
+	TenantID      string        `yaml:"tenant_id"`
+	SkipTLSVerify bool          `yaml:"skip_tls_verify"`
+	Labels        *LabelsConfig `yaml:"labels"`
 }
 
 type PushTarget struct {
-	URL       string `yaml:"url"`
-	BasicAuth string `yaml:"basic_auth"`
-	TenantID  string `yaml:"tenant_id"`
+	URL           string `yaml:"url"`
+	BasicAuth     string `yaml:"basic_auth"`
+	TenantID      string `yaml:"tenant_id"`
+	SkipTLSVerify bool   `yaml:"skip_tls_verify"`
 }
 
 type LabelsConfig struct {
@@ -304,7 +306,7 @@ func validateUpstreamURL(raw string) error {
 }
 
 // resolveTarget merges per-target auth with instance-level defaults.
-func resolveTarget(pt PushTarget, instBasicAuth, instTenantID string) PushTarget {
+func resolveTarget(pt PushTarget, instBasicAuth, instTenantID string, instSkipTLSVerify bool) PushTarget {
 	basicAuth := pt.BasicAuth
 	if basicAuth == "" {
 		basicAuth = instBasicAuth
@@ -313,7 +315,7 @@ func resolveTarget(pt PushTarget, instBasicAuth, instTenantID string) PushTarget
 	if tenantID == "" {
 		tenantID = instTenantID
 	}
-	return PushTarget{URL: pt.URL, BasicAuth: basicAuth, TenantID: tenantID}
+	return PushTarget{URL: pt.URL, BasicAuth: basicAuth, TenantID: tenantID, SkipTLSVerify: pt.SkipTLSVerify || instSkipTLSVerify}
 }
 
 // GetPushTargets returns resolved push targets with effective auth.
@@ -321,17 +323,17 @@ func (inst *InstanceConfig) GetPushTargets() []PushTarget {
 	if len(inst.PushURLs) > 0 {
 		targets := make([]PushTarget, len(inst.PushURLs))
 		for i, pt := range inst.PushURLs {
-			targets[i] = resolveTarget(pt, inst.BasicAuth, inst.TenantID)
+			targets[i] = resolveTarget(pt, inst.BasicAuth, inst.TenantID, inst.SkipTLSVerify)
 		}
 		return targets
 	}
-	return []PushTarget{{URL: inst.URL, BasicAuth: inst.BasicAuth, TenantID: inst.TenantID}}
+	return []PushTarget{{URL: inst.URL, BasicAuth: inst.BasicAuth, TenantID: inst.TenantID, SkipTLSVerify: inst.SkipTLSVerify}}
 }
 
 // GetQueryTarget returns the query target (first push target or single URL).
 func (inst *InstanceConfig) GetQueryTarget() PushTarget {
 	if len(inst.PushURLs) > 0 {
-		return resolveTarget(inst.PushURLs[0], inst.BasicAuth, inst.TenantID)
+		return resolveTarget(inst.PushURLs[0], inst.BasicAuth, inst.TenantID, inst.SkipTLSVerify)
 	}
-	return PushTarget{URL: inst.URL, BasicAuth: inst.BasicAuth, TenantID: inst.TenantID}
+	return PushTarget{URL: inst.URL, BasicAuth: inst.BasicAuth, TenantID: inst.TenantID, SkipTLSVerify: inst.SkipTLSVerify}
 }

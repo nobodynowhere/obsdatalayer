@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
@@ -14,6 +15,15 @@ import (
 	"obsdatalayer/internal/auth"
 	"obsdatalayer/internal/config"
 )
+
+type skipTLSVerifyKey struct{}
+
+// WithSkipTLSVerify marks a single upstream request as allowed to skip TLS
+// certificate verification. It only has an effect when the client uses
+// NewTransport.
+func WithSkipTLSVerify(ctx context.Context) context.Context {
+	return context.WithValue(ctx, skipTLSVerifyKey{}, true)
+}
 
 // hopByHopHeaders is the set of headers that must never be forwarded upstream.
 // Includes standard hop-by-hop headers (RFC 7230 §6.1) plus gateway auth headers.
@@ -83,7 +93,11 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, inst *config.Ins
 		upstreamURL += "?" + r.URL.RawQuery
 	}
 
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL, r.Body)
+	ctx := r.Context()
+	if target.SkipTLSVerify {
+		ctx = WithSkipTLSVerify(ctx)
+	}
+	req, err := http.NewRequestWithContext(ctx, r.Method, upstreamURL, r.Body)
 	if err != nil {
 		WriteJSONError(w, http.StatusInternalServerError, map[string]string{
 			"error": "failed to build upstream request", "instance": inst.Name,
@@ -134,6 +148,31 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, inst *config.Ins
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
+}
+
+// NewHTTPClient returns a client whose transport can skip upstream TLS
+// verification per request when the resolved target asks for it.
+func NewHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{Timeout: timeout, Transport: NewTransport()}
+}
+
+func NewTransport() http.RoundTripper {
+	base := http.DefaultTransport.(*http.Transport).Clone()
+	insecure := http.DefaultTransport.(*http.Transport).Clone()
+	insecure.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	return &tlsSwitchTransport{base: base, insecure: insecure}
+}
+
+type tlsSwitchTransport struct {
+	base     http.RoundTripper
+	insecure http.RoundTripper
+}
+
+func (t *tlsSwitchTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if skip, _ := req.Context().Value(skipTLSVerifyKey{}).(bool); skip {
+		return t.insecure.RoundTrip(req)
+	}
+	return t.base.RoundTrip(req)
 }
 
 // CopyHeadersForUpstream copies safe inbound headers to the upstream request.
