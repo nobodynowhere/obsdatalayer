@@ -5,6 +5,7 @@ import (
 	"encoding/pem"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -52,8 +53,11 @@ func TestGenerateSelfSignedWritesCertificateAndKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat key: %v", err)
 	}
-	if keyInfo.Mode().Perm() != 0o600 {
-		t.Errorf("expected private key mode 0600, got %o", keyInfo.Mode().Perm())
+	// Skip permission check on Windows since it doesn't support Unix-style permissions
+	if runtime.GOOS != "windows" {
+		if keyInfo.Mode().Perm() != 0o600 {
+			t.Errorf("expected private key mode 0600, got %o", keyInfo.Mode().Perm())
+		}
 	}
 }
 
