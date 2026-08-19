@@ -149,7 +149,7 @@ func registerMimirRead(mux *http.ServeMux, pattern string, h *config.ConfigHolde
 
 func registerMimirTenantConfig(mux *http.ServeMux, pattern string, h *config.ConfigHolder, p *proxy.Proxy, upstreamPath string) {
 	mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
-		if inst := getInstance(h, r, w, "mimir"); inst != nil && requireSingleTenant(w, r) {
+		if inst := getInstance(h, r, w, "mimir"); inst != nil && requireSingleTenantForWrite(w, r) {
 			forwardByMethod(w, r, inst, expandMimirPath(upstreamPath, r), h.Get().Gateway.MaxBodyBytes, p)
 		}
 	})

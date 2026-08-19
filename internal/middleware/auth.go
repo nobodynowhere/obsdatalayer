@@ -58,7 +58,7 @@ func BasicAuth(a auth.Authorizer, next http.Handler) http.Handler {
 			Username:       username,
 			TenantIDs:      access.TenantIDs,
 			LabelSelectors: access.LabelSelectors,
-			IsRead:         action == auth.ActionRead,
+			IsRead:         auth.ActionIsRead(action),
 		}
 		next.ServeHTTP(w, r.WithContext(auth.WithRequestAuth(r.Context(), ra)))
 	})
@@ -117,6 +117,9 @@ func extractBackend(path string) string {
 }
 
 func actionForRequest(r *http.Request) string {
+	if action := mimirControlAction(r.Method, r.URL.Path); action != "" {
+		return action
+	}
 	if r.Method == http.MethodGet {
 		return auth.ActionRead
 	}
@@ -124,6 +127,38 @@ func actionForRequest(r *http.Request) string {
 		return auth.ActionRead
 	}
 	return auth.ActionWrite
+}
+
+func mimirControlAction(method, path string) string {
+	switch {
+	case isMimirRulesPath(path):
+		if method == http.MethodGet {
+			return auth.ActionRulesRead
+		}
+		return auth.ActionRulesWrite
+	case isMimirAlertsPath(path):
+		if method == http.MethodGet {
+			return auth.ActionAlertsRead
+		}
+		return auth.ActionAlertsWrite
+	default:
+		return ""
+	}
+}
+
+func isMimirRulesPath(path string) bool {
+	return path == "/api/mimir/prometheus/api/v1/rules" ||
+		path == "/prometheus/api/v1/rules" ||
+		strings.HasPrefix(path, "/api/mimir/config/v1/rules") ||
+		strings.HasPrefix(path, "/api/mimir/prometheus/config/v1/rules") ||
+		strings.HasPrefix(path, "/prometheus/config/v1/rules")
+}
+
+func isMimirAlertsPath(path string) bool {
+	return path == "/api/mimir/prometheus/api/v1/alerts" ||
+		path == "/prometheus/api/v1/alerts" ||
+		path == "/api/mimir/api/v1/alerts" ||
+		path == "/api/mimir/alertmanager/api/v1/alerts"
 }
 
 func isQueryPost(path string) bool {

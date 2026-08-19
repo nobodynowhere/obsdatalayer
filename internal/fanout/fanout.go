@@ -164,6 +164,14 @@ func requireSingleTenant(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
+func requireSingleTenantForWrite(w http.ResponseWriter, r *http.Request) bool {
+	ra := auth.FromContext(r.Context())
+	if ra != nil && ra.IsRead {
+		return true
+	}
+	return requireSingleTenant(w, r)
+}
+
 func forwardByMethod(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, upstreamPath string, maxBodyBytes int64, p *proxy.Proxy) {
 	if r.Method == http.MethodGet {
 		p.ForwardQuery(w, r, inst, upstreamPath)

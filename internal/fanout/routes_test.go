@@ -209,7 +209,7 @@ func TestMimirSearchMetricNamesAppliesReadPolicy(t *testing.T) {
 	}
 }
 
-func TestMimirTenantConfigReadRejectsAmbiguousTenant(t *testing.T) {
+func TestMimirTenantConfigReadAllowsMultiTenant(t *testing.T) {
 	withAuthTenants(t, "tenant-a", "tenant-b")
 	capture := &captureTransport{}
 	cfg := newTestConfig([]*config.InstanceConfig{mimirInst("mimir-prod", "http://mimir.local")})
@@ -221,11 +221,11 @@ func TestMimirTenantConfigReadRejectsAmbiguousTenant(t *testing.T) {
 
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d", rec.Code)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", rec.Code)
 	}
-	if capture.path != "" {
-		t.Fatalf("upstream should not be called, got %q", capture.path)
+	if capture.method != http.MethodGet || capture.path != "/prometheus/config/v1/rules" {
+		t.Fatalf("expected GET /prometheus/config/v1/rules, got %s %s", capture.method, capture.path)
 	}
 }
 

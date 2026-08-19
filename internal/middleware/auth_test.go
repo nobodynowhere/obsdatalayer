@@ -235,6 +235,78 @@ func TestBasicAuthRootPrometheusPathUsesMimirBackend(t *testing.T) {
 	}
 }
 
+func TestBasicAuthMimirRulesAndAlertsUseDiscreteActions(t *testing.T) {
+	cases := []struct {
+		method string
+		path   string
+		action string
+		isRead bool
+	}{
+		{http.MethodGet, "/prometheus/api/v1/rules", auth.ActionRulesRead, true},
+		{http.MethodGet, "/prometheus/config/v1/rules", auth.ActionRulesRead, true},
+		{http.MethodPost, "/prometheus/config/v1/rules/team-a", auth.ActionRulesWrite, false},
+		{http.MethodDelete, "/api/mimir/prometheus/config/v1/rules/team-a/group-a", auth.ActionRulesWrite, false},
+		{http.MethodGet, "/prometheus/api/v1/alerts", auth.ActionAlertsRead, true},
+		{http.MethodGet, "/api/mimir/api/v1/alerts", auth.ActionAlertsRead, true},
+		{http.MethodPost, "/api/mimir/alertmanager/api/v1/alerts", auth.ActionAlertsWrite, false},
+		{http.MethodDelete, "/api/mimir/api/v1/alerts", auth.ActionAlertsWrite, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			var captured *auth.RequestAuth
+			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				captured = auth.FromContext(r.Context())
+				w.WriteHeader(http.StatusOK)
+			})
+			stub := authtest.New()
+			stub.Allow = map[string]bool{"mimir:" + tc.action: true}
+			h := middleware.BasicAuth(stub, inner)
+
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			req.Header.Set("Authorization", stub.Header())
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", rec.Code)
+			}
+			if captured == nil {
+				t.Fatal("expected RequestAuth in context")
+			}
+			if captured.IsRead != tc.isRead {
+				t.Fatalf("expected IsRead=%v, got %v", tc.isRead, captured.IsRead)
+			}
+		})
+	}
+}
+
+func TestBasicAuthMimirMetricReadDoesNotAllowRulesOrAlerts(t *testing.T) {
+	for _, path := range []string{
+		"/prometheus/api/v1/rules",
+		"/prometheus/api/v1/alerts",
+	} {
+		t.Run(path, func(t *testing.T) {
+			inner, called := newHandlerCalledFlag()
+			stub := authtest.New()
+			stub.Allow = map[string]bool{"mimir:read": true}
+			h := middleware.BasicAuth(stub, inner)
+
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.Header.Set("Authorization", stub.Header())
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("expected 403, got %d", rec.Code)
+			}
+			if *called {
+				t.Fatal("expected inner handler not to be called")
+			}
+		})
+	}
+}
+
 func TestBasicAuthUnauthorizedHeaders(t *testing.T) {
 	inner, _ := newHandlerCalledFlag()
 	h := middleware.BasicAuth(authtest.New(), inner)

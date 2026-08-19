@@ -369,6 +369,45 @@ func TestTenantIDsWildcardBackendAndAction(t *testing.T) {
 			}
 		}
 	}
+	for _, action := range []string{auth.ActionRulesRead, auth.ActionRulesWrite, auth.ActionAlertsRead, auth.ActionAlertsWrite} {
+		if _, ok := svc.TenantIDsFor("alice", "mimir", action); !ok {
+			t.Errorf("expected wildcard grant to allow mimir:%s", action)
+		}
+	}
+}
+
+func TestMimirReadDoesNotAllowRulesOrAlerts(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustRole(t, svc, "metrics-reader", grant("mimir", auth.ActionRead, env.a, env.b))
+	mustUser(t, svc, "alice", "metrics-reader")
+
+	if _, ok := svc.TenantIDsFor("alice", "mimir", auth.ActionRead); !ok {
+		t.Fatal("expected metric read to be allowed")
+	}
+	for _, action := range []string{auth.ActionRulesRead, auth.ActionAlertsRead} {
+		if _, ok := svc.TenantIDsFor("alice", "mimir", action); ok {
+			t.Fatalf("mimir:read must not allow mimir:%s", action)
+		}
+	}
+}
+
+func TestMimirRulesAndAlertsReadCanBeMultiTenant(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustRole(t, svc, "rules-a", grant("mimir", auth.ActionRulesRead, env.a))
+	mustRole(t, svc, "rules-b", grant("mimir", auth.ActionRulesRead, env.b))
+	mustRole(t, svc, "alerts-ab", grant("mimir", auth.ActionAlertsRead, env.a, env.b))
+	mustUser(t, svc, "alice", "rules-a", "rules-b", "alerts-ab")
+
+	want := []string{env.a, env.b}
+	sort.Strings(want)
+	if tenants, ok := svc.TenantIDsFor("alice", "mimir", auth.ActionRulesRead); !ok || !equalStrings(tenants, want) {
+		t.Fatalf("expected alice rules read for tenants A+B, got %v ok=%v", tenants, ok)
+	}
+	if tenants, ok := svc.TenantIDsFor("alice", "mimir", auth.ActionAlertsRead); !ok || !equalStrings(tenants, want) {
+		t.Fatalf("expected alice alerts read for tenants A+B, got %v ok=%v", tenants, ok)
+	}
 }
 
 func TestUnknownUserHasNoTenants(t *testing.T) {
@@ -657,10 +696,20 @@ func TestGrantValidation(t *testing.T) {
 		wantErr bool
 	}{
 		{"valid read", grant("loki", "read", uuidA), false},
+		{"valid mimir rules read", grant("mimir", "rules:read", uuidA), false},
+		{"valid mimir rules write", grant("mimir", "rules:write", uuidA), false},
+		{"valid mimir alerts read", grant("mimir", "alerts:read", uuidA), false},
+		{"valid mimir alerts write", grant("mimir", "alerts:write", uuidA), false},
 		{"valid wildcard", grant("*", "*", uuidA), false},
 		{"valid admin", auth.Grant{Backend: "admin", Action: "access"}, false},
 		{"unknown backend", grant("kafka", "read", uuidA), true},
 		{"unknown action", grant("loki", "delete", uuidA), true},
+		{"rules action on loki", grant("loki", "rules:read", uuidA), true},
+		{"alerts action on tempo", grant("tempo", "alerts:write", uuidA), true},
+		{"rules read with multiple tenants", grant("mimir", "rules:read", uuidA, "56f1bd96-55a2-4f34-9451-99eeccdd40d8"), false},
+		{"alerts read with multiple tenants", grant("mimir", "alerts:read", uuidA, "56f1bd96-55a2-4f34-9451-99eeccdd40d8"), false},
+		{"rules write with multiple tenants", grant("mimir", "rules:write", uuidA, "56f1bd96-55a2-4f34-9451-99eeccdd40d8"), true},
+		{"alerts write with multiple tenants", grant("mimir", "alerts:write", uuidA, "56f1bd96-55a2-4f34-9451-99eeccdd40d8"), true},
 		{"no tenants", grant("loki", "read"), true},
 		{"empty tenant", grant("loki", "read", ""), true},
 		{"tenant is not a uuid", grant("loki", "read", "tenant-a"), true},
@@ -713,6 +762,18 @@ func serviceDB(t *testing.T, _ *auth.Service) *gorm.DB {
 		t.Fatalf("reopen test db: %v", err)
 	}
 	return gormDB
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // ---- subject namespacing ----------------------------------------------------

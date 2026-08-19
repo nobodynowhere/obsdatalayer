@@ -277,7 +277,7 @@ func (s *Service) AccessFor(name, backend, action string) (Access, bool) {
 		// X-Scope-OrgID, so there is nothing safe to forward.
 		return Access{}, false
 	}
-	if action == ActionWrite && len(live) != 1 {
+	if ActionRequiresSingleTenant(action) && len(live) != 1 {
 		return Access{}, false
 	}
 
@@ -675,7 +675,7 @@ func (s *Service) assertRolesExist(roles []string) error {
 func validateRoleGrantSet(grants []Grant) error {
 	var writeTenant string
 	for _, g := range grants {
-		if g.IsAdmin() || (g.Action != ActionWrite && g.Action != ActionAny) {
+		if g.IsAdmin() || !ActionIsWrite(g.Action) {
 			continue
 		}
 		if len(g.TenantIDs) != 1 {

@@ -22,9 +22,13 @@ import (
 const (
 	BackendAny = "*"
 
-	ActionRead  = "read"
-	ActionWrite = "write"
-	ActionAny   = "*"
+	ActionRead        = "read"
+	ActionWrite       = "write"
+	ActionRulesRead   = "rules:read"
+	ActionRulesWrite  = "rules:write"
+	ActionAlertsRead  = "alerts:read"
+	ActionAlertsWrite = "alerts:write"
+	ActionAny         = "*"
 
 	// ObjectAdmin / ActionAccess gate the admin listener.
 	ObjectAdmin  = "admin"
@@ -40,7 +44,15 @@ const (
 
 var (
 	validBackends = map[string]bool{"loki": true, "mimir": true, "tempo": true, BackendAny: true}
-	validActions  = map[string]bool{ActionRead: true, ActionWrite: true, ActionAny: true}
+	validActions  = map[string]bool{
+		ActionRead:        true,
+		ActionWrite:       true,
+		ActionRulesRead:   true,
+		ActionRulesWrite:  true,
+		ActionAlertsRead:  true,
+		ActionAlertsWrite: true,
+		ActionAny:         true,
+	}
 )
 
 // User is a gateway account. The password hash is never serialized.
@@ -81,12 +93,15 @@ func (g Grant) Validate() error {
 		return fmt.Errorf("unknown backend %q (must be loki, mimir, tempo, admin or *)", g.Backend)
 	}
 	if !validActions[g.Action] {
-		return fmt.Errorf("unknown action %q (must be read, write or *)", g.Action)
+		return fmt.Errorf("unknown action %q (must be read, write, rules:read, rules:write, alerts:read, alerts:write or *)", g.Action)
+	}
+	if IsMimirControlAction(g.Action) && g.Backend != "mimir" {
+		return fmt.Errorf("action %q is only supported on the mimir backend", g.Action)
 	}
 	if len(g.TenantIDs) == 0 {
 		return fmt.Errorf("grant on backend %q action %q has no tenant_ids", g.Backend, g.Action)
 	}
-	if (g.Action == ActionWrite || g.Action == ActionAny) && len(g.TenantIDs) != 1 {
+	if ActionRequiresSingleTenant(g.Action) && len(g.TenantIDs) != 1 {
 		return fmt.Errorf("grant on backend %q action %q must carry exactly one tenant_id", g.Backend, g.Action)
 	}
 	if selector := strings.TrimSpace(g.ReadLabelSelector); selector != "" {
@@ -180,6 +195,31 @@ func objectMatches(policyObj, requested string) bool {
 
 func actionMatches(policyAct, requested string) bool {
 	return policyAct == ActionAny || policyAct == requested
+}
+
+func ActionIsRead(action string) bool {
+	return action == ActionRead || action == ActionRulesRead || action == ActionAlertsRead
+}
+
+func ActionIsWrite(action string) bool {
+	return action == ActionWrite ||
+		action == ActionRulesWrite ||
+		action == ActionAlertsWrite ||
+		action == ActionAny
+}
+
+func ActionRequiresSingleTenant(action string) bool {
+	return action == ActionWrite ||
+		action == ActionRulesWrite ||
+		action == ActionAlertsWrite ||
+		action == ActionAny
+}
+
+func IsMimirControlAction(action string) bool {
+	return action == ActionRulesRead ||
+		action == ActionRulesWrite ||
+		action == ActionAlertsRead ||
+		action == ActionAlertsWrite
 }
 
 // mergeTenants returns the sorted, deduplicated union of ids.

@@ -22,6 +22,14 @@ const dataActions = [
   { label: 'write', value: 'write' },
 ]
 
+const mimirActions = [
+  ...dataActions,
+  { label: 'rules read', value: 'rules:read' },
+  { label: 'rules write', value: 'rules:write' },
+  { label: 'alerts read', value: 'alerts:read' },
+  { label: 'alerts write', value: 'alerts:write' },
+]
+
 const tenantOptions = computed(() =>
   props.tenants.map((t) => ({ label: `${t.name} — ${t.id.slice(0, 8)}…`, value: t.id })),
 )
@@ -32,6 +40,9 @@ function normalizeGrant(grant) {
   }
   const next = { ...grant }
   if (next.action === 'access') {
+    next.action = 'read'
+  }
+  if (next.backend !== 'mimir' && isMimirControlAction(next)) {
     next.action = 'read'
   }
   if (usesSingleTenant(next)) {
@@ -85,11 +96,19 @@ function isMimirRead(grant) {
 }
 
 function isWriteCapable(grant) {
-  return grant.backend !== 'admin' && usesSingleTenant(grant)
+  return grant.backend !== 'admin' && ['write', '*', 'rules:write', 'alerts:write'].includes(grant.action)
 }
 
 function usesSingleTenant(grant) {
-  return grant.action === 'write' || grant.action === '*'
+  return ['write', '*', 'rules:write', 'alerts:write'].includes(grant.action)
+}
+
+function isMimirControlAction(grant) {
+  return ['rules:read', 'rules:write', 'alerts:read', 'alerts:write'].includes(grant.action)
+}
+
+function actionOptions(grant) {
+  return grant.backend === 'mimir' ? mimirActions : dataActions
 }
 
 function add() {
@@ -138,7 +157,7 @@ watch(
       <PrimeSelect
         v-if="grant.backend !== 'admin'"
         :model-value="grant.action"
-        :options="dataActions"
+        :options="actionOptions(grant)"
         option-label="label"
         option-value="value"
         @update:model-value="update(i, { action: $event })"
