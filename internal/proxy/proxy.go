@@ -56,7 +56,21 @@ func (p *Proxy) PushClient() *http.Client { return p.clients.Load().push }
 
 // ForwardQuery forwards a read request using the query client.
 func (p *Proxy) ForwardQuery(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, upstreamPath string) {
-	p.forward(w, r, inst, upstreamPath, p.QueryClient())
+	p.forward(w, r, inst, inst.GetQueryTarget(), upstreamPath, p.QueryClient())
+}
+
+// ForwardFirstTarget forwards neutral status/discovery requests to the first
+// resolved target for an instance. It is used for endpoints like buildinfo that
+// should describe the backing Mimir deployment rather than a logical query API.
+func (p *Proxy) ForwardFirstTarget(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, upstreamPath string) {
+	targets := inst.GetPushTargets()
+	if len(targets) == 0 {
+		WriteJSONError(w, http.StatusNotFound, map[string]string{
+			"error": "no matching instance", "instance": inst.Name,
+		})
+		return
+	}
+	p.forward(w, r, inst, targets[0], upstreamPath, p.QueryClient())
 }
 
 // ForwardPush forwards a push request using the push client (Tempo single-target).
@@ -67,12 +81,10 @@ func (p *Proxy) ForwardPush(w http.ResponseWriter, r *http.Request, inst *config
 	if maxBodyBytes > 0 {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	}
-	p.forward(w, r, inst, upstreamPath, p.PushClient())
+	p.forward(w, r, inst, inst.GetQueryTarget(), upstreamPath, p.PushClient())
 }
 
-func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, upstreamPath string, client *http.Client) {
-	target := inst.GetQueryTarget()
-
+func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, target config.PushTarget, upstreamPath string, client *http.Client) {
 	upstreamURL := target.URL + upstreamPath
 	if r.URL.RawQuery != "" {
 		upstreamURL += "?" + r.URL.RawQuery

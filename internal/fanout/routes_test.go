@@ -20,12 +20,14 @@ import (
 
 type captureTransport struct {
 	method string
+	host   string
 	path   string
 	body   string
 }
 
 func (t *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	t.method = req.Method
+	t.host = req.URL.Host
 	t.path = req.URL.Path
 	if req.Body != nil {
 		body, _ := io.ReadAll(req.Body)
@@ -99,7 +101,15 @@ func TestMimirAlertmanagerConfigWriteForwards(t *testing.T) {
 func TestMimirRootPrometheusBuildInfoForwards(t *testing.T) {
 	withAuthTenants(t, "tenant-a")
 	capture := &captureTransport{}
-	cfg := newTestConfig([]*config.InstanceConfig{mimirInst("mimir-prod", "http://mimir.local")})
+	cfg := newTestConfig([]*config.InstanceConfig{{
+		Name:    "mimir-prod",
+		Backend: "mimir",
+		URL:     "http://query.local",
+		PushURLs: []config.PushTarget{
+			{URL: "http://first.local"},
+			{URL: "http://second.local"},
+		},
+	}})
 	h := newRouteOnlyMux(cfg, capture)
 
 	req := httptest.NewRequest(http.MethodGet, "/prometheus/api/v1/status/buildinfo", nil)
@@ -111,8 +121,8 @@ func TestMimirRootPrometheusBuildInfoForwards(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("expected 202, got %d", rec.Code)
 	}
-	if capture.method != http.MethodGet || capture.path != "/prometheus/api/v1/status/buildinfo" {
-		t.Fatalf("expected GET /prometheus/api/v1/status/buildinfo, got %s %s", capture.method, capture.path)
+	if capture.method != http.MethodGet || capture.host != "first.local" || capture.path != "/prometheus/api/v1/status/buildinfo" {
+		t.Fatalf("expected GET first.local/prometheus/api/v1/status/buildinfo, got %s %s%s", capture.method, capture.host, capture.path)
 	}
 }
 

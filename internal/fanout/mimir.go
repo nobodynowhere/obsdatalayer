@@ -48,7 +48,7 @@ func RegisterMimir(mux *http.ServeMux, h *config.ConfigHolder, p *proxy.Proxy, m
 	registerMimirRead(mux, "POST /api/mimir/cardinality/label_names", h, p, "cardinality", "/prometheus/api/v1/cardinality/label_names")
 	registerMimirRead(mux, "GET /api/mimir/cardinality/label_values", h, p, "cardinality", "/prometheus/api/v1/cardinality/label_values")
 	registerMimirRead(mux, "POST /api/mimir/cardinality/label_values", h, p, "cardinality", "/prometheus/api/v1/cardinality/label_values")
-	registerMimirRead(mux, "GET /api/mimir/status/buildinfo", h, p, "", "/prometheus/api/v1/status/buildinfo")
+	registerMimirFirstTarget(mux, "GET /api/mimir/status/buildinfo", h, p, "/prometheus/api/v1/status/buildinfo")
 	registerMimirRead(mux, "GET /api/mimir/format_query", h, p, "", "/prometheus/api/v1/format_query")
 	registerMimirRead(mux, "POST /api/mimir/format_query", h, p, "", "/prometheus/api/v1/format_query")
 
@@ -91,7 +91,7 @@ func registerMimirPrometheusRoutes(mux *http.ServeMux, prefix string, h *config.
 	registerMimirRead(mux, "POST "+prefix+"/api/v1/cardinality/label_names", h, p, "cardinality", "/prometheus/api/v1/cardinality/label_names")
 	registerMimirRead(mux, "GET "+prefix+"/api/v1/cardinality/label_values", h, p, "cardinality", "/prometheus/api/v1/cardinality/label_values")
 	registerMimirRead(mux, "POST "+prefix+"/api/v1/cardinality/label_values", h, p, "cardinality", "/prometheus/api/v1/cardinality/label_values")
-	registerMimirRead(mux, "GET "+prefix+"/api/v1/status/buildinfo", h, p, "", "/prometheus/api/v1/status/buildinfo")
+	registerMimirFirstTarget(mux, "GET "+prefix+"/api/v1/status/buildinfo", h, p, "/prometheus/api/v1/status/buildinfo")
 	registerMimirRead(mux, "GET "+prefix+"/api/v1/format_query", h, p, "", "/prometheus/api/v1/format_query")
 	registerMimirRead(mux, "POST "+prefix+"/api/v1/format_query", h, p, "", "/prometheus/api/v1/format_query")
 	registerMimirRead(mux, "GET "+prefix+"/api/v1/rules", h, p, "", "/prometheus/api/v1/rules")
@@ -132,6 +132,14 @@ func registerMimirTenantConfig(mux *http.ServeMux, pattern string, h *config.Con
 	mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 		if inst := getInstance(h, r, w, "mimir"); inst != nil && requireSingleTenant(w, r) {
 			forwardByMethod(w, r, inst, expandMimirPath(upstreamPath, r), h.Get().Gateway.MaxBodyBytes, p)
+		}
+	})
+}
+
+func registerMimirFirstTarget(mux *http.ServeMux, pattern string, h *config.ConfigHolder, p *proxy.Proxy, upstreamPath string) {
+	mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+		if inst := getInstance(h, r, w, "mimir"); inst != nil {
+			p.ForwardFirstTarget(w, r, inst, upstreamPath)
 		}
 	})
 }
