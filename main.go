@@ -128,7 +128,7 @@ func main() {
 	p := proxy.New(makeClient(cfg.Gateway.Timeouts.Query), makeClient(cfg.Gateway.Timeouts.Push))
 	m := metrics.New(prometheus.DefaultRegisterer)
 
-	reload := newReloader(holder, authSvc, tenants, p, logLevel, cfg.Gateway.Timeouts)
+	reload := newReloader(holder, authSvc, tenants, p, m, logLevel, cfg.Gateway.Timeouts)
 
 	// Signals are trapped before the listeners start so that an early SIGTERM
 	// cannot slip through to the default disposition and kill the process
@@ -174,7 +174,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("tls config: %v", err)
 	}
-	adminSrv := &http.Server{Addr: adminAddr, Handler: adminHandler(gormDB, holder, authSvc, tenants, reload), TLSConfig: adminTLSConfig}
+	adminSrv := &http.Server{Addr: adminAddr, Handler: adminHandler(gormDB, holder, authSvc, tenants, m, reload), TLSConfig: adminTLSConfig}
 	dataSrv := &http.Server{Addr: bootstrap.DataAddr(), Handler: dataHandler(holder, authSvc, p, m), TLSConfig: dataTLSConfig}
 
 	// A listener that dies on its own (port already bound, for example) has to
@@ -378,12 +378,13 @@ type reloader struct {
 	auth     *auth.Service
 	tenants  *tenant.Store
 	proxy    *proxy.Proxy
+	metrics  *metrics.Metrics
 	logLevel *slog.LevelVar
 	timeouts config.TimeoutConfig
 }
 
-func newReloader(h *config.ConfigHolder, a *auth.Service, t *tenant.Store, p *proxy.Proxy, lvl *slog.LevelVar, current config.TimeoutConfig) *reloader {
-	return &reloader{holder: h, auth: a, tenants: t, proxy: p, logLevel: lvl, timeouts: current}
+func newReloader(h *config.ConfigHolder, a *auth.Service, t *tenant.Store, p *proxy.Proxy, m *metrics.Metrics, lvl *slog.LevelVar, current config.TimeoutConfig) *reloader {
+	return &reloader{holder: h, auth: a, tenants: t, proxy: p, metrics: m, logLevel: lvl, timeouts: current}
 }
 
 func (r *reloader) run() error {
@@ -412,6 +413,12 @@ func (r *reloader) run() error {
 	}
 
 	r.holder.Publish(staged)
+
+	// Instances are created and deleted through the admin API, and every counter
+	// is labeled by instance. Drop the series of any instance that no longer
+	// exists, otherwise they are exported for the life of the process.
+	r.metrics.RetainInstances(instanceNames(staged.Instances))
+
 	applyLogLevel(r.logLevel, staged.Gateway.LogLevel)
 	if staged.Gateway.Timeouts != r.timeouts {
 		r.proxy.SetClients(
@@ -424,10 +431,18 @@ func (r *reloader) run() error {
 	return nil
 }
 
+func instanceNames(instances []*config.InstanceConfig) []string {
+	names := make([]string, 0, len(instances))
+	for _, inst := range instances {
+		names = append(names, inst.Name)
+	}
+	return names
+}
+
 // ---- listeners --------------------------------------------------------------
 
 // adminHandler builds the admin listener's handler.
-func adminHandler(gormDB *gorm.DB, holder *config.ConfigHolder, authSvc *auth.Service, tenants *tenant.Store, reload *reloader) http.Handler {
+func adminHandler(gormDB *gorm.DB, holder *config.ConfigHolder, authSvc *auth.Service, tenants *tenant.Store, m *metrics.Metrics, reload *reloader) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -468,6 +483,7 @@ func adminHandler(gormDB *gorm.DB, holder *config.ConfigHolder, authSvc *auth.Se
 		Tenants: tenants,
 		DB:      gormDB,
 		Config:  holder,
+		Metrics: m,
 		Reload:  reload.run,
 	})
 

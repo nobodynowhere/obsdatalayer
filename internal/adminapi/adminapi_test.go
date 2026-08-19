@@ -10,10 +10,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"obsdatalayer/internal/adminapi"
 	"obsdatalayer/internal/auth"
 	"obsdatalayer/internal/config"
 	"obsdatalayer/internal/db"
+	"obsdatalayer/internal/metrics"
 	"obsdatalayer/internal/tenant"
 )
 
@@ -22,6 +25,7 @@ type env struct {
 	svc     *auth.Service
 	tenants *tenant.Store
 	cfg     *config.ConfigHolder
+	metrics *metrics.Metrics
 }
 
 func newEnv(t *testing.T) *env {
@@ -63,11 +67,13 @@ func newEnv(t *testing.T) *env {
 		return tenants.Reload()
 	}
 
+	m := metrics.New(prometheus.NewRegistry())
+
 	mux := http.NewServeMux()
 	adminapi.Register(mux, adminapi.Deps{
-		Auth: svc, Tenants: tenants, DB: gormDB, Config: holder, Reload: reload,
+		Auth: svc, Tenants: tenants, DB: gormDB, Config: holder, Metrics: m, Reload: reload,
 	})
-	return &env{mux: mux, svc: svc, tenants: tenants, cfg: holder}
+	return &env{mux: mux, svc: svc, tenants: tenants, cfg: holder, metrics: m}
 }
 
 // do issues a request against the admin mux. The mux is mounted without
@@ -644,5 +650,53 @@ func TestAuditNamesCreatedSubject(t *testing.T) {
 
 	if !strings.Contains(logs.String(), "target=acme") {
 		t.Errorf("expected the created subject to be named, got:\n%s", logs.String())
+	}
+}
+
+func TestGetMetricsReturnsSummary(t *testing.T) {
+	e := newEnv(t)
+
+	e.metrics.RecordFanout("mimir-1", "http://a.local", 204)
+	e.metrics.RecordFanout("mimir-1", "http://a.local", 500)
+	e.metrics.RecordPartialFailure("mimir-1")
+	e.metrics.RecordWriteItems("mimir", "mimir-1", "series", "forwarded", 12)
+	e.metrics.RecordRewriteLabels("mimir", "mimir-1", "injected", 4)
+
+	rec := e.do(t, http.MethodGet, "/api/metrics", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var got metrics.Summary
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.FanoutRequests != 2 {
+		t.Errorf("expected 2 fan-out requests, got %d", got.FanoutRequests)
+	}
+	if got.FanoutFailures != 1 {
+		t.Errorf("expected 1 fan-out failure, got %d", got.FanoutFailures)
+	}
+	if got.ItemsForwarded != 12 {
+		t.Errorf("expected 12 items forwarded, got %d", got.ItemsForwarded)
+	}
+	if got.LabelsRewritten != 4 {
+		t.Errorf("expected 4 labels rewritten, got %d", got.LabelsRewritten)
+	}
+	if len(got.Instances) != 1 || got.Instances[0].Instance != "mimir-1" {
+		t.Fatalf("expected one instance mimir-1, got %+v", got.Instances)
+	}
+}
+
+// TestGetMetricsEmptyIsAnArrayNotNull keeps the SPA from having to guard
+// against a null where it iterates.
+func TestGetMetricsEmptyIsAnArrayNotNull(t *testing.T) {
+	e := newEnv(t)
+	rec := e.do(t, http.MethodGet, "/api/metrics", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"instances":[]`) {
+		t.Fatalf("expected an empty array, got %s", rec.Body.String())
 	}
 }

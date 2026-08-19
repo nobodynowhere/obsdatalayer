@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"obsdatalayer/internal/config"
 	"obsdatalayer/internal/fanout"
@@ -480,7 +479,7 @@ func TestPartialFailureMetricCountedOncePerRequest(t *testing.T) {
 	// Do() returns partialFailures to the caller (the handler) which calls
 	// m.RecordPartialFailure once. Do() itself must NOT call it. The counter
 	// should therefore be zero here — it is the handler's responsibility.
-	count := testutil.ToFloat64(m.PartialFailures.WithLabelValues("loki-prod"))
+	count := m.PartialFailureValue("loki-prod")
 	if count != 0 {
 		t.Errorf("Do() must not call RecordPartialFailure; expected counter=0, got %v", count)
 	}

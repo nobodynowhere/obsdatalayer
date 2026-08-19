@@ -11,6 +11,7 @@ import (
 
 	"obsdatalayer/internal/auth"
 	"obsdatalayer/internal/config"
+	"obsdatalayer/internal/metrics"
 	"obsdatalayer/internal/rewrite"
 	"obsdatalayer/internal/tenant"
 )
@@ -23,16 +24,18 @@ type Deps struct {
 	Tenants *tenant.Store
 	DB      *gorm.DB
 	Config  *config.ConfigHolder
+	Metrics *metrics.Metrics
 	Reload  func() error
 }
 
 // Register mounts the tenant, user, role, instance and settings endpoints.
 func Register(mux *http.ServeMux, d Deps) {
-	h := &handler{svc: d.Auth, tenants: d.Tenants, db: d.DB, cfg: d.Config, reload: d.Reload}
+	h := &handler{svc: d.Auth, tenants: d.Tenants, db: d.DB, cfg: d.Config, metrics: d.Metrics, reload: d.Reload}
 
 	// Reads are registered directly; every mutation is wrapped so it emits a
 	// started/finished pair naming the actor.
 	mux.HandleFunc("GET /api/whoami", h.whoami)
+	mux.HandleFunc("GET /api/metrics", h.getMetrics)
 
 	mux.HandleFunc("GET /api/instances", h.listInstances)
 	mux.HandleFunc("GET /api/instances/{name}", h.getInstance)
@@ -67,6 +70,7 @@ func Register(mux *http.ServeMux, d Deps) {
 type handler struct {
 	svc     *auth.Service
 	tenants *tenant.Store
+	metrics *metrics.Metrics
 	db      *gorm.DB
 	cfg     *config.ConfigHolder
 	reload  func() error
@@ -359,6 +363,21 @@ func (s *adminSnapshot) setRoleGrants(name string, grants []auth.Grant) {
 			return
 		}
 	}
+}
+
+// getMetrics returns the aggregated gateway counters for the overview page.
+// The Prometheus exposition at /metrics stays the source of truth for scraping;
+// this is a small JSON projection so the SPA does not have to parse text format.
+func (h *handler) getMetrics(w http.ResponseWriter, r *http.Request) {
+	if h.metrics == nil {
+		writeJSON(w, http.StatusOK, metrics.Summary{Instances: []metrics.InstanceSummary{}})
+		return
+	}
+	summary := h.metrics.Summary()
+	if summary.Instances == nil {
+		summary.Instances = []metrics.InstanceSummary{}
+	}
+	writeJSON(w, http.StatusOK, summary)
 }
 
 // whoami reports the authenticated principal. The UI calls it to validate

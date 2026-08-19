@@ -1,11 +1,12 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
-import { TenantService, UserService, RoleService, InstanceService } from '@/services'
+import { TenantService, UserService, RoleService, InstanceService, MetricsService } from '@/services'
 
 const tenants = ref([])
 const users = ref([])
 const roles = ref([])
 const instances = ref([])
+const traffic = ref(null)
 const loading = ref(true)
 const error = ref('')
 
@@ -13,10 +14,30 @@ const tenantSvc = new TenantService()
 const userSvc = new UserService()
 const roleSvc = new RoleService()
 const instanceSvc = new InstanceService()
+const metricsSvc = new MetricsService()
 
 const instanceCount = computed(() => instances.value.length)
 
 const adminCount = computed(() => users.value.filter((u) => u.admin).length)
+
+// Counters are cumulative since process start, so they reset on restart. They
+// are also pruned when an instance is deleted, which is why a total can fall.
+const trafficCards = computed(() => {
+  const t = traffic.value
+  if (!t) return []
+  return [
+    { key: 'fanout', label: 'Fan-out pushes', value: t.fanout_requests, hint: 'Upstream write attempts' },
+    { key: 'failures', label: 'Failed pushes', value: t.fanout_failures, hint: 'No response, or 4xx/5xx', alert: t.fanout_failures > 0 },
+    { key: 'suppressed', label: 'Suppressed errors', value: t.suppressed_errors, hint: 'Mimir 400s reported as success', alert: t.suppressed_errors > 0 },
+    { key: 'partial', label: 'Partial failures', value: t.partial_failures, hint: 'Succeeded with a target down', alert: t.partial_failures > 0 },
+    { key: 'items', label: 'Items forwarded', value: t.items_forwarded, hint: 'Series and log streams' },
+    { key: 'labels', label: 'Labels rewritten', value: t.labels_rewritten, hint: 'Dropped, injected or overwritten' },
+  ]
+})
+
+function fmt(n) {
+  return Number(n ?? 0).toLocaleString()
+}
 const unmappedTenants = computed(() => {
   const referenced = new Set()
   for (const r of roles.value) for (const g of r.grants ?? []) for (const t of g.tenant_ids ?? []) referenced.add(t)
@@ -28,16 +49,20 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [t, u, r, i] = await Promise.all([
+    const [t, u, r, i, mx] = await Promise.all([
       tenantSvc.list(),
       userSvc.list(),
       roleSvc.list(),
       instanceSvc.list(),
+      // Counters are a nice-to-have on this page: a gateway that cannot report
+      // them should still render its configuration.
+      metricsSvc.get().catch(() => null),
     ])
     tenants.value = t
     users.value = u
     roles.value = r
     instances.value = i
+    traffic.value = mx
   } catch (e) {
     error.value = e?.response?.data?.error || 'Failed to load gateway state.'
   } finally {
@@ -82,6 +107,26 @@ onMounted(load)
         <div class="stat-card__label">Roles</div>
         <div class="stat-card__value">{{ roles.length }}</div>
         <div class="stat-card__hint">Grant bundles</div>
+      </div>
+    </div>
+
+    <div class="section-label">
+      Traffic
+      <span class="section-label__note">cumulative since gateway start</span>
+    </div>
+
+    <div v-if="!traffic" class="stat-card stat-card--empty">
+      Counters are unavailable. The gateway is reachable, but /api/metrics did not respond.
+    </div>
+
+    <div v-else class="stat-grid">
+      <div v-for="card in trafficCards" :key="card.key" class="stat-card">
+        <div class="stat-card__label">{{ card.label }}</div>
+        <div class="stat-card__value">
+          {{ fmt(card.value) }}
+          <PrimeTag v-if="card.alert" severity="warn" value="!" class="stat-card__flag" />
+        </div>
+        <div class="stat-card__hint">{{ card.hint }}</div>
       </div>
     </div>
 

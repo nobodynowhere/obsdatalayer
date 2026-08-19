@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"obsdatalayer/internal/config"
 	"obsdatalayer/internal/fanout"
@@ -301,17 +300,17 @@ func TestLokiPushRecordsPayloadCounters(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("expected 202, got %d", rec.Code)
 	}
-	assertCounter(t, m.WriteItems.WithLabelValues("loki", "loki-prod", "streams", "received"), 2)
-	assertCounter(t, m.WriteItems.WithLabelValues("loki", "loki-prod", "streams", "modified"), 2)
-	assertCounter(t, m.WriteItems.WithLabelValues("loki", "loki-prod", "streams", "unchanged"), 0)
-	assertCounter(t, m.WriteItems.WithLabelValues("loki", "loki-prod", "streams", "forwarded"), 2)
-	assertCounter(t, m.RewriteLabels.WithLabelValues("loki", "loki-prod", "dropped"), 1)
-	assertCounter(t, m.RewriteLabels.WithLabelValues("loki", "loki-prod", "injected"), 2)
+	assertCounter(t, m.WriteItemsValue("loki", "loki-prod", "streams", "received"), 2)
+	assertCounter(t, m.WriteItemsValue("loki", "loki-prod", "streams", "modified"), 2)
+	assertCounter(t, m.WriteItemsValue("loki", "loki-prod", "streams", "unchanged"), 0)
+	assertCounter(t, m.WriteItemsValue("loki", "loki-prod", "streams", "forwarded"), 2)
+	assertCounter(t, m.RewriteLabelsValue("loki", "loki-prod", "dropped"), 1)
+	assertCounter(t, m.RewriteLabelsValue("loki", "loki-prod", "injected"), 2)
 }
 
-func assertCounter(t *testing.T, counter prometheus.Counter, want float64) {
+func assertCounter(t *testing.T, got uint64, want uint64) {
 	t.Helper()
-	if got := testutil.ToFloat64(counter); got != want {
+	if got != want {
 		t.Fatalf("expected counter %v, got %v", want, got)
 	}
 }

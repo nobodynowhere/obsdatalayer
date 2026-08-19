@@ -309,3 +309,34 @@ body {
   text-align: center;
   color: var(--app-text-muted);
 }
+
+/* Section heading between stat rows on the overview page. */
+.section-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--app-text);
+  margin: 0 0 0.75rem;
+}
+
+.section-label__note {
+  margin-left: 0.5rem;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--app-text-muted);
+}
+
+/* Shown in place of the stat row when the counters cannot be read. */
+.stat-card--empty {
+  margin-bottom: 1.5rem;
+  color: var(--app-text-muted);
+  font-size: 0.9rem;
+}
+
+/* Flags a counter that is non-zero and worth a second look. */
+.stat-card__flag {
+  vertical-align: middle;
+  margin-left: 0.4rem;
+}
