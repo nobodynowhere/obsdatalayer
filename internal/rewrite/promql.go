@@ -63,7 +63,7 @@ func ApplyMimirReadPolicy(r *http.Request, endpoint string) error {
 			return err
 		}
 		values.Set("query", rewritten)
-	case "labels", "label_values", "series":
+	case "labels", "label_values", "series", "search":
 		if err := ConstrainMetricSelectorParams(values, ra.LabelSelectors); err != nil {
 			return err
 		}

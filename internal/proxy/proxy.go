@@ -59,20 +59,6 @@ func (p *Proxy) ForwardQuery(w http.ResponseWriter, r *http.Request, inst *confi
 	p.forward(w, r, inst, inst.GetQueryTarget(), upstreamPath, p.QueryClient())
 }
 
-// ForwardFirstTarget forwards neutral status/discovery requests to the first
-// resolved target for an instance. It is used for endpoints like buildinfo that
-// should describe the backing Mimir deployment rather than a logical query API.
-func (p *Proxy) ForwardFirstTarget(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, upstreamPath string) {
-	targets := inst.GetPushTargets()
-	if len(targets) == 0 {
-		WriteJSONError(w, http.StatusNotFound, map[string]string{
-			"error": "no matching instance", "instance": inst.Name,
-		})
-		return
-	}
-	p.forward(w, r, inst, targets[0], upstreamPath, p.QueryClient())
-}
-
 // ForwardPush forwards a push request using the push client (Tempo single-target).
 // maxBodyBytes caps the request body; pass 0 to leave it uncapped. The body is
 // streamed rather than buffered, so the cap is enforced by the upstream read

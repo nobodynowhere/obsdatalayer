@@ -19,16 +19,18 @@ import (
 )
 
 type captureTransport struct {
-	method string
-	host   string
-	path   string
-	body   string
+	method   string
+	host     string
+	path     string
+	rawQuery string
+	body     string
 }
 
 func (t *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	t.method = req.Method
 	t.host = req.URL.Host
 	t.path = req.URL.Path
+	t.rawQuery = req.URL.RawQuery
 	if req.Body != nil {
 		body, _ := io.ReadAll(req.Body)
 		t.body = string(body)
@@ -51,6 +53,15 @@ func newRouteOnlyMux(cfg *config.Config, transport http.RoundTripper) http.Handl
 	fanout.RegisterMimir(mux, h, p, m)
 	fanout.RegisterTempo(mux, h, p)
 	return middleware.BasicAuth(testAuth, mux)
+}
+
+func withAuthSelectors(t *testing.T, selectors ...string) {
+	t.Helper()
+	previous := append([]string(nil), testAuth.LabelSelectors...)
+	testAuth.LabelSelectors = append([]string(nil), selectors...)
+	t.Cleanup(func() {
+		testAuth.LabelSelectors = previous
+	})
 }
 
 func TestMimirRuleWriteForwardsToPrometheusConfigAPI(t *testing.T) {
@@ -123,6 +134,30 @@ func TestMimirRootPrometheusBuildInfoForwards(t *testing.T) {
 	}
 	if capture.method != http.MethodGet || capture.host != "first.local" || capture.path != "/prometheus/api/v1/status/buildinfo" {
 		t.Fatalf("expected GET first.local/prometheus/api/v1/status/buildinfo, got %s %s%s", capture.method, capture.host, capture.path)
+	}
+}
+
+func TestMimirSearchMetricNamesAppliesReadPolicy(t *testing.T) {
+	withAuthTenants(t, "tenant-a")
+	withAuthSelectors(t, `{cluster="prod"}`)
+	capture := &captureTransport{}
+	cfg := newTestConfig([]*config.InstanceConfig{mimirInst("mimir-prod", "http://mimir.local")})
+	h := newRouteOnlyMux(cfg, capture)
+
+	req := httptest.NewRequest(http.MethodGet, "/prometheus/api/v1/search/metric_names", nil)
+	req.Header.Set("Authorization", authHeader())
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", rec.Code)
+	}
+	if capture.method != http.MethodGet || capture.path != "/prometheus/api/v1/search/metric_names" {
+		t.Fatalf("expected GET /prometheus/api/v1/search/metric_names, got %s %s", capture.method, capture.path)
+	}
+	if capture.rawQuery != "match%5B%5D=%7Bcluster%3D%22prod%22%7D" {
+		t.Fatalf("expected read policy match[] query, got %q", capture.rawQuery)
 	}
 }
 

@@ -39,6 +39,12 @@ func RegisterMimir(mux *http.ServeMux, h *config.ConfigHolder, p *proxy.Proxy, m
 	registerMimirRead(mux, "POST /api/mimir/label/{name}/values", h, p, "label_values", "/prometheus/api/v1/label/{name}/values")
 	registerMimirRead(mux, "GET /api/mimir/series", h, p, "series", "/prometheus/api/v1/series")
 	registerMimirRead(mux, "POST /api/mimir/series", h, p, "series", "/prometheus/api/v1/series")
+	registerMimirRead(mux, "GET /api/mimir/search/metric_names", h, p, "search", "/prometheus/api/v1/search/metric_names")
+	registerMimirRead(mux, "POST /api/mimir/search/metric_names", h, p, "search", "/prometheus/api/v1/search/metric_names")
+	registerMimirRead(mux, "GET /api/mimir/search/label_names", h, p, "search", "/prometheus/api/v1/search/label_names")
+	registerMimirRead(mux, "POST /api/mimir/search/label_names", h, p, "search", "/prometheus/api/v1/search/label_names")
+	registerMimirRead(mux, "GET /api/mimir/search/label_values", h, p, "search", "/prometheus/api/v1/search/label_values")
+	registerMimirRead(mux, "POST /api/mimir/search/label_values", h, p, "search", "/prometheus/api/v1/search/label_values")
 	registerMimirRead(mux, "GET /api/mimir/metadata", h, p, "metadata", "/prometheus/api/v1/metadata")
 	registerMimirRead(mux, "POST /api/mimir/metadata", h, p, "metadata", "/prometheus/api/v1/metadata")
 	registerMimirRead(mux, "POST /api/mimir/read", h, p, "read", "/prometheus/api/v1/read")
@@ -48,7 +54,7 @@ func RegisterMimir(mux *http.ServeMux, h *config.ConfigHolder, p *proxy.Proxy, m
 	registerMimirRead(mux, "POST /api/mimir/cardinality/label_names", h, p, "cardinality", "/prometheus/api/v1/cardinality/label_names")
 	registerMimirRead(mux, "GET /api/mimir/cardinality/label_values", h, p, "cardinality", "/prometheus/api/v1/cardinality/label_values")
 	registerMimirRead(mux, "POST /api/mimir/cardinality/label_values", h, p, "cardinality", "/prometheus/api/v1/cardinality/label_values")
-	registerMimirFirstTarget(mux, "GET /api/mimir/status/buildinfo", h, p, "/prometheus/api/v1/status/buildinfo")
+	registerMimirRead(mux, "GET /api/mimir/status/buildinfo", h, p, "", "/prometheus/api/v1/status/buildinfo")
 	registerMimirRead(mux, "GET /api/mimir/format_query", h, p, "", "/prometheus/api/v1/format_query")
 	registerMimirRead(mux, "POST /api/mimir/format_query", h, p, "", "/prometheus/api/v1/format_query")
 
@@ -82,6 +88,12 @@ func registerMimirPrometheusRoutes(mux *http.ServeMux, prefix string, h *config.
 	registerMimirRead(mux, "POST "+prefix+"/api/v1/label/{name}/values", h, p, "label_values", "/prometheus/api/v1/label/{name}/values")
 	registerMimirRead(mux, "GET "+prefix+"/api/v1/series", h, p, "series", "/prometheus/api/v1/series")
 	registerMimirRead(mux, "POST "+prefix+"/api/v1/series", h, p, "series", "/prometheus/api/v1/series")
+	registerMimirRead(mux, "GET "+prefix+"/api/v1/search/metric_names", h, p, "search", "/prometheus/api/v1/search/metric_names")
+	registerMimirRead(mux, "POST "+prefix+"/api/v1/search/metric_names", h, p, "search", "/prometheus/api/v1/search/metric_names")
+	registerMimirRead(mux, "GET "+prefix+"/api/v1/search/label_names", h, p, "search", "/prometheus/api/v1/search/label_names")
+	registerMimirRead(mux, "POST "+prefix+"/api/v1/search/label_names", h, p, "search", "/prometheus/api/v1/search/label_names")
+	registerMimirRead(mux, "GET "+prefix+"/api/v1/search/label_values", h, p, "search", "/prometheus/api/v1/search/label_values")
+	registerMimirRead(mux, "POST "+prefix+"/api/v1/search/label_values", h, p, "search", "/prometheus/api/v1/search/label_values")
 	registerMimirRead(mux, "GET "+prefix+"/api/v1/metadata", h, p, "metadata", "/prometheus/api/v1/metadata")
 	registerMimirRead(mux, "POST "+prefix+"/api/v1/metadata", h, p, "metadata", "/prometheus/api/v1/metadata")
 	registerMimirRead(mux, "POST "+prefix+"/api/v1/read", h, p, "read", "/prometheus/api/v1/read")
@@ -91,7 +103,7 @@ func registerMimirPrometheusRoutes(mux *http.ServeMux, prefix string, h *config.
 	registerMimirRead(mux, "POST "+prefix+"/api/v1/cardinality/label_names", h, p, "cardinality", "/prometheus/api/v1/cardinality/label_names")
 	registerMimirRead(mux, "GET "+prefix+"/api/v1/cardinality/label_values", h, p, "cardinality", "/prometheus/api/v1/cardinality/label_values")
 	registerMimirRead(mux, "POST "+prefix+"/api/v1/cardinality/label_values", h, p, "cardinality", "/prometheus/api/v1/cardinality/label_values")
-	registerMimirFirstTarget(mux, "GET "+prefix+"/api/v1/status/buildinfo", h, p, "/prometheus/api/v1/status/buildinfo")
+	registerMimirRead(mux, "GET "+prefix+"/api/v1/status/buildinfo", h, p, "", "/prometheus/api/v1/status/buildinfo")
 	registerMimirRead(mux, "GET "+prefix+"/api/v1/format_query", h, p, "", "/prometheus/api/v1/format_query")
 	registerMimirRead(mux, "POST "+prefix+"/api/v1/format_query", h, p, "", "/prometheus/api/v1/format_query")
 	registerMimirRead(mux, "GET "+prefix+"/api/v1/rules", h, p, "", "/prometheus/api/v1/rules")
@@ -132,14 +144,6 @@ func registerMimirTenantConfig(mux *http.ServeMux, pattern string, h *config.Con
 	mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 		if inst := getInstance(h, r, w, "mimir"); inst != nil && requireSingleTenant(w, r) {
 			forwardByMethod(w, r, inst, expandMimirPath(upstreamPath, r), h.Get().Gateway.MaxBodyBytes, p)
-		}
-	})
-}
-
-func registerMimirFirstTarget(mux *http.ServeMux, pattern string, h *config.ConfigHolder, p *proxy.Proxy, upstreamPath string) {
-	mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
-		if inst := getInstance(h, r, w, "mimir"); inst != nil {
-			p.ForwardFirstTarget(w, r, inst, upstreamPath)
 		}
 	})
 }

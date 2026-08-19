@@ -111,3 +111,20 @@ func TestApplyMimirReadPolicyRewritesPostForm(t *testing.T) {
 		t.Fatalf("expected rewritten query, got %q", got)
 	}
 }
+
+func TestApplyMimirReadPolicyConstrainsSearch(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/prometheus/api/v1/search/metric_names?match[]=up{job=\"api\"}", nil)
+	req = req.WithContext(auth.WithRequestAuth(req.Context(), &auth.RequestAuth{
+		Username:       "alice",
+		TenantIDs:      []string{"tenant-a"},
+		LabelSelectors: []string{`{cluster="prod"}`},
+		IsRead:         true,
+	}))
+
+	if err := ApplyMimirReadPolicy(req, "search"); err != nil {
+		t.Fatalf("apply policy: %v", err)
+	}
+	if got := req.URL.Query().Get("match[]"); got != `{__name__="up",cluster="prod",job="api"}` {
+		t.Fatalf("expected constrained search matcher, got %q", got)
+	}
+}

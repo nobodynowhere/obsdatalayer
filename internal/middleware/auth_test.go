@@ -178,6 +178,7 @@ func TestBasicAuthPrometheusPostQueryIsRead(t *testing.T) {
 	for _, path := range []string{
 		"/api/mimir/prometheus/api/v1/query",
 		"/prometheus/api/v1/query",
+		"/prometheus/api/v1/search/metric_names",
 	} {
 		t.Run(path, func(t *testing.T) {
 			var captured *auth.RequestAuth
