@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"gorm.io/gorm"
 
 	"obsdatalayer/internal/adminapi"
 	"obsdatalayer/internal/auth"
@@ -26,9 +28,14 @@ type env struct {
 	tenants *tenant.Store
 	cfg     *config.ConfigHolder
 	metrics *metrics.Metrics
+	db      *gorm.DB
 }
 
 func newEnv(t *testing.T) *env {
+	return newEnvWithMimirClient(t, nil)
+}
+
+func newEnvWithMimirClient(t *testing.T, mimirClient *http.Client) *env {
 	t.Helper()
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())
 	gormDB, err := db.Open(db.Config{Type: "sqlite", Path: dsn})
@@ -71,9 +78,15 @@ func newEnv(t *testing.T) *env {
 
 	mux := http.NewServeMux()
 	adminapi.Register(mux, adminapi.Deps{
-		Auth: svc, Tenants: tenants, DB: gormDB, Config: holder, Metrics: m, Reload: reload,
+		Auth: svc, Tenants: tenants, DB: gormDB, Config: holder, Metrics: m, MimirClient: mimirClient, Reload: reload,
 	})
-	return &env{mux: mux, svc: svc, tenants: tenants, cfg: holder, metrics: m}
+	return &env{mux: mux, svc: svc, tenants: tenants, cfg: holder, metrics: m, db: gormDB}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
 }
 
 // do issues a request against the admin mux. The mux is mounted without
@@ -148,6 +161,110 @@ func TestGetMissingTenant(t *testing.T) {
 	rec := e.do(t, http.MethodGet, "/api/tenants/6f1d2c9e-9d3a-4c1b-8f47-2b0a5e7c1d34", nil)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("expected 404, got %d", rec.Code)
+	}
+}
+
+func TestTenantMimirObservabilityFetchesRulesAndAlerts(t *testing.T) {
+	var calls []struct {
+		host string
+		path string
+		org  string
+	}
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls = append(calls, struct {
+			host string
+			path string
+			org  string
+		}{host: req.URL.Host, path: req.URL.Path, org: req.Header.Get("X-Scope-OrgID")})
+
+		body := `{"status":"success","data":{}}`
+		switch req.URL.Path {
+		case "/prometheus/api/v1/rules":
+			body = `{"status":"success","data":{"groups":[{"name":"team","rules":[{"name":"HighLatency","query":"up == 0","type":"alerting","state":"firing","health":"ok"}]}]}}`
+		case "/prometheus/api/v1/alerts":
+			body = `{"status":"success","data":{"alerts":[{"labels":{"alertname":"HighLatency","severity":"page"},"state":"firing"}]}}`
+		default:
+			t.Fatalf("unexpected upstream path %q", req.URL.Path)
+		}
+
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})}
+	e := newEnvWithMimirClient(t, client)
+	tn, err := e.tenants.Create("", "acme", nil)
+	if err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	if err := config.CreateInstance(e.db, &config.InstanceConfig{
+		Name: "mimir-shared", Backend: "mimir", URL: "http://shared.local",
+	}, e.tenants); err != nil {
+		t.Fatalf("create shared instance: %v", err)
+	}
+	if err := config.CreateInstance(e.db, &config.InstanceConfig{
+		Name: "mimir-dedicated", Backend: "mimir", URL: "http://dedicated.local", TenantID: tn.ID,
+	}, e.tenants); err != nil {
+		t.Fatalf("create dedicated instance: %v", err)
+	}
+	if _, err := e.cfg.Reload(); err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+
+	rec := e.do(t, http.MethodGet, "/api/tenants/"+tn.ID+"/mimir/observability", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("expected two upstream calls, got %d", len(calls))
+	}
+	for _, call := range calls {
+		if call.host != "dedicated.local" {
+			t.Errorf("expected dedicated instance, got host %q", call.host)
+		}
+		if call.org != tn.ID {
+			t.Errorf("expected X-Scope-OrgID %q, got %q", tn.ID, call.org)
+		}
+	}
+	if calls[0].path != "/prometheus/api/v1/rules" || calls[1].path != "/prometheus/api/v1/alerts" {
+		t.Errorf("unexpected upstream call order: %+v", calls)
+	}
+
+	var got struct {
+		Tenant   tenant.Tenant `json:"tenant"`
+		Instance string        `json:"instance"`
+		Rules    any           `json:"rules"`
+		Alerts   any           `json:"alerts"`
+	}
+	decodeInto(t, rec, &got)
+	if got.Tenant.ID != tn.ID || got.Instance != "mimir-dedicated" {
+		t.Errorf("unexpected response metadata: %+v", got)
+	}
+	if !strings.Contains(rec.Body.String(), "HighLatency") {
+		t.Errorf("expected response to include upstream rule and alert data: %s", rec.Body)
+	}
+}
+
+func TestTenantMimirObservabilityRejectsAmbiguousSharedInstances(t *testing.T) {
+	e := newEnv(t)
+	tn, err := e.tenants.Create("", "acme", nil)
+	if err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	for _, name := range []string{"mimir-a", "mimir-b"} {
+		if err := config.CreateInstance(e.db, &config.InstanceConfig{Name: name, Backend: "mimir", URL: "http://" + name + ".local"}, e.tenants); err != nil {
+			t.Fatalf("create instance %s: %v", name, err)
+		}
+	}
+	if _, err := e.cfg.Reload(); err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+
+	rec := e.do(t, http.MethodGet, "/api/tenants/"+tn.ID+"/mimir/observability", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body)
 	}
 }
 

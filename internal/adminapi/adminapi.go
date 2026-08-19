@@ -20,17 +20,18 @@ import (
 // mutation that changes routing or policy, so a change made through the API
 // takes effect immediately rather than at the next scheduled reload.
 type Deps struct {
-	Auth    *auth.Service
-	Tenants *tenant.Store
-	DB      *gorm.DB
-	Config  *config.ConfigHolder
-	Metrics *metrics.Metrics
-	Reload  func() error
+	Auth        *auth.Service
+	Tenants     *tenant.Store
+	DB          *gorm.DB
+	Config      *config.ConfigHolder
+	Metrics     *metrics.Metrics
+	MimirClient *http.Client
+	Reload      func() error
 }
 
 // Register mounts the tenant, user, role, instance and settings endpoints.
 func Register(mux *http.ServeMux, d Deps) {
-	h := &handler{svc: d.Auth, tenants: d.Tenants, db: d.DB, cfg: d.Config, metrics: d.Metrics, reload: d.Reload}
+	h := &handler{svc: d.Auth, tenants: d.Tenants, db: d.DB, cfg: d.Config, metrics: d.Metrics, mimirClient: d.MimirClient, reload: d.Reload}
 
 	// Reads are registered directly; every mutation is wrapped so it emits a
 	// started/finished pair naming the actor.
@@ -48,6 +49,7 @@ func Register(mux *http.ServeMux, d Deps) {
 
 	mux.HandleFunc("GET /api/tenants", h.listTenants)
 	mux.HandleFunc("GET /api/tenants/{id}", h.getTenant)
+	mux.HandleFunc("GET /api/tenants/{id}/mimir/observability", h.getTenantMimirObservability)
 	mux.HandleFunc("POST /api/tenants", h.audited("tenant.create", h.createTenant))
 	mux.HandleFunc("PUT /api/tenants/{id}", h.audited("tenant.update", h.updateTenant))
 	mux.HandleFunc("DELETE /api/tenants/{id}", h.audited("tenant.delete", h.deleteTenant))
@@ -68,12 +70,13 @@ func Register(mux *http.ServeMux, d Deps) {
 }
 
 type handler struct {
-	svc     *auth.Service
-	tenants *tenant.Store
-	metrics *metrics.Metrics
-	db      *gorm.DB
-	cfg     *config.ConfigHolder
-	reload  func() error
+	svc         *auth.Service
+	tenants     *tenant.Store
+	metrics     *metrics.Metrics
+	db          *gorm.DB
+	cfg         *config.ConfigHolder
+	mimirClient *http.Client
+	reload      func() error
 }
 
 // afterChange republishes configuration so a mutation is visible immediately.
@@ -656,6 +659,8 @@ func writeErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	case errors.Is(err, config.ErrExists):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "already exists"})
+	case errors.Is(err, errAmbiguousMimirInstance):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}

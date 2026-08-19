@@ -1,10 +1,12 @@
 <script setup>
 import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
 import { useConfirm } from 'primevue/useconfirm'
 import { TenantService } from '@/services'
 
 const svc = new TenantService()
+const router = useRouter()
 const toast = useToast()
 const confirm = useConfirm()
 
@@ -43,6 +45,10 @@ function openEdit(tenant) {
   form.value = { id: tenant.id, name: tenant.name, grafana_id: tenant.grafana_id ?? null }
   formError.value = ''
   dialog.value = true
+}
+
+function openMimir(tenant) {
+  router.push({ name: 'tenant-mimir', params: { id: tenant.id } })
 }
 
 async function save() {
@@ -119,8 +125,9 @@ onMounted(load)
             <span v-else class="stat-card__hint">unassigned</span>
           </template>
         </PrimeColumn>
-        <PrimeColumn header="" style="width: 7rem">
+        <PrimeColumn header="" style="width: 10rem">
           <template #body="{ data }">
+            <PrimeButton icon="pi pi-chart-line" text rounded severity="secondary" v-tooltip="'Mimir rules and alerts'" @click="openMimir(data)" />
             <PrimeButton icon="pi pi-pencil" text rounded severity="secondary" v-tooltip="'Edit'" @click="openEdit(data)" />
             <PrimeButton icon="pi pi-trash" text rounded severity="danger" v-tooltip="'Delete'" @click="remove(data)" />
           </template>

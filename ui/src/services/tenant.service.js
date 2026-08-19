@@ -11,6 +11,10 @@ export default class TenantService {
     return axios.get(`${API}/${id}`).then((r) => r.data)
   }
 
+  mimirObservability(id) {
+    return axios.get(`${API}/${id}/mimir/observability`).then((r) => r.data)
+  }
+
   create(tenant) {
     return axios.post(API, JSON.stringify(tenant)).then((r) => r.data)
   }

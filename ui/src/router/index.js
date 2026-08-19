@@ -31,6 +31,12 @@ const router = createRouter({
       meta: { title: 'Tenants' },
     },
     {
+      path: '/tenants/:id/mimir',
+      name: 'tenant-mimir',
+      component: () => import('@/views/TenantMimirView.vue'),
+      meta: { title: 'Mimir rules and alerts' },
+    },
+    {
       path: '/users',
       name: 'users',
       component: () => import('@/views/UsersView.vue'),
