@@ -2,6 +2,30 @@
 
 The obsgateway is a Go-based observability data-layer gateway. It sits in front of Loki (logs), Mimir (metrics), and Tempo (traces) and exposes a single HTTP API that proxies/rewrites push and query traffic, injects tenant headers, and can fan writes out to multiple backends.
 
+## Using
+
+### MIMIR
+
+Mimir needs to be configured to enable multitenancy, especially for queries. 
+
+In the helm chart you can add:
+
+```yaml
+mimir:
+  structuredConfig:
+    multitenancy_enabled: true
+    tenant_federation:
+      enabled: true
+``` 
+
+or you can modify the mimir.yaml
+
+```yaml
+multitenancy_enabled: true
+tenant_federation:
+  enabled: true
+```
+
 ## Building
 
 ### Using PowerShell (Windows)
