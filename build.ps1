@@ -1,7 +1,8 @@
 param(
     [switch]$SkipRpm,
     [switch]$SkipContainer,
-    [switch]$SkipUi
+    [switch]$SkipUi,
+    [switch]$UpdateSBOM
 )
 
 $ErrorActionPreference = "Stop"
@@ -100,8 +101,10 @@ try {
     $env:GOARCH = $oldGOARCH
 }
 
-Write-Host "Generating SBOM and running security scanning..."
-& "$PSScriptRoot/sbom.ps1"
+if ($UpdateSBOM) {
+    Write-Host "Generating SBOM and running security scanning..."
+    & "$PSScriptRoot/sbom.ps1"
+}
 
 if (-not $SkipRpm) {
     Get-CommandOrFail nfpm

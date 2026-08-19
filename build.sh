@@ -7,6 +7,7 @@ package_name=obsgateway
 skip_rpm=false
 skip_container=false
 skip_ui=false
+update_sbom=false
 for arg in "$@"; do
     case $arg in
         -skiprpm)
@@ -17,6 +18,9 @@ for arg in "$@"; do
             ;;
         -skipui)
             skip_ui=true
+            ;;
+        -updatesbom)
+            update_sbom=true
             ;;
     esac
 done
@@ -72,9 +76,11 @@ do
    fi
 done
 
+if [ "$update_sbom" = true ]; then
 # Generate SBOM and run security scanning
 echo "Generating SBOM and running security scanning..."
 ./sbom.sh
+fi
 
 # Added RPM Build
 if [ "$skip_rpm" = false ]; then
