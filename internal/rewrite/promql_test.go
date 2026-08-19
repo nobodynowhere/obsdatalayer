@@ -47,9 +47,13 @@ func TestConstrainPromQLAddsPolicyToEveryVectorSelector(t *testing.T) {
 	}
 }
 
-func TestConstrainPromQLRejectsScalarOnlyQuery(t *testing.T) {
-	if _, err := ConstrainPromQL(`1 + 1`, []string{`{cluster="prod"}`}); err == nil {
-		t.Fatal("expected scalar-only query to be rejected")
+func TestConstrainPromQLAllowsScalarOnlyQuery(t *testing.T) {
+	got, err := ConstrainPromQL(`1 + 1`, []string{`{cluster="prod"}`})
+	if err != nil {
+		t.Fatalf("constrain scalar query: %v", err)
+	}
+	if got != "1 + 1" {
+		t.Fatalf("expected scalar-only query to pass unchanged, got %q", got)
 	}
 }
 

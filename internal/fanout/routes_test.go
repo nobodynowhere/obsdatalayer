@@ -137,6 +137,54 @@ func TestMimirRootPrometheusBuildInfoForwards(t *testing.T) {
 	}
 }
 
+func TestMimirRootReadyForwards(t *testing.T) {
+	withAuthTenants(t, "tenant-a")
+	capture := &captureTransport{}
+	cfg := newTestConfig([]*config.InstanceConfig{{
+		Name:    "mimir-prod",
+		Backend: "mimir",
+		URL:     "http://query.local",
+		PushURLs: []config.PushTarget{
+			{URL: "http://first.local"},
+			{URL: "http://second.local"},
+		},
+	}})
+	h := newRouteOnlyMux(cfg, capture)
+
+	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	req.Header.Set("Authorization", authHeader())
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", rec.Code)
+	}
+	if capture.method != http.MethodGet || capture.host != "first.local" || capture.path != "/ready" {
+		t.Fatalf("expected GET first.local/ready, got %s %s%s", capture.method, capture.host, capture.path)
+	}
+}
+
+func TestMimirPrometheusStatusConfigForwardsToStatusConfig(t *testing.T) {
+	withAuthTenants(t, "tenant-a")
+	capture := &captureTransport{}
+	cfg := newTestConfig([]*config.InstanceConfig{mimirInst("mimir-prod", "http://mimir.local")})
+	h := newRouteOnlyMux(cfg, capture)
+
+	req := httptest.NewRequest(http.MethodGet, "/prometheus/api/v1/status/config", nil)
+	req.Header.Set("Authorization", authHeader())
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", rec.Code)
+	}
+	if capture.method != http.MethodGet || capture.path != "/api/v1/status/config" {
+		t.Fatalf("expected GET /api/v1/status/config, got %s %s", capture.method, capture.path)
+	}
+}
+
 func TestMimirSearchMetricNamesAppliesReadPolicy(t *testing.T) {
 	withAuthTenants(t, "tenant-a")
 	withAuthSelectors(t, `{cluster="prod"}`)

@@ -119,7 +119,8 @@ func mutableRequestValues(r *http.Request) (url.Values, func(url.Values), error)
 }
 
 // ConstrainPromQL parses query and appends the policy selector's matchers to
-// every vector selector inside it.
+// every vector selector inside it. Queries with no vector selectors are allowed
+// unchanged because they do not read tenant metric series.
 func ConstrainPromQL(query string, selectors []string) (string, error) {
 	_, policyMatchers, err := singlePolicySelector(selectors)
 	if err != nil {
@@ -141,7 +142,7 @@ func ConstrainPromQL(query string, selectors []string) (string, error) {
 		return nil
 	})
 	if constrained == 0 {
-		return "", errors.New("restricted Mimir read query contains no metric selector to constrain")
+		return expr.String(), nil
 	}
 	return expr.String(), nil
 }

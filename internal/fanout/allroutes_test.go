@@ -73,7 +73,10 @@ var dataPlaneRoutes = []struct{ method, path string }{
 	{"GET", "/api/mimir/metadata"},
 	{"POST", "/api/mimir/metadata"},
 	{"POST", "/api/mimir/read"},
+	{"GET", "/api/mimir/ready"},
 	{"GET", "/api/mimir/status/buildinfo"},
+	{"GET", "/api/mimir/status/config"},
+	{"GET", "/api/mimir/status/flags"},
 	{"GET", "/api/mimir/format_query"},
 	{"POST", "/api/mimir/format_query"},
 	{"GET", "/api/mimir/cardinality/active_series"},
@@ -104,7 +107,10 @@ var dataPlaneRoutes = []struct{ method, path string }{
 	{"GET", "/api/mimir/prometheus/api/v1/metadata"},
 	{"POST", "/api/mimir/prometheus/api/v1/metadata"},
 	{"POST", "/api/mimir/prometheus/api/v1/read"},
+	{"GET", "/api/mimir/prometheus/ready"},
 	{"GET", "/api/mimir/prometheus/api/v1/status/buildinfo"},
+	{"GET", "/api/mimir/prometheus/api/v1/status/config"},
+	{"GET", "/api/mimir/prometheus/api/v1/status/flags"},
 	{"GET", "/api/mimir/prometheus/api/v1/format_query"},
 	{"POST", "/api/mimir/prometheus/api/v1/format_query"},
 	{"GET", "/api/mimir/prometheus/api/v1/rules"},
@@ -137,7 +143,10 @@ var dataPlaneRoutes = []struct{ method, path string }{
 	{"GET", "/prometheus/api/v1/metadata"},
 	{"POST", "/prometheus/api/v1/metadata"},
 	{"POST", "/prometheus/api/v1/read"},
+	{"GET", "/prometheus/ready"},
 	{"GET", "/prometheus/api/v1/status/buildinfo"},
+	{"GET", "/prometheus/api/v1/status/config"},
+	{"GET", "/prometheus/api/v1/status/flags"},
 	{"GET", "/prometheus/api/v1/format_query"},
 	{"POST", "/prometheus/api/v1/format_query"},
 	{"GET", "/prometheus/api/v1/rules"},
@@ -173,6 +182,9 @@ var dataPlaneRoutes = []struct{ method, path string }{
 	{"GET", "/api/mimir/alertmanager/api/v1/alerts"},
 	{"POST", "/api/mimir/alertmanager/api/v1/alerts"},
 	{"DELETE", "/api/mimir/alertmanager/api/v1/alerts"},
+
+	// ---- mimir: service readiness ----
+	{"GET", "/ready"},
 
 	// ---- tempo ----
 	{"POST", "/api/tempo/otlp/v1/traces"},

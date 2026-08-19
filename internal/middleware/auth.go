@@ -102,6 +102,9 @@ func AdminAuth(a auth.Authorizer, next http.Handler) http.Handler {
 
 // extractBackend parses the backend segment from /api/{backend}/...
 func extractBackend(path string) string {
+	if path == "/ready" {
+		return "mimir"
+	}
 	if strings.HasPrefix(path, "/prometheus/") {
 		return "mimir"
 	}

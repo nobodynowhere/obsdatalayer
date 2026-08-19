@@ -209,21 +209,29 @@ func TestBasicAuthPrometheusPostQueryIsRead(t *testing.T) {
 }
 
 func TestBasicAuthRootPrometheusPathUsesMimirBackend(t *testing.T) {
-	inner, called := newHandlerCalledFlag()
-	stub := authtest.New()
-	stub.Allow = map[string]bool{"mimir:read": true}
-	h := middleware.BasicAuth(stub, inner)
+	for _, path := range []string{
+		"/prometheus/api/v1/status/buildinfo",
+		"/prometheus/ready",
+		"/ready",
+	} {
+		t.Run(path, func(t *testing.T) {
+			inner, called := newHandlerCalledFlag()
+			stub := authtest.New()
+			stub.Allow = map[string]bool{"mimir:read": true}
+			h := middleware.BasicAuth(stub, inner)
 
-	req := httptest.NewRequest(http.MethodGet, "/prometheus/api/v1/status/buildinfo", nil)
-	req.Header.Set("Authorization", stub.Header())
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.Header.Set("Authorization", stub.Header())
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
-	}
-	if !*called {
-		t.Fatal("expected inner handler to be called")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", rec.Code)
+			}
+			if !*called {
+				t.Fatal("expected inner handler to be called")
+			}
+		})
 	}
 }
 
