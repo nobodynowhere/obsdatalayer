@@ -56,8 +56,18 @@ func (m *lokiEntry) ProtoMessage()  {}
 // contentType is the Content-Type header value.
 // Supports application/json and application/x-protobuf.
 func RewriteLoki(contentType string, body []byte, cfg *config.LabelsConfig) ([]byte, error) {
+	out, _, err := RewriteLokiWithStats(contentType, body, cfg)
+	return out, err
+}
+
+// RewriteLokiWithStats rewrites labels and returns per-payload accounting.
+func RewriteLokiWithStats(contentType string, body []byte, cfg *config.LabelsConfig) ([]byte, PayloadStats, error) {
 	if cfg == nil {
-		return body, nil
+		stats, err := InspectLoki(contentType, body)
+		if err != nil {
+			return body, PayloadStats{}, nil
+		}
+		return body, stats, nil
 	}
 
 	if strings.Contains(contentType, "application/json") {
@@ -68,55 +78,83 @@ func RewriteLoki(contentType string, body []byte, cfg *config.LabelsConfig) ([]b
 	}
 
 	// Unknown content type - return as-is
-	return body, nil
+	return body, PayloadStats{}, nil
 }
 
-func rewriteLokiJSON(body []byte, cfg *config.LabelsConfig) ([]byte, error) {
+func InspectLoki(contentType string, body []byte) (PayloadStats, error) {
+	if strings.Contains(contentType, "application/json") {
+		var push lokiPushJSON
+		if err := json.Unmarshal(body, &push); err != nil {
+			return PayloadStats{}, fmt.Errorf("unmarshal loki JSON: %w", err)
+		}
+		return PayloadStats{ItemKind: "streams", ItemsTotal: len(push.Streams)}, nil
+	}
+	if strings.Contains(contentType, "application/x-protobuf") {
+		decoded, err := snappy.Decode(nil, body)
+		if err != nil {
+			return PayloadStats{}, fmt.Errorf("snappy decode: %w", err)
+		}
+		var req lokiPushRequest
+		if err := gogoproto.Unmarshal(decoded, &req); err != nil {
+			return PayloadStats{}, fmt.Errorf("proto unmarshal loki: %w", err)
+		}
+		return PayloadStats{ItemKind: "streams", ItemsTotal: len(req.Streams)}, nil
+	}
+	return PayloadStats{}, nil
+}
+
+func rewriteLokiJSON(body []byte, cfg *config.LabelsConfig) ([]byte, PayloadStats, error) {
 	var push lokiPushJSON
 	if err := json.Unmarshal(body, &push); err != nil {
-		return nil, fmt.Errorf("unmarshal loki JSON: %w", err)
+		return nil, PayloadStats{}, fmt.Errorf("unmarshal loki JSON: %w", err)
 	}
 
+	stats := PayloadStats{ItemKind: "streams"}
 	for i := range push.Streams {
-		push.Streams[i].Stream = ApplyLabelConfig(push.Streams[i].Stream, cfg)
+		before := push.Streams[i].Stream
+		after := ApplyLabelConfig(before, cfg)
+		stats.AddItem(before, after)
+		push.Streams[i].Stream = after
 	}
 
 	out, err := json.Marshal(&push)
 	if err != nil {
-		return nil, fmt.Errorf("marshal loki JSON: %w", err)
+		return nil, PayloadStats{}, fmt.Errorf("marshal loki JSON: %w", err)
 	}
-	return out, nil
+	return out, stats, nil
 }
 
-func rewriteLokiProto(body []byte, cfg *config.LabelsConfig) ([]byte, error) {
+func rewriteLokiProto(body []byte, cfg *config.LabelsConfig) ([]byte, PayloadStats, error) {
 	// Snappy decode
 	decoded, err := snappy.Decode(nil, body)
 	if err != nil {
-		return nil, fmt.Errorf("snappy decode: %w", err)
+		return nil, PayloadStats{}, fmt.Errorf("snappy decode: %w", err)
 	}
 
 	// Proto unmarshal
 	var req lokiPushRequest
 	if err := gogoproto.Unmarshal(decoded, &req); err != nil {
-		return nil, fmt.Errorf("proto unmarshal loki: %w", err)
+		return nil, PayloadStats{}, fmt.Errorf("proto unmarshal loki: %w", err)
 	}
 
 	// Rewrite labels
+	stats := PayloadStats{ItemKind: "streams"}
 	for i := range req.Streams {
 		labels, err := ParseLabelString(req.Streams[i].Labels)
 		if err != nil {
-			return nil, fmt.Errorf("parse loki labels %q: %w", req.Streams[i].Labels, err)
+			return nil, PayloadStats{}, fmt.Errorf("parse loki labels %q: %w", req.Streams[i].Labels, err)
 		}
-		labels = ApplyLabelConfig(labels, cfg)
-		req.Streams[i].Labels = FormatLabelString(labels)
+		rewritten := ApplyLabelConfig(labels, cfg)
+		stats.AddItem(labels, rewritten)
+		req.Streams[i].Labels = FormatLabelString(rewritten)
 	}
 
 	// Proto marshal
 	marshaled, err := gogoproto.Marshal(&req)
 	if err != nil {
-		return nil, fmt.Errorf("proto marshal loki: %w", err)
+		return nil, PayloadStats{}, fmt.Errorf("proto marshal loki: %w", err)
 	}
 
 	// Snappy encode
-	return snappy.Encode(nil, marshaled), nil
+	return snappy.Encode(nil, marshaled), stats, nil
 }

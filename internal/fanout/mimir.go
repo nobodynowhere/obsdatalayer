@@ -106,10 +106,10 @@ func forwardMimirPush(w http.ResponseWriter, r *http.Request, h *config.ConfigHo
 		return
 	}
 	maxBytes := h.Get().Gateway.MaxBodyBytes
-	var rewriteFn func([]byte) ([]byte, error)
+	var rewriteFn func([]byte) ([]byte, rewrite.PayloadStats, error)
 	if rewriteLabels {
-		rewriteFn = func(body []byte) ([]byte, error) {
-			return rewrite.RewriteMimir(body, inst.Labels)
+		rewriteFn = func(body []byte) ([]byte, rewrite.PayloadStats, error) {
+			return rewrite.RewriteMimirWithStats(body, inst.Labels)
 		}
 	}
 	handlePush(w, r, inst, upstreamPath, rewriteFn, maxBytes, p, m)

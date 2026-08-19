@@ -52,10 +52,10 @@ func forwardLokiPush(w http.ResponseWriter, r *http.Request, h *config.ConfigHol
 	}
 	ct := r.Header.Get("Content-Type")
 	maxBytes := h.Get().Gateway.MaxBodyBytes
-	var rewriteFn func([]byte) ([]byte, error)
+	var rewriteFn func([]byte) ([]byte, rewrite.PayloadStats, error)
 	if rewriteLabels {
-		rewriteFn = func(body []byte) ([]byte, error) {
-			return rewrite.RewriteLoki(ct, body, inst.Labels)
+		rewriteFn = func(body []byte) ([]byte, rewrite.PayloadStats, error) {
+			return rewrite.RewriteLokiWithStats(ct, body, inst.Labels)
 		}
 	}
 	handlePush(w, r, inst, upstreamPath, rewriteFn, maxBytes, p, m)

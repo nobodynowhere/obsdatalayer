@@ -11,6 +11,8 @@ type Metrics struct {
 	FanoutRequests   *prometheus.CounterVec
 	SuppressedErrors *prometheus.CounterVec
 	PartialFailures  *prometheus.CounterVec
+	WriteItems       *prometheus.CounterVec
+	RewriteLabels    *prometheus.CounterVec
 }
 
 // New creates and registers all gateway metrics with reg.
@@ -38,8 +40,22 @@ func New(reg prometheus.Registerer) *Metrics {
 			},
 			[]string{"instance"},
 		),
+		WriteItems: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "gateway_write_items_total",
+				Help: "Write payload items observed by the gateway, labeled by backend, instance, item kind, and result.",
+			},
+			[]string{"backend", "instance", "kind", "result"},
+		),
+		RewriteLabels: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "gateway_rewrite_labels_total",
+				Help: "Labels changed by gateway write-payload rewriting, labeled by backend, instance, and operation.",
+			},
+			[]string{"backend", "instance", "operation"},
+		),
 	}
-	reg.MustRegister(m.FanoutRequests, m.SuppressedErrors, m.PartialFailures)
+	reg.MustRegister(m.FanoutRequests, m.SuppressedErrors, m.PartialFailures, m.WriteItems, m.RewriteLabels)
 	return m
 }
 
@@ -53,4 +69,18 @@ func (m *Metrics) RecordSuppressed(instance, target, pattern string) {
 
 func (m *Metrics) RecordPartialFailure(instance string) {
 	m.PartialFailures.WithLabelValues(instance).Inc()
+}
+
+func (m *Metrics) RecordWriteItems(backend, instance, kind, result string, count int) {
+	if count <= 0 {
+		return
+	}
+	m.WriteItems.WithLabelValues(backend, instance, kind, result).Add(float64(count))
+}
+
+func (m *Metrics) RecordRewriteLabels(backend, instance, operation string, count int) {
+	if count <= 0 {
+		return
+	}
+	m.RewriteLabels.WithLabelValues(backend, instance, operation).Add(float64(count))
 }

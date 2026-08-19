@@ -75,35 +75,60 @@ func mapToLabels(m map[string]string) []label {
 
 // RewriteMimir rewrites labels in a Mimir remote write payload (snappy+proto WriteRequest).
 func RewriteMimir(body []byte, cfg *config.LabelsConfig) ([]byte, error) {
+	out, _, err := RewriteMimirWithStats(body, cfg)
+	return out, err
+}
+
+// RewriteMimirWithStats rewrites labels and returns per-payload accounting.
+func RewriteMimirWithStats(body []byte, cfg *config.LabelsConfig) ([]byte, PayloadStats, error) {
 	if cfg == nil {
-		return body, nil
+		stats, err := InspectMimir(body)
+		if err != nil {
+			return body, PayloadStats{}, nil
+		}
+		return body, stats, nil
 	}
 
 	// Snappy decode
 	decoded, err := snappy.Decode(nil, body)
 	if err != nil {
-		return nil, fmt.Errorf("snappy decode: %w", err)
+		return nil, PayloadStats{}, fmt.Errorf("snappy decode: %w", err)
 	}
 
 	// Proto unmarshal
 	var req writeRequest
 	if err := gogoproto.Unmarshal(decoded, &req); err != nil {
-		return nil, fmt.Errorf("proto unmarshal mimir: %w", err)
+		return nil, PayloadStats{}, fmt.Errorf("proto unmarshal mimir: %w", err)
 	}
 
 	// Rewrite labels for each time series
+	stats := PayloadStats{ItemKind: "series"}
 	for i := range req.Timeseries {
-		labelMap := labelsToMap(req.Timeseries[i].Labels)
-		labelMap = ApplyLabelConfig(labelMap, cfg)
-		req.Timeseries[i].Labels = mapToLabels(labelMap)
+		before := labelsToMap(req.Timeseries[i].Labels)
+		after := ApplyLabelConfig(before, cfg)
+		stats.AddItem(before, after)
+		req.Timeseries[i].Labels = mapToLabels(after)
 	}
 
 	// Proto marshal
 	marshaled, err := gogoproto.Marshal(&req)
 	if err != nil {
-		return nil, fmt.Errorf("proto marshal mimir: %w", err)
+		return nil, PayloadStats{}, fmt.Errorf("proto marshal mimir: %w", err)
 	}
 
 	// Snappy encode
-	return snappy.Encode(nil, marshaled), nil
+	return snappy.Encode(nil, marshaled), stats, nil
+}
+
+// InspectMimir counts series in a Mimir remote write payload without changing it.
+func InspectMimir(body []byte) (PayloadStats, error) {
+	decoded, err := snappy.Decode(nil, body)
+	if err != nil {
+		return PayloadStats{}, fmt.Errorf("snappy decode: %w", err)
+	}
+	var req writeRequest
+	if err := gogoproto.Unmarshal(decoded, &req); err != nil {
+		return PayloadStats{}, fmt.Errorf("proto unmarshal mimir: %w", err)
+	}
+	return PayloadStats{ItemKind: "series", ItemsTotal: len(req.Timeseries)}, nil
 }

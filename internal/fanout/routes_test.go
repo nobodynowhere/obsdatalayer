@@ -8,8 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"obsdatalayer/internal/config"
 	"obsdatalayer/internal/fanout"
+	"obsdatalayer/internal/metrics"
 	"obsdatalayer/internal/middleware"
 	"obsdatalayer/internal/proxy"
 )
@@ -149,5 +153,52 @@ func TestTempoMetricsQueryForwards(t *testing.T) {
 	}
 	if capture.method != http.MethodGet || capture.path != "/api/metrics/query_range" {
 		t.Fatalf("expected GET /api/metrics/query_range, got %s %s", capture.method, capture.path)
+	}
+}
+
+func TestLokiPushRecordsPayloadCounters(t *testing.T) {
+	withAuthTenants(t, "tenant-a")
+	capture := &captureTransport{}
+	reg := prometheus.NewRegistry()
+	m := metrics.New(reg)
+	cfg := newTestConfig([]*config.InstanceConfig{{
+		Name:    "loki-prod",
+		Backend: "loki",
+		URL:     "http://loki.local",
+		Labels: &config.LabelsConfig{
+			Filter: &config.FilterConfig{Mode: "denylist", Names: []string{"env"}},
+			Inject: map[string]string{"cluster": "prod"},
+		},
+	}})
+	h := config.NewHolder(cfg, "")
+	client := &http.Client{Timeout: 5 * time.Second, Transport: capture}
+	p := proxy.New(client, client)
+	mux := http.NewServeMux()
+	fanout.RegisterLoki(mux, h, p, m)
+	handler := middleware.BasicAuth(testAuth, mux)
+
+	body := `{"streams":[{"stream":{"app":"api","env":"dev"},"values":[["1","a"]]},{"stream":{"app":"worker"},"values":[["2","b"]]}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/loki/push", strings.NewReader(body))
+	req.Header.Set("Authorization", authHeader())
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", rec.Code)
+	}
+	assertCounter(t, m.WriteItems.WithLabelValues("loki", "loki-prod", "streams", "received"), 2)
+	assertCounter(t, m.WriteItems.WithLabelValues("loki", "loki-prod", "streams", "modified"), 2)
+	assertCounter(t, m.WriteItems.WithLabelValues("loki", "loki-prod", "streams", "unchanged"), 0)
+	assertCounter(t, m.WriteItems.WithLabelValues("loki", "loki-prod", "streams", "forwarded"), 2)
+	assertCounter(t, m.RewriteLabels.WithLabelValues("loki", "loki-prod", "dropped"), 1)
+	assertCounter(t, m.RewriteLabels.WithLabelValues("loki", "loki-prod", "injected"), 2)
+}
+
+func assertCounter(t *testing.T, counter prometheus.Counter, want float64) {
+	t.Helper()
+	if got := testutil.ToFloat64(counter); got != want {
+		t.Fatalf("expected counter %v, got %v", want, got)
 	}
 }

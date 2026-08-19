@@ -17,6 +17,7 @@ import (
 	"obsdatalayer/internal/config"
 	"obsdatalayer/internal/metrics"
 	"obsdatalayer/internal/proxy"
+	"obsdatalayer/internal/rewrite"
 )
 
 // TargetResult holds the result of a single fan-out target request.
@@ -310,9 +311,9 @@ func copyResponseHeaders(w http.ResponseWriter, headers http.Header) {
 }
 
 // handlePush reads the body (limited to maxBodyBytes), optionally rewrites labels,
-// fans out, and writes the response. rewriteFn is called only when it is non-nil
-// and inst.Labels is configured.
-func handlePush(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, upstreamPath string, rewriteFn func([]byte) ([]byte, error), maxBodyBytes int64, p *proxy.Proxy, m *metrics.Metrics) {
+// records payload counters, fans out, and writes the response. rewriteFn is
+// called only when it is non-nil.
+func handlePush(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, upstreamPath string, rewriteFn func([]byte) ([]byte, rewrite.PayloadStats, error), maxBodyBytes int64, p *proxy.Proxy, m *metrics.Metrics) {
 	if maxBodyBytes > 0 {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	}
@@ -330,12 +331,17 @@ func handlePush(w http.ResponseWriter, r *http.Request, inst *config.InstanceCon
 		proxy.WriteJSONError(w, status, map[string]string{"error": msg})
 		return
 	}
-	if rewriteFn != nil && inst.Labels != nil {
+	var stats rewrite.PayloadStats
+	if rewriteFn != nil {
 		before := len(body)
-		body, err = rewriteFn(body)
+		body, stats, err = rewriteFn(body)
 		if err == nil {
-			slog.Debug("rewrote push labels",
-				"instance", inst.Name, "bytes_before", before, "bytes_after", len(body))
+			recordPayloadStats(m, inst, stats, false)
+			slog.Debug("processed push payload",
+				"instance", inst.Name, "bytes_before", before, "bytes_after", len(body),
+				"kind", stats.ItemKind, "items_total", stats.ItemsTotal, "items_modified", stats.ItemsModified,
+				"labels_dropped", stats.LabelsDropped, "labels_injected", stats.LabelsInjected,
+				"labels_overwritten", stats.LabelsOverwritten)
 		}
 		if err != nil {
 			proxy.WriteJSONError(w, http.StatusBadRequest, map[string]string{
@@ -349,11 +355,31 @@ func handlePush(w http.ResponseWriter, r *http.Request, inst *config.InstanceCon
 		w.Header().Set("X-Gateway-Partial-Failure", FormatPartialFailureHeader(partialFailures))
 		m.RecordPartialFailure(inst.Name)
 	}
+	if statusCode >= 200 && statusCode < 400 {
+		recordPayloadStats(m, inst, stats, true)
+	}
 	copyResponseHeaders(w, respHeaders)
 	w.WriteHeader(statusCode)
 	if respBody != nil {
 		_, _ = w.Write(respBody)
 	}
+}
+
+func recordPayloadStats(m *metrics.Metrics, inst *config.InstanceConfig, stats rewrite.PayloadStats, forwarded bool) {
+	if stats.Empty() {
+		return
+	}
+	if forwarded {
+		m.RecordWriteItems(inst.Backend, inst.Name, stats.ItemKind, "forwarded", stats.ItemsTotal)
+		return
+	}
+	m.RecordWriteItems(inst.Backend, inst.Name, stats.ItemKind, "received", stats.ItemsTotal)
+	unchanged := stats.ItemsTotal - stats.ItemsModified
+	m.RecordWriteItems(inst.Backend, inst.Name, stats.ItemKind, "modified", stats.ItemsModified)
+	m.RecordWriteItems(inst.Backend, inst.Name, stats.ItemKind, "unchanged", unchanged)
+	m.RecordRewriteLabels(inst.Backend, inst.Name, "dropped", stats.LabelsDropped)
+	m.RecordRewriteLabels(inst.Backend, inst.Name, "injected", stats.LabelsInjected)
+	m.RecordRewriteLabels(inst.Backend, inst.Name, "overwritten", stats.LabelsOverwritten)
 }
 
 func doAnyMode(inst *config.InstanceConfig, results []TargetResult) (int, []byte, http.Header, []PartialFailure) {
