@@ -16,6 +16,8 @@ import (
 	"obsdatalayer/internal/config"
 )
 
+const upstreamErrorBodyPreviewBytes = 4096
+
 type skipTLSVerifyKey struct{}
 
 // WithSkipTLSVerify marks a single upstream request as allowed to skip TLS
@@ -129,6 +131,15 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, inst *config.Ins
 			w.Header().Add(key, v)
 		}
 	}
+	if isNon2XX(resp.StatusCode) {
+		body, readErr := io.ReadAll(resp.Body)
+		LogUpstreamNon2XX(inst.Name, r.Method, upstreamURL, resp.StatusCode, time.Since(started), req.Header.Get("X-Scope-OrgID"), body, readErr)
+		w.WriteHeader(resp.StatusCode)
+		if len(body) > 0 {
+			_, _ = w.Write(body)
+		}
+		return
+	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
 }
@@ -207,6 +218,53 @@ func WriteJSONError(w http.ResponseWriter, status int, body map[string]string) {
 	w.WriteHeader(status)
 	data, _ := json.Marshal(body)
 	_, _ = w.Write(data)
+}
+
+// LogUpstreamNon2XX logs an upstream error response body preview. It never logs
+// request bodies, and the response preview is capped so noisy upstream errors do
+// not flood logs.
+func LogUpstreamNon2XX(instance, method, upstreamURL string, status int, duration time.Duration, orgID string, body []byte, readErr error) {
+	preview, truncated := upstreamErrorPreview(body)
+	attrs := []any{
+		"instance", instance,
+		"method", method,
+		"url", upstreamURL,
+		"status", status,
+		"duration", duration,
+		"org_id", orgID,
+		"body_bytes", len(body),
+		"body_preview", preview,
+		"body_truncated", truncated,
+	}
+	if readErr != nil {
+		attrs = append(attrs, "body_read_error", readErr)
+	}
+	slog.Warn("upstream returned non-2xx", attrs...)
+
+	if status == http.StatusUnprocessableEntity && looksLikeTooManyTenants(body) {
+		slog.Warn("invalid configuration detected: upstream requires a single tenant but gateway sent multiple tenant IDs", attrs...)
+	}
+}
+
+func upstreamErrorPreview(body []byte) (string, bool) {
+	truncated := len(body) > upstreamErrorBodyPreviewBytes
+	if truncated {
+		body = body[:upstreamErrorBodyPreviewBytes]
+	}
+	preview := strings.ToValidUTF8(string(body), "\uFFFD")
+	preview = strings.TrimSpace(preview)
+	return preview, truncated
+}
+
+func looksLikeTooManyTenants(body []byte) bool {
+	text := strings.ToLower(string(body))
+	return strings.Contains(text, "too many tenant") &&
+		strings.Contains(text, "max: 1") &&
+		strings.Contains(text, "actual")
+}
+
+func isNon2XX(status int) bool {
+	return status < 200 || status >= 300
 }
 
 func isTimeoutError(err error) bool {
