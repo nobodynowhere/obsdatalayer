@@ -469,6 +469,9 @@ func doSingleTarget(
 		"status", resp.StatusCode, "duration", time.Since(started))
 
 	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		proxy.LogUpstreamNon2XX(inst.Name, http.MethodPost, url, resp.StatusCode, time.Since(started), req.Header.Get("X-Scope-OrgID"), respBody, nil)
+	}
 	headers := make(http.Header, len(resp.Header))
 	for k, v := range resp.Header {
 		headers[k] = v
