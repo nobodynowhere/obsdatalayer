@@ -184,8 +184,8 @@ onMounted(load)
     <div>
       <h1>Instances</h1>
       <p>
-        Clients reach each backend at <span class="mono">/api/&lt;backend&gt;/…</span>;
-        instances stay behind the gateway.
+        Clients reach backends at <span class="mono">/api/&lt;backend&gt;/…</span>;
+        Grafana Mimir reads use <span class="mono">/prometheus/…</span>.
       </p>
     </div>
     <PrimeButton icon="pi pi-plus" label="New instance" @click="openCreate" />

@@ -103,6 +103,33 @@ var dataPlaneRoutes = []struct{ method, path string }{
 	{"POST", "/api/mimir/prometheus/api/v1/cardinality/label_names"},
 	{"GET", "/api/mimir/prometheus/api/v1/cardinality/label_values"},
 	{"POST", "/api/mimir/prometheus/api/v1/cardinality/label_values"},
+	// ---- mimir: query (GEM-compatible root prometheus form) ----
+	{"GET", "/prometheus/api/v1/query"},
+	{"POST", "/prometheus/api/v1/query"},
+	{"GET", "/prometheus/api/v1/query_range"},
+	{"POST", "/prometheus/api/v1/query_range"},
+	{"GET", "/prometheus/api/v1/query_exemplars"},
+	{"POST", "/prometheus/api/v1/query_exemplars"},
+	{"GET", "/prometheus/api/v1/labels"},
+	{"POST", "/prometheus/api/v1/labels"},
+	{"GET", "/prometheus/api/v1/label/job/values"},
+	{"POST", "/prometheus/api/v1/label/job/values"},
+	{"GET", "/prometheus/api/v1/series"},
+	{"POST", "/prometheus/api/v1/series"},
+	{"GET", "/prometheus/api/v1/metadata"},
+	{"POST", "/prometheus/api/v1/metadata"},
+	{"POST", "/prometheus/api/v1/read"},
+	{"GET", "/prometheus/api/v1/status/buildinfo"},
+	{"GET", "/prometheus/api/v1/format_query"},
+	{"POST", "/prometheus/api/v1/format_query"},
+	{"GET", "/prometheus/api/v1/rules"},
+	{"GET", "/prometheus/api/v1/alerts"},
+	{"GET", "/prometheus/api/v1/cardinality/active_series"},
+	{"POST", "/prometheus/api/v1/cardinality/active_series"},
+	{"GET", "/prometheus/api/v1/cardinality/label_names"},
+	{"POST", "/prometheus/api/v1/cardinality/label_names"},
+	{"GET", "/prometheus/api/v1/cardinality/label_values"},
+	{"POST", "/prometheus/api/v1/cardinality/label_values"},
 	// ---- mimir: ruler + alertmanager ----
 	{"GET", "/api/mimir/config/v1/rules"},
 	{"GET", "/api/mimir/config/v1/rules/ns"},
@@ -116,6 +143,12 @@ var dataPlaneRoutes = []struct{ method, path string }{
 	{"POST", "/api/mimir/prometheus/config/v1/rules/ns"},
 	{"DELETE", "/api/mimir/prometheus/config/v1/rules/ns"},
 	{"DELETE", "/api/mimir/prometheus/config/v1/rules/ns/grp"},
+	{"GET", "/prometheus/config/v1/rules"},
+	{"GET", "/prometheus/config/v1/rules/ns"},
+	{"GET", "/prometheus/config/v1/rules/ns/grp"},
+	{"POST", "/prometheus/config/v1/rules/ns"},
+	{"DELETE", "/prometheus/config/v1/rules/ns"},
+	{"DELETE", "/prometheus/config/v1/rules/ns/grp"},
 	{"GET", "/api/mimir/api/v1/alerts"},
 	{"POST", "/api/mimir/api/v1/alerts"},
 	{"DELETE", "/api/mimir/api/v1/alerts"},
@@ -148,26 +181,30 @@ type recorder struct {
 	hits []http.Header
 }
 
-func (rec *recorder) handler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rec.mu.Lock()
-		rec.hits = append(rec.hits, r.Header.Clone())
-		rec.mu.Unlock()
-		w.WriteHeader(http.StatusNoContent)
-	})
+func (rec *recorder) RoundTrip(req *http.Request) (*http.Response, error) {
+	rec.mu.Lock()
+	rec.hits = append(rec.hits, req.Header.Clone())
+	rec.mu.Unlock()
+	return &http.Response{
+		StatusCode: http.StatusNoContent,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+		Request:    req,
+	}, nil
 }
 
 // newDataPlane builds the real data-plane handler: the same middleware chain
 // main.go mounts, over all three backend route sets.
-func newDataPlane(t *testing.T, upstreamURL string, stub *authtest.Stub) http.Handler {
+func newDataPlane(t *testing.T, transport http.RoundTripper, stub *authtest.Stub) http.Handler {
 	t.Helper()
+	upstreamURL := "http://upstream.local"
 	cfg := newTestConfig([]*config.InstanceConfig{
 		{Name: "loki-prod", Backend: "loki", URL: upstreamURL},
 		{Name: "mimir-prod", Backend: "mimir", URL: upstreamURL},
 		{Name: "tempo-prod", Backend: "tempo", URL: upstreamURL},
 	})
 	h := config.NewHolder(cfg, "")
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: 5 * time.Second, Transport: transport}
 	p := proxy.New(client, client)
 
 	mux := http.NewServeMux()
@@ -183,12 +220,10 @@ func newDataPlane(t *testing.T, upstreamURL string, stub *authtest.Stub) http.Ha
 // the gateway's own tenant assertion always does.
 func TestEveryRouteStripsClientHeadersAndInjectsTenancy(t *testing.T) {
 	rec := &recorder{}
-	upstream := httptest.NewServer(rec.handler())
-	t.Cleanup(upstream.Close)
 
 	stub := authtest.New()
 	stub.Tenants = []string{"tenant-a"}
-	handler := newDataPlane(t, upstream.URL, stub)
+	handler := newDataPlane(t, rec, stub)
 
 	// Every identity-shaped header a client could try.
 	spoof := map[string]string{
@@ -260,11 +295,9 @@ func TestEveryRouteStripsClientHeadersAndInjectsTenancy(t *testing.T) {
 // above does not cover, so the inventory cannot silently fall behind the code.
 func TestRouteInventoryIsComplete(t *testing.T) {
 	rec := &recorder{}
-	upstream := httptest.NewServer(rec.handler())
-	t.Cleanup(upstream.Close)
 
 	stub := authtest.New()
-	handler := newDataPlane(t, upstream.URL, stub)
+	handler := newDataPlane(t, rec, stub)
 
 	covered := make(map[string]bool, len(dataPlaneRoutes))
 	for _, r := range dataPlaneRoutes {

@@ -96,6 +96,26 @@ func TestMimirAlertmanagerConfigWriteForwards(t *testing.T) {
 	}
 }
 
+func TestMimirRootPrometheusBuildInfoForwards(t *testing.T) {
+	withAuthTenants(t, "tenant-a")
+	capture := &captureTransport{}
+	cfg := newTestConfig([]*config.InstanceConfig{mimirInst("mimir-prod", "http://mimir.local")})
+	h := newRouteOnlyMux(cfg, capture)
+
+	req := httptest.NewRequest(http.MethodGet, "/prometheus/api/v1/status/buildinfo", nil)
+	req.Header.Set("Authorization", authHeader())
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", rec.Code)
+	}
+	if capture.method != http.MethodGet || capture.path != "/prometheus/api/v1/status/buildinfo" {
+		t.Fatalf("expected GET /prometheus/api/v1/status/buildinfo, got %s %s", capture.method, capture.path)
+	}
+}
+
 func TestMimirTenantConfigReadRejectsAmbiguousTenant(t *testing.T) {
 	withAuthTenants(t, "tenant-a", "tenant-b")
 	capture := &captureTransport{}

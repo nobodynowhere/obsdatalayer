@@ -15,9 +15,10 @@ import (
 // attaches the result to the request context for the proxy layer to inject as
 // X-Scope-OrgID.
 //
-// The backend comes from the URL path (/api/{backend}/...). GET requests are
-// reads, and POST requests to known query endpoints are also reads because the
-// Prometheus-compatible APIs allow form-encoded query requests.
+// The backend comes from the URL path (/api/{backend}/...), except the
+// GEM-compatible /prometheus/... surface, which is routed to Mimir. GET requests
+// are reads, and POST requests to known query endpoints are also reads because
+// the Prometheus-compatible APIs allow form-encoded query requests.
 // /healthz bypasses auth so container probes work without credentials.
 func BasicAuth(a auth.Authorizer, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -101,6 +102,9 @@ func AdminAuth(a auth.Authorizer, next http.Handler) http.Handler {
 
 // extractBackend parses the backend segment from /api/{backend}/...
 func extractBackend(path string) string {
+	if strings.HasPrefix(path, "/prometheus/") {
+		return "mimir"
+	}
 	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
 	// parts: ["api", "{backend}", "..."]
 	if len(parts) >= 2 && parts[0] == "api" {
@@ -143,6 +147,17 @@ func isQueryPost(path string) bool {
 		"/api/mimir/prometheus/api/v1/cardinality/label_names",
 		"/api/mimir/prometheus/api/v1/cardinality/label_values",
 		"/api/mimir/prometheus/api/v1/format_query",
+		"/prometheus/api/v1/query",
+		"/prometheus/api/v1/query_range",
+		"/prometheus/api/v1/query_exemplars",
+		"/prometheus/api/v1/labels",
+		"/prometheus/api/v1/series",
+		"/prometheus/api/v1/metadata",
+		"/prometheus/api/v1/read",
+		"/prometheus/api/v1/cardinality/active_series",
+		"/prometheus/api/v1/cardinality/label_names",
+		"/prometheus/api/v1/cardinality/label_values",
+		"/prometheus/api/v1/format_query",
 		"/api/loki/query",
 		"/api/loki/query_range",
 		"/api/loki/labels",
@@ -156,6 +171,7 @@ func isQueryPost(path string) bool {
 	default:
 		return strings.HasPrefix(path, "/api/mimir/label/") && strings.HasSuffix(path, "/values") ||
 			strings.HasPrefix(path, "/api/mimir/prometheus/api/v1/label/") && strings.HasSuffix(path, "/values") ||
+			strings.HasPrefix(path, "/prometheus/api/v1/label/") && strings.HasSuffix(path, "/values") ||
 			strings.HasPrefix(path, "/api/loki/label/") && strings.HasSuffix(path, "/values")
 	}
 }

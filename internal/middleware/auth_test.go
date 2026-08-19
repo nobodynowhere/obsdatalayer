@@ -175,16 +175,45 @@ func TestBasicAuthPostIsWrite(t *testing.T) {
 }
 
 func TestBasicAuthPrometheusPostQueryIsRead(t *testing.T) {
-	var captured *auth.RequestAuth
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		captured = auth.FromContext(r.Context())
-		w.WriteHeader(http.StatusOK)
-	})
+	for _, path := range []string{
+		"/api/mimir/prometheus/api/v1/query",
+		"/prometheus/api/v1/query",
+	} {
+		t.Run(path, func(t *testing.T) {
+			var captured *auth.RequestAuth
+			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				captured = auth.FromContext(r.Context())
+				w.WriteHeader(http.StatusOK)
+			})
+			stub := authtest.New()
+			stub.Allow = map[string]bool{"mimir:read": true}
+			h := middleware.BasicAuth(stub, inner)
+
+			req := httptest.NewRequest(http.MethodPost, path, nil)
+			req.Header.Set("Authorization", stub.Header())
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", rec.Code)
+			}
+			if captured == nil {
+				t.Fatal("expected RequestAuth in context")
+			}
+			if !captured.IsRead {
+				t.Error("expected Prometheus POST query to be read")
+			}
+		})
+	}
+}
+
+func TestBasicAuthRootPrometheusPathUsesMimirBackend(t *testing.T) {
+	inner, called := newHandlerCalledFlag()
 	stub := authtest.New()
 	stub.Allow = map[string]bool{"mimir:read": true}
 	h := middleware.BasicAuth(stub, inner)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/mimir/prometheus/api/v1/query", nil)
+	req := httptest.NewRequest(http.MethodGet, "/prometheus/api/v1/status/buildinfo", nil)
 	req.Header.Set("Authorization", stub.Header())
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -192,11 +221,8 @@ func TestBasicAuthPrometheusPostQueryIsRead(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
-	if captured == nil {
-		t.Fatal("expected RequestAuth in context")
-	}
-	if !captured.IsRead {
-		t.Error("expected Prometheus POST query to be read")
+	if !*called {
+		t.Fatal("expected inner handler to be called")
 	}
 }
 
