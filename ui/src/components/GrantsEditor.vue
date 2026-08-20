@@ -27,6 +27,7 @@ const controlActionLabels = {
   'rules:write': { label: 'rules write', value: 'rules:write' },
   'alerts:read': { label: 'alerts read', value: 'alerts:read' },
   'alerts:write': { label: 'alerts write', value: 'alerts:write' },
+  delete: { label: 'delete', value: 'delete' },
 }
 
 // Which control actions each backend actually exposes. Mirrors
@@ -35,7 +36,7 @@ const controlActionLabels = {
 // Alertmanager, so it has no alert configuration to write. Tempo has neither.
 const controlActionsByBackend = {
   mimir: ['rules:read', 'rules:write', 'alerts:read', 'alerts:write'],
-  loki: ['rules:read', 'rules:write', 'alerts:read'],
+  loki: ['rules:read', 'rules:write', 'alerts:read', 'delete'],
 }
 
 const tenantOptions = computed(() =>
@@ -104,11 +105,15 @@ function isMimirRead(grant) {
 }
 
 function isWriteCapable(grant) {
-  return grant.backend !== 'admin' && ['write', '*', 'rules:write', 'alerts:write'].includes(grant.action)
+  return (
+    grant.backend !== 'admin' &&
+    ['write', '*', 'rules:write', 'alerts:write', 'delete'].includes(grant.action)
+  )
 }
 
 function usesSingleTenant(grant) {
-  return ['write', '*', 'rules:write', 'alerts:write'].includes(grant.action)
+  // Deletion is irreversible, so both directions are single-tenant.
+  return ['write', '*', 'rules:write', 'alerts:write', 'delete'].includes(grant.action)
 }
 
 function isControlAction(action) {

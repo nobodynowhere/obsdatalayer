@@ -893,3 +893,40 @@ func TestAlertmanagerMountUsesAlertActions(t *testing.T) {
 		})
 	}
 }
+
+// TestLokiDeleteUsesDeleteActions covers the log deletion API: it carries its
+// own actions so that an ordinary write grant -- which every log shipper needs
+// -- cannot destroy what it shipped.
+func TestLokiDeleteUsesDeleteActions(t *testing.T) {
+	const path = "/loki/loki/api/v1/delete"
+
+	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete} {
+		tc := struct{ method, action string }{method, auth.ActionDelete}
+		t.Run(tc.method, func(t *testing.T) {
+			inner, called := newHandlerCalledFlag()
+			stub := authtest.New()
+			stub.Allow = map[string]bool{"loki:" + tc.action: true}
+			rec := httptest.NewRecorder()
+			middleware.BasicAuth(stub, inner).ServeHTTP(rec, authedRequest(tc.method, path, stub))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200 with loki:%s, got %d", tc.action, rec.Code)
+			}
+			if !*called {
+				t.Fatal("expected inner handler to be called")
+			}
+
+			// A full data grant must not reach deletion.
+			inner2, called2 := newHandlerCalledFlag()
+			denied := authtest.New()
+			denied.Allow = map[string]bool{"loki:read": true, "loki:write": true}
+			rec2 := httptest.NewRecorder()
+			middleware.BasicAuth(denied, inner2).ServeHTTP(rec2, authedRequest(tc.method, path, denied))
+			if rec2.Code != http.StatusForbidden {
+				t.Fatalf("a read+write grant must not authorize deletion; got %d", rec2.Code)
+			}
+			if *called2 {
+				t.Fatal("handler must not run for a denied request")
+			}
+		})
+	}
+}

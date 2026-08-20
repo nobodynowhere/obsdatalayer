@@ -703,7 +703,8 @@ func TestGrantValidation(t *testing.T) {
 		{"valid wildcard", grant("*", "*", uuidA), false},
 		{"valid admin", auth.Grant{Backend: "admin", Action: "access"}, false},
 		{"unknown backend", grant("kafka", "read", uuidA), true},
-		{"unknown action", grant("loki", "delete", uuidA), true},
+		{"unknown action", grant("loki", "purge", uuidA), true},
+		{"valid loki delete", grant("loki", "delete", uuidA), false},
 		{"valid loki rules read", grant("loki", "rules:read", uuidA), false},
 		{"valid loki rules write", grant("loki", "rules:write", uuidA), false},
 		{"valid loki alerts read", grant("loki", "alerts:read", uuidA), false},
@@ -847,5 +848,31 @@ func TestGrantWithUnknownTenantIsInvalid(t *testing.T) {
 	})
 	if !errors.Is(err, auth.ErrInvalidGrant) {
 		t.Errorf("expected ErrInvalidGrant, got %v", err)
+	}
+}
+
+// TestDeleteGrantsAreSingleTenant pins that deletion never resolves to an
+// ambiguous tenant, in either direction. Deleting data is irreversible, so a
+// caller who cannot say which tenant they mean must not delete from any.
+func TestDeleteGrantsAreSingleTenant(t *testing.T) {
+	const uuidA = "6f1d2c9e-9d3a-4c1b-8f47-2b0a5e7c1d34"
+	const uuidB = "56f1bd96-55a2-4f34-9451-99eeccdd40d8"
+
+	for _, action := range []string{auth.ActionDelete} {
+		t.Run(action+" single tenant", func(t *testing.T) {
+			if err := grant("loki", action, uuidA).Validate(); err != nil {
+				t.Errorf("expected a single-tenant delete grant to be valid: %v", err)
+			}
+		})
+		t.Run(action+" multi tenant", func(t *testing.T) {
+			if err := grant("loki", action, uuidA, uuidB).Validate(); err == nil {
+				t.Error("expected a multi-tenant delete grant to be rejected")
+			}
+		})
+		t.Run(action+" on tempo", func(t *testing.T) {
+			if err := grant("tempo", action, uuidA).Validate(); err == nil {
+				t.Error("expected a delete grant on tempo to be rejected")
+			}
+		})
 	}
 }

@@ -26,9 +26,6 @@ import (
 //
 // Not implemented:
 //
-//   - The log deletion API (/loki/api/v1/delete). Destructive and reachable
-//     under an ordinary write grant, so it wants a permission of its own
-//     before being exposed.
 //   - The deprecated /api/prom query aliases (query, label, series, tail).
 //
 // Ingestion is a separate bundle; see IngestRoutes.
@@ -59,6 +56,18 @@ func LokiDSRoutes(mux *http.ServeMux, mount string, h *config.ConfigHolder, p *p
 	read("GET", "/loki/api/v1/format_query")
 	read("POST", "/loki/api/v1/format_query")
 	read("GET", "/loki/api/v1/status/buildinfo")
+
+	// Log deletion. Tenant-scoped and irreversible, so it sits behind its own
+	// delete:read / delete:write actions rather than the ordinary write grant:
+	// a log shipper needs write to ship, and must not thereby be able to delete
+	// what it shipped. Single-tenant in both directions.
+	for _, method := range []string{"GET", "POST", "PUT", "DELETE"} {
+		mux.HandleFunc(method+" "+mount+"/loki/api/v1/delete", func(w http.ResponseWriter, r *http.Request) {
+			if inst := getInstance(h, r, w, "loki"); inst != nil && requireSingleTenant(w, r) {
+				forwardByMethod(w, r, inst, "/loki/api/v1/delete", h.Get().Gateway.MaxBodyBytes, p)
+			}
+		})
+	}
 
 	// Live tail. A WebSocket, so it takes the upgrade-aware forwarding path
 	// rather than the buffering one. Single-tenant: Loki answers 400 to a tail

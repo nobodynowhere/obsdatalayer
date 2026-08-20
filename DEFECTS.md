@@ -246,6 +246,41 @@ regression coverage or a screenshot checklist for both light and dark themes.
 
 ---
 
+## FUTURE - Mimir tenant deletion, surfaced in the admin UI under Tenants
+
+Loki's log deletion API is proxied and gated by the `delete` action. Mimir has no
+equivalent: its reference states plainly that it does not support deleting
+individual series or applying label matchers. What Mimir offers instead is
+tenant-level destruction:
+
+- `POST /compactor/delete_tenant` — deletes **all** data for the tenant named in
+  `X-Scope-OrgID`.
+- `GET /compactor/delete_tenant_status` — progress of the above.
+- `POST /ruler/delete_tenant_config` — deletes every rule group for the tenant.
+- `POST /multitenant_alertmanager/delete_tenant_config` — deletes the tenant's
+  Alertmanager configuration.
+
+None of these are requested by any Grafana data source, and none belong on a
+tenant-facing data path: they are operator actions whose blast radius is an
+entire tenant's history, and they are not recoverable.
+
+Intended shape: plumb them into the admin UI under **Tenants**, as a delete
+action on a tenant record, rather than exposing them as proxied routes. That puts
+the capability behind an admin grant and an explicit confirmation on a named
+tenant, instead of behind a data-plane grant a tenant could hold themselves.
+
+Two things to settle when it is built:
+
+- Whether deleting a tenant should also call the ruler and Alertmanager
+  config-deletion endpoints, or only the compactor one.
+- Whether `delete_tenant_config` on the ruler and Alertmanager should instead be
+  reachable under `rules:write` and `alerts:write`, since that is what they
+  destroy.
+
+Until then, a `delete` grant is rejected on the `mimir` backend rather than
+silently accepted and inert; see `controlActionBackends` in
+`internal/auth/auth.go`.
+
 ## Deliberate design decisions
 
 Recorded so they are not re-reported as defects.

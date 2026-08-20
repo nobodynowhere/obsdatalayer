@@ -169,6 +169,10 @@ func controlAction(method, path string) string {
 			return auth.ActionAlertsRead
 		}
 		return auth.ActionAlertsWrite
+	case isDeletePath(path):
+		// One action for the whole deletion API, whatever the method: listing,
+		// requesting and cancelling a deletion are the same privilege.
+		return auth.ActionDelete
 	default:
 		return ""
 	}
@@ -208,6 +212,13 @@ func isLokiRulesPath(path string) bool {
 // Prometheus-compatible listing of currently firing alerts. A non-GET here
 // still resolves to alerts:write and is therefore refused, because no grant can
 // carry alerts:write on loki.
+// isDeletePath matches the data deletion API, which carries its own action so
+// that an ordinary write grant cannot destroy data. Loki's is request-based:
+// GET lists pending deletions, POST and PUT create one, DELETE cancels one.
+func isDeletePath(path string) bool {
+	return path == "/loki/loki/api/v1/delete"
+}
+
 func isLokiAlertsPath(path string) bool {
 	return path == "/loki/prometheus/api/v1/alerts"
 }

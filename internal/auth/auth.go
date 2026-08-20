@@ -28,7 +28,13 @@ const (
 	ActionRulesWrite  = "rules:write"
 	ActionAlertsRead  = "alerts:read"
 	ActionAlertsWrite = "alerts:write"
-	ActionAny         = "*"
+	// ActionDelete covers the whole deletion API -- listing, requesting and
+	// cancelling a deletion. It is not split into read and write: a deletion
+	// request is the only thing the API does, and being able to see pending
+	// deletions without being able to make one is not a distinction anyone
+	// needs. The grant is the action plus the single tenant it applies to.
+	ActionDelete = "delete"
+	ActionAny    = "*"
 
 	// ObjectAdmin / ActionAccess gate the admin listener.
 	ObjectAdmin  = "admin"
@@ -51,6 +57,7 @@ var (
 		ActionRulesWrite:  true,
 		ActionAlertsRead:  true,
 		ActionAlertsWrite: true,
+		ActionDelete:      true,
 		ActionAny:         true,
 	}
 )
@@ -93,7 +100,7 @@ func (g Grant) Validate() error {
 		return fmt.Errorf("unknown backend %q (must be loki, mimir, tempo, admin or *)", g.Backend)
 	}
 	if !validActions[g.Action] {
-		return fmt.Errorf("unknown action %q (must be read, write, rules:read, rules:write, alerts:read, alerts:write or *)", g.Action)
+		return fmt.Errorf("unknown action %q (must be read, write, rules:read, rules:write, alerts:read, alerts:write, delete or *)", g.Action)
 	}
 	if IsControlAction(g.Action) {
 		supported, ok := controlActionBackends[g.Backend]
@@ -204,13 +211,16 @@ func actionMatches(policyAct, requested string) bool {
 }
 
 func ActionIsRead(action string) bool {
-	return action == ActionRead || action == ActionRulesRead || action == ActionAlertsRead
+	return action == ActionRead ||
+		action == ActionRulesRead ||
+		action == ActionAlertsRead
 }
 
 func ActionIsWrite(action string) bool {
 	return action == ActionWrite ||
 		action == ActionRulesWrite ||
 		action == ActionAlertsWrite ||
+		action == ActionDelete ||
 		action == ActionAny
 }
 
@@ -218,6 +228,10 @@ func ActionRequiresSingleTenant(action string) bool {
 	return action == ActionWrite ||
 		action == ActionRulesWrite ||
 		action == ActionAlertsWrite ||
+		// Deleting data is irreversible, so it is never allowed to resolve to an
+		// ambiguous tenant. A caller who cannot say which tenant they mean must
+		// not be deleting from any.
+		action == ActionDelete ||
 		action == ActionAny
 }
 
@@ -227,7 +241,8 @@ func IsControlAction(action string) bool {
 	return action == ActionRulesRead ||
 		action == ActionRulesWrite ||
 		action == ActionAlertsRead ||
-		action == ActionAlertsWrite
+		action == ActionAlertsWrite ||
+		action == ActionDelete
 }
 
 // controlActionBackends records which control actions each backend actually
@@ -249,6 +264,10 @@ var controlActionBackends = map[string]map[string]bool{
 		ActionRulesRead:  true,
 		ActionRulesWrite: true,
 		ActionAlertsRead: true,
+		// Loki's log deletion API: request, list and cancel deletions of log
+		// lines matching a selector and time range. Separate from write so a
+		// log shipper cannot delete what it ships.
+		ActionDelete: true,
 	},
 }
 

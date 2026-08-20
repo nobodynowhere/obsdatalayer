@@ -190,8 +190,16 @@ feature request (grafana/loki#7659). Rule endpoints are single-tenant only.
 | GET | `/loki/api/v1/delete` |
 | DELETE | `/loki/api/v1/delete` |
 
-Destructive and tenant-scoped. Exposing these under an ordinary `write` grant
-would let any log shipper delete logs, so they warrant a distinct permission.
+Destructive and tenant-scoped, so these sit behind a `delete` action rather than
+the ordinary `write` grant -- a log shipper needs `write` to ship and must not
+thereby be able to delete what it shipped. One action covers the whole API:
+listing, requesting and cancelling a deletion are the same privilege. A `delete`
+grant is always single-tenant, because deletion is irreversible and a caller who
+cannot say which tenant they mean must not delete from any.
+
+Mimir has no equivalent API -- it cannot delete individual series -- so `delete`
+is not a valid action on the `mimir` backend. See the FUTURE entry in
+DEFECTS.md.
 
 ### Deprecated
 
@@ -359,6 +367,7 @@ base the user types and Mimir's own API prefix, so nothing is rewritten.
 | `GET /prometheus/api/v1/rules` | `/loki/prometheus/api/v1/rules` | `/prometheus/api/v1/rules` |
 | `GET /prometheus/api/v1/alerts` | `/loki/prometheus/api/v1/alerts` | `/prometheus/api/v1/alerts` |
 | `GET /loki/api/v1/tail` | `/loki/loki/api/v1/tail` | `/loki/api/v1/tail` (WebSocket) |
+| `GET,POST,PUT,DELETE /loki/api/v1/delete` | `/loki/loki/api/v1/delete` | `/loki/api/v1/delete` |
 
 The `/loki/loki` doubling is correct: the mount is a gateway concept and
 `/loki/api/v1` is genuinely part of Loki's own paths. Under the mount, Loki's
