@@ -19,6 +19,7 @@ import (
 	"obsdatalayer/internal/config"
 	"obsdatalayer/internal/db"
 	"obsdatalayer/internal/metrics"
+	"obsdatalayer/internal/secret"
 	"obsdatalayer/internal/tenant"
 )
 
@@ -36,6 +37,17 @@ func newEnv(t *testing.T) *env {
 }
 
 func newEnvWithMimirClient(t *testing.T, mimirClient *http.Client) *env {
+	return newEnvWith(t, mimirClient, nil)
+}
+
+// newEnvWithCipher builds an environment whose stored credentials are encrypted,
+// so tests can assert on what reaches the database rather than only on what the
+// API echoes back.
+func newEnvWithCipher(t *testing.T, c *secret.Cipher) *env {
+	return newEnvWith(t, nil, c)
+}
+
+func newEnvWith(t *testing.T, mimirClient *http.Client, cipher *secret.Cipher) *env {
 	t.Helper()
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())
 	gormDB, err := db.Open(db.Config{Type: "sqlite", Path: dsn})
@@ -63,7 +75,7 @@ func newEnvWithMimirClient(t *testing.T, mimirClient *http.Client) *env {
 	if err := config.EnsureSettings(gormDB); err != nil {
 		t.Fatalf("ensure settings: %v", err)
 	}
-	holder, err := config.NewDBHolder(gormDB, "test")
+	holder, err := config.NewDBHolder(gormDB, "test", cipher)
 	if err != nil {
 		t.Fatalf("config holder: %v", err)
 	}
@@ -78,7 +90,7 @@ func newEnvWithMimirClient(t *testing.T, mimirClient *http.Client) *env {
 
 	mux := http.NewServeMux()
 	adminapi.Register(mux, adminapi.Deps{
-		Auth: svc, Tenants: tenants, DB: gormDB, Config: holder, Metrics: m, MimirClient: mimirClient, Reload: reload,
+		Auth: svc, Tenants: tenants, DB: gormDB, Config: holder, Metrics: m, MimirClient: mimirClient, Reload: reload, Cipher: cipher,
 	})
 	return &env{mux: mux, svc: svc, tenants: tenants, cfg: holder, metrics: m, db: gormDB}
 }
@@ -201,12 +213,12 @@ func TestTenantMimirObservabilityFetchesRulesAndAlerts(t *testing.T) {
 	}
 	if err := config.CreateInstance(e.db, &config.InstanceConfig{
 		Name: "mimir-shared", Backend: "mimir", URL: "http://shared.local",
-	}, e.tenants); err != nil {
+	}, e.tenants, nil); err != nil {
 		t.Fatalf("create shared instance: %v", err)
 	}
 	if err := config.CreateInstance(e.db, &config.InstanceConfig{
 		Name: "mimir-dedicated", Backend: "mimir", URL: "http://dedicated.local", TenantID: tn.ID,
-	}, e.tenants); err != nil {
+	}, e.tenants, nil); err != nil {
 		t.Fatalf("create dedicated instance: %v", err)
 	}
 	if _, err := e.cfg.Reload(); err != nil {
@@ -254,7 +266,7 @@ func TestTenantMimirObservabilityRejectsAmbiguousSharedInstances(t *testing.T) {
 		t.Fatalf("create tenant: %v", err)
 	}
 	for _, name := range []string{"mimir-a", "mimir-b"} {
-		if err := config.CreateInstance(e.db, &config.InstanceConfig{Name: name, Backend: "mimir", URL: "http://" + name + ".local"}, e.tenants); err != nil {
+		if err := config.CreateInstance(e.db, &config.InstanceConfig{Name: name, Backend: "mimir", URL: "http://" + name + ".local"}, e.tenants, nil); err != nil {
 			t.Fatalf("create instance %s: %v", name, err)
 		}
 	}
@@ -815,5 +827,194 @@ func TestGetMetricsEmptyIsAnArrayNotNull(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"instances":[]`) {
 		t.Fatalf("expected an empty array, got %s", rec.Body.String())
+	}
+}
+
+// ---- credential encryption --------------------------------------------------
+
+func encryptionTestCipher(t *testing.T) *secret.Cipher {
+	t.Helper()
+	encoded, err := secret.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	key, err := secret.ParseKey(encoded)
+	if err != nil {
+		t.Fatalf("parse key: %v", err)
+	}
+	c, err := secret.New(key)
+	if err != nil {
+		t.Fatalf("new cipher: %v", err)
+	}
+	return c
+}
+
+func storedInstanceAuth(t *testing.T, e *env, name string) string {
+	t.Helper()
+	var got string
+	if err := e.db.Table("instances").Where("name = ?", name).Pluck("basic_auth", &got).Error; err != nil {
+		t.Fatalf("read stored credential: %v", err)
+	}
+	return got
+}
+
+// A credential submitted through the admin API is encrypted before it reaches
+// the database, and the API still reports it as set without disclosing it.
+func TestAPICreateEncryptsCredential(t *testing.T) {
+	e := newEnvWithCipher(t, encryptionTestCipher(t))
+
+	rec := e.do(t, http.MethodPost, "/api/instances", map[string]any{
+		"name": "loki-prod", "backend": "loki", "url": "http://loki.local",
+		"basic_auth": "scrape:s3cr3t",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create instance: %d %s", rec.Code, rec.Body.String())
+	}
+
+	stored := storedInstanceAuth(t, e, "loki-prod")
+	if !secret.IsEncrypted(stored) {
+		t.Fatalf("stored credential is not encrypted: %q", stored)
+	}
+	if strings.Contains(stored, "s3cr3t") {
+		t.Fatalf("plaintext reached the database: %q", stored)
+	}
+
+	if body := rec.Body.String(); strings.Contains(body, "s3cr3t") {
+		t.Errorf("the API echoed the credential back: %s", body)
+	}
+}
+
+// The mask round trip is the interaction most likely to break under
+// encryption: the UI reads a redacted credential and submits it back unchanged,
+// and the gateway must resolve it to the stored secret, not overwrite the
+// secret with the mask or double-encrypt it.
+func TestAPIUpdateWithRedactedCredentialPreservesSecret(t *testing.T) {
+	e := newEnvWithCipher(t, encryptionTestCipher(t))
+
+	if rec := e.do(t, http.MethodPost, "/api/instances", map[string]any{
+		"name": "loki-prod", "backend": "loki", "url": "http://loki.local",
+		"basic_auth": "scrape:s3cr3t",
+	}); rec.Code != http.StatusCreated {
+		t.Fatalf("create instance: %d %s", rec.Code, rec.Body.String())
+	}
+	before := storedInstanceAuth(t, e, "loki-prod")
+
+	// Read it back the way the UI does, then submit that document unchanged.
+	rec := e.do(t, http.MethodGet, "/api/instances/loki-prod", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get instance: %d %s", rec.Code, rec.Body.String())
+	}
+	var doc map[string]any
+	decodeInto(t, rec, &doc)
+	if doc["basic_auth"] != "<redacted>" {
+		t.Fatalf("expected a redacted credential, got %v", doc["basic_auth"])
+	}
+	doc["url"] = "http://loki-renamed.local"
+
+	if rec := e.do(t, http.MethodPut, "/api/instances/loki-prod", doc); rec.Code != http.StatusOK {
+		t.Fatalf("update instance: %d %s", rec.Code, rec.Body.String())
+	}
+
+	after := storedInstanceAuth(t, e, "loki-prod")
+	if !secret.IsEncrypted(after) {
+		t.Fatalf("credential is no longer encrypted after update: %q", after)
+	}
+	if after == before {
+		t.Error("expected a fresh nonce on rewrite, got byte-identical ciphertext")
+	}
+
+	// What matters is that the plaintext survived the round trip intact.
+	inst, ok := e.cfg.Get().ByName["loki-prod"]
+	if !ok {
+		t.Fatal("instance missing after update")
+	}
+	if inst.BasicAuth != "scrape:s3cr3t" {
+		t.Errorf("credential = %q, want the original secret preserved", inst.BasicAuth)
+	}
+	if inst.URL != "http://loki-renamed.local" {
+		t.Errorf("the rest of the update did not apply: url = %q", inst.URL)
+	}
+}
+
+// Reordering push targets in the UI sends the whole instance back with every
+// credential masked. The credentials must follow their URLs, not their
+// positions, or promoting a target would hand one upstream's password to
+// another -- a leak to a third party, and a broken call.
+func TestReorderingTargetsKeepsCredentialsWithTheirURLs(t *testing.T) {
+	e := newEnvWithCipher(t, encryptionTestCipher(t))
+
+	if rec := e.do(t, http.MethodPost, "/api/instances", map[string]any{
+		"name": "mimir-ha", "backend": "mimir", "fan_out_mode": "any",
+		"push_urls": []map[string]any{
+			{"url": "http://a.local", "basic_auth": "user-a:password-a"},
+			{"url": "http://b.local", "basic_auth": "user-b:password-b"},
+		},
+	}); rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Read it back the way the UI does: both credentials come back masked.
+	rec := e.do(t, http.MethodGet, "/api/instances/mimir-ha", nil)
+	var doc map[string]any
+	decodeInto(t, rec, &doc)
+	targets := doc["push_urls"].([]any)
+	for i, raw := range targets {
+		if got := raw.(map[string]any)["basic_auth"]; got != "<redacted>" {
+			t.Fatalf("target %d credential = %v, want it redacted", i, got)
+		}
+	}
+
+	// Swap them, exactly as the move-up control does, and submit unchanged.
+	doc["push_urls"] = []any{targets[1], targets[0]}
+	if rec := e.do(t, http.MethodPut, "/api/instances/mimir-ha", doc); rec.Code != http.StatusOK {
+		t.Fatalf("update: %d %s", rec.Code, rec.Body.String())
+	}
+
+	inst, ok := e.cfg.Get().ByName["mimir-ha"]
+	if !ok {
+		t.Fatal("instance missing after reorder")
+	}
+	if len(inst.PushURLs) != 2 {
+		t.Fatalf("expected 2 targets, got %d", len(inst.PushURLs))
+	}
+
+	// The order changed...
+	if inst.PushURLs[0].URL != "http://b.local" || inst.PushURLs[1].URL != "http://a.local" {
+		t.Fatalf("order did not change: %q then %q", inst.PushURLs[0].URL, inst.PushURLs[1].URL)
+	}
+	// ...and each credential moved with its own URL.
+	if inst.PushURLs[0].BasicAuth != "user-b:password-b" {
+		t.Errorf("promoted target has credential %q, want user-b's", inst.PushURLs[0].BasicAuth)
+	}
+	if inst.PushURLs[1].BasicAuth != "user-a:password-a" {
+		t.Errorf("demoted target has credential %q, want user-a's", inst.PushURLs[1].BasicAuth)
+	}
+}
+
+// The read path must then present the promoted target's own credential.
+func TestReorderedTargetsKeepDistinctCredentialsOnRead(t *testing.T) {
+	e := newEnvWithCipher(t, encryptionTestCipher(t))
+
+	if rec := e.do(t, http.MethodPost, "/api/instances", map[string]any{
+		"name": "mimir-ha", "backend": "mimir", "fan_out_mode": "any",
+		"push_urls": []map[string]any{
+			{"url": "http://a.local", "basic_auth": "user-a:password-a"},
+			{"url": "http://b.local", "basic_auth": "user-b:password-b"},
+		},
+	}); rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d", rec.Code)
+	}
+
+	inst := e.cfg.Get().ByName["mimir-ha"]
+	read := inst.GetReadTargets()
+	if len(read) != 2 {
+		t.Fatalf("expected 2 read targets, got %d", len(read))
+	}
+	// Read preference follows configured order, and each carries its own key.
+	if read[0].URL != "http://a.local" || read[0].BasicAuth != "user-a:password-a" {
+		t.Errorf("first read target = %q with %q", read[0].URL, read[0].BasicAuth)
+	}
+	if read[1].URL != "http://b.local" || read[1].BasicAuth != "user-b:password-b" {
+		t.Errorf("second read target = %q with %q", read[1].URL, read[1].BasicAuth)
 	}
 }

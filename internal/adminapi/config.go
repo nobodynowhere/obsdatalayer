@@ -165,7 +165,7 @@ func (h *handler) createInstance(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	if err := config.CreateInstance(h.db, inst, h.tenants); err != nil {
+	if err := config.CreateInstance(h.db, inst, h.tenants, h.cipher); err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -197,7 +197,7 @@ func (h *handler) updateInstance(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	if err := config.UpdateInstance(h.db, name, next, h.tenants); err != nil {
+	if err := config.UpdateInstance(h.db, name, next, h.tenants, h.cipher); err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -233,16 +233,40 @@ type settingsDoc struct {
 	PushTimeout    string `json:"push_timeout"`
 	LogLevel       string `json:"log_level"`
 	ReloadInterval string `json:"reload_interval"`
+
+	AuthLimitEnabled        *bool  `json:"auth_limit_enabled"`
+	AuthFailureThreshold    int    `json:"auth_failure_threshold"`
+	AuthFailureWindow       string `json:"auth_failure_window"`
+	AuthBlockDuration       string `json:"auth_block_duration"`
+	AuthMaxBlockDuration    string `json:"auth_max_block_duration"`
+	AuthMaxConcurrentHashes int    `json:"auth_max_concurrent_hashes"`
+	AuthHashWait            string `json:"auth_hash_wait"`
+
+	// AuthHashConcurrencyEffective reports the hashing cap actually in force,
+	// which the operator cannot otherwise derive: the configured value of 0
+	// means "half the CPUs of whatever host this is". Read-only.
+	AuthHashConcurrencyEffective int `json:"auth_hash_concurrency_effective,omitempty"`
 }
 
 func (h *handler) getSettings(w http.ResponseWriter, r *http.Request) {
 	g := h.cfg.Get().Gateway
+	enabled := g.AuthLimit.ThrottleEnabled()
 	writeJSON(w, http.StatusOK, settingsDoc{
 		MaxBodyBytes:   g.MaxBodyBytes,
 		QueryTimeout:   g.Timeouts.Query.Duration().String(),
 		PushTimeout:    g.Timeouts.Push.Duration().String(),
 		LogLevel:       g.LogLevel,
 		ReloadInterval: g.ReloadInterval.Duration().String(),
+
+		AuthLimitEnabled:        &enabled,
+		AuthFailureThreshold:    g.AuthLimit.FailureThreshold,
+		AuthFailureWindow:       g.AuthLimit.FailureWindow.Duration().String(),
+		AuthBlockDuration:       g.AuthLimit.BlockDuration.Duration().String(),
+		AuthMaxBlockDuration:    g.AuthLimit.MaxBlockDuration.Duration().String(),
+		AuthMaxConcurrentHashes: g.AuthLimit.MaxConcurrentHashes,
+		AuthHashWait:            g.AuthLimit.HashWait.Duration().String(),
+
+		AuthHashConcurrencyEffective: g.AuthLimit.HashConcurrency(),
 	})
 }
 
@@ -253,6 +277,11 @@ func (h *handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	g := config.GatewayConfig{MaxBodyBytes: doc.MaxBodyBytes, LogLevel: doc.LogLevel}
+	g.AuthLimit = config.AuthLimitConfig{
+		Enabled:             doc.AuthLimitEnabled,
+		FailureThreshold:    doc.AuthFailureThreshold,
+		MaxConcurrentHashes: doc.AuthMaxConcurrentHashes,
+	}
 	for _, f := range []struct {
 		raw string
 		dst *config.Duration
@@ -260,6 +289,10 @@ func (h *handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 		{doc.QueryTimeout, &g.Timeouts.Query},
 		{doc.PushTimeout, &g.Timeouts.Push},
 		{doc.ReloadInterval, &g.ReloadInterval},
+		{doc.AuthFailureWindow, &g.AuthLimit.FailureWindow},
+		{doc.AuthBlockDuration, &g.AuthLimit.BlockDuration},
+		{doc.AuthMaxBlockDuration, &g.AuthLimit.MaxBlockDuration},
+		{doc.AuthHashWait, &g.AuthLimit.HashWait},
 	} {
 		if f.raw == "" {
 			continue

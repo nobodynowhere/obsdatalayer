@@ -24,6 +24,7 @@ import (
 
 	"obsdatalayer/internal/adminapi"
 	"obsdatalayer/internal/auth"
+	"obsdatalayer/internal/authlimit"
 	"obsdatalayer/internal/certutil"
 	"obsdatalayer/internal/config"
 	"obsdatalayer/internal/db"
@@ -31,6 +32,7 @@ import (
 	"obsdatalayer/internal/metrics"
 	"obsdatalayer/internal/middleware"
 	"obsdatalayer/internal/proxy"
+	"obsdatalayer/internal/secret"
 	"obsdatalayer/internal/tenant"
 	"obsdatalayer/internal/ui"
 )
@@ -48,10 +50,22 @@ func main() {
 	selfSignedDir := flag.String("self-signed-dir", "/etc/obsgateway", "directory for generated certificate files")
 	overwriteSelfSigned := flag.Bool("overwrite-self-signed", false, "overwrite existing certificate files when using --generate-self-signed")
 	updateConfig := flag.Bool("update-config", false, "update gateway.tls in the bootstrap config when using --generate-self-signed")
+	generateEncryptionKey := flag.Bool("generate-encryption-key", false, "generate a credential encryption key and exit")
+	encryptionKeyOut := flag.String("encryption-key-file", "", "write the key to this file with --generate-encryption-key (default: print to stdout)")
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Printf("obsgateway %s (commit %s, built %s)\n", version, commit, buildTime)
+		return
+	}
+
+	// Key generation needs no config and no database, so it runs before either
+	// is touched: an operator has to be able to produce a key on a host that
+	// cannot yet start the gateway.
+	if *generateEncryptionKey {
+		if err := generateEncryptionKeyFile(*encryptionKeyOut); err != nil {
+			log.Fatalf("generate encryption key: %v", err)
+		}
 		return
 	}
 
@@ -114,7 +128,18 @@ func main() {
 		log.Fatalf("%v", err)
 	}
 
-	holder, err := config.NewDBHolder(gormDB, *configPath)
+	cipher, err := loadCredentialCipher(bootstrap.Gateway.EncryptionKeyFile)
+	if err != nil {
+		log.Fatalf("encryption key: %v", err)
+	}
+	// Reconcile stored credentials with the key before anything reads them.
+	// This both performs the one-time plaintext migration and refuses to start
+	// when credentials exist that the configured key cannot protect or open.
+	if err := config.EnsureCredentialsEncrypted(gormDB, cipher); err != nil {
+		log.Fatalf("credential encryption: %v", err)
+	}
+
+	holder, err := config.NewDBHolder(gormDB, *configPath, cipher)
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
@@ -127,8 +152,22 @@ func main() {
 
 	p := proxy.New(makeClient(cfg.Gateway.Timeouts.Query), makeClient(cfg.Gateway.Timeouts.Push))
 	m := metrics.New(prometheus.DefaultRegisterer)
+	p.SetMetrics(m)
 
-	reload := newReloader(holder, authSvc, tenants, p, m, logLevel, cfg.Gateway.Timeouts)
+	// Each plane throttles on its own counter. Sharing one was tried and is
+	// wrong: a flood against the data listener then blocks the operator out of
+	// the admin API, taking away the only means of turning the throttle off or
+	// changing anything else while under attack. Losing the recovery path is a
+	// worse outcome than the CPU exhaustion this is defending against.
+	//
+	// Little is given up by separating them. The admin plane binds loopback by
+	// default, so an attacker who could pivot to it is already inside, and it
+	// throttles them on its own counter regardless. What genuinely bounds the
+	// two planes together is the hashing gate below, which is process-wide.
+	guards := newAuthGuards(m, cfg.Gateway.AuthLimit)
+	applyAuthLimit(authSvc, guards, cfg.Gateway.AuthLimit)
+
+	reload := newReloader(holder, authSvc, tenants, p, m, logLevel, cfg.Gateway.Timeouts, guards)
 
 	// Signals are trapped before the listeners start so that an early SIGTERM
 	// cannot slip through to the default disposition and kill the process
@@ -174,8 +213,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("tls config: %v", err)
 	}
-	adminSrv := &http.Server{Addr: adminAddr, Handler: adminHandler(gormDB, holder, authSvc, tenants, m, reload), TLSConfig: adminTLSConfig}
-	dataSrv := &http.Server{Addr: bootstrap.DataAddr(), Handler: dataHandler(holder, authSvc, p, m), TLSConfig: dataTLSConfig}
+	adminSrv := &http.Server{Addr: adminAddr, Handler: adminHandler(gormDB, holder, authSvc, tenants, m, reload, cipher, guards.admin), TLSConfig: adminTLSConfig}
+	dataSrv := &http.Server{Addr: bootstrap.DataAddr(), Handler: dataHandler(holder, authSvc, p, m, guards.data), TLSConfig: dataTLSConfig}
 
 	// A listener that dies on its own (port already bound, for example) has to
 	// bring the process down rather than leaving it half-serving.
@@ -294,6 +333,48 @@ func generateSelfSignedCertificate(opts selfSignedOptions) error {
 	return nil
 }
 
+// loadCredentialCipher resolves the credential encryption key and builds the
+// cipher. A nil cipher with a nil error means no key is configured, which is
+// only tolerable when nothing is stored; config.EnsureCredentialsEncrypted
+// makes that call.
+func loadCredentialCipher(keyFile string) (*secret.Cipher, error) {
+	key, source, err := secret.LoadKey(keyFile)
+	if err != nil {
+		return nil, err
+	}
+	if key == nil {
+		return nil, nil
+	}
+	c, err := secret.New(key)
+	if err != nil {
+		return nil, err
+	}
+	slog.Info("credential encryption enabled", "key_source", source)
+	return c, nil
+}
+
+// generateEncryptionKeyFile writes a new key to path, or prints it when no path
+// is given. Printing is the right default for a container workflow, where the
+// key is destined for a secret store rather than a file on this host.
+func generateEncryptionKeyFile(path string) error {
+	key, err := secret.GenerateKey()
+	if err != nil {
+		return err
+	}
+	if path == "" {
+		fmt.Println(key)
+		return nil
+	}
+	if err := secret.WriteKeyFile(path, key); err != nil {
+		return err
+	}
+	// Not logged through slog: the operator ran this to be told what to do next.
+	fmt.Printf("Wrote encryption key to %s (mode 0600).\n", path)
+	fmt.Printf("Set gateway.encryption_key_file: %s in the bootstrap config, or pass the key via %s.\n", path, secret.EnvKey)
+	fmt.Println("Back this key up. Without it the stored upstream credentials cannot be recovered.")
+	return nil
+}
+
 func selfSignedFiles(dir string) (string, string, error) {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
@@ -354,6 +435,37 @@ func setupLogging() *slog.LevelVar {
 	return level
 }
 
+// authGuards holds one throttle per listener. They share configuration and the
+// metrics they record to, but never their failure counters -- see newAuthGuards.
+type authGuards struct {
+	data  *middleware.AuthGuard
+	admin *middleware.AuthGuard
+}
+
+func newAuthGuards(m *metrics.Metrics, cfg config.AuthLimitConfig) *authGuards {
+	return &authGuards{
+		data:  &middleware.AuthGuard{Limiter: authlimit.NewLimiter(cfg.Limiter()), Metrics: m},
+		admin: &middleware.AuthGuard{Limiter: authlimit.NewLimiter(cfg.Limiter()), Metrics: m},
+	}
+}
+
+// applyAuthLimit pushes throttle settings into the running gateway. Both halves
+// are swapped atomically by their owners, so this is safe with requests in
+// flight: existing failure state is kept, and a hashing slot already held is
+// released back to the gate it came from.
+func applyAuthLimit(a *auth.Service, guards *authGuards, cfg config.AuthLimitConfig) {
+	if guards != nil {
+		for _, g := range []*middleware.AuthGuard{guards.data, guards.admin} {
+			if g != nil && g.Limiter != nil {
+				g.Limiter.SetConfig(cfg.Limiter())
+			}
+		}
+	}
+	if a != nil {
+		a.SetHashLimit(cfg.HashConcurrency(), cfg.HashWait.Duration())
+	}
+}
+
 // applyLogLevel updates the live logger. Validation happens in config, so an
 // unparseable value here is treated as a no-op rather than a fatal error.
 func applyLogLevel(level *slog.LevelVar, configured string) {
@@ -381,10 +493,11 @@ type reloader struct {
 	metrics  *metrics.Metrics
 	logLevel *slog.LevelVar
 	timeouts config.TimeoutConfig
+	guards   *authGuards
 }
 
-func newReloader(h *config.ConfigHolder, a *auth.Service, t *tenant.Store, p *proxy.Proxy, m *metrics.Metrics, lvl *slog.LevelVar, current config.TimeoutConfig) *reloader {
-	return &reloader{holder: h, auth: a, tenants: t, proxy: p, metrics: m, logLevel: lvl, timeouts: current}
+func newReloader(h *config.ConfigHolder, a *auth.Service, t *tenant.Store, p *proxy.Proxy, m *metrics.Metrics, lvl *slog.LevelVar, current config.TimeoutConfig, guards *authGuards) *reloader {
+	return &reloader{holder: h, auth: a, tenants: t, proxy: p, metrics: m, logLevel: lvl, timeouts: current, guards: guards}
 }
 
 func (r *reloader) run() error {
@@ -420,6 +533,7 @@ func (r *reloader) run() error {
 	r.metrics.RetainInstances(instanceNames(staged.Instances))
 
 	applyLogLevel(r.logLevel, staged.Gateway.LogLevel)
+	applyAuthLimit(r.auth, r.guards, staged.Gateway.AuthLimit)
 	if staged.Gateway.Timeouts != r.timeouts {
 		r.proxy.SetClients(
 			makeClient(staged.Gateway.Timeouts.Query),
@@ -442,7 +556,7 @@ func instanceNames(instances []*config.InstanceConfig) []string {
 // ---- listeners --------------------------------------------------------------
 
 // adminHandler builds the admin listener's handler.
-func adminHandler(gormDB *gorm.DB, holder *config.ConfigHolder, authSvc *auth.Service, tenants *tenant.Store, m *metrics.Metrics, reload *reloader) http.Handler {
+func adminHandler(gormDB *gorm.DB, holder *config.ConfigHolder, authSvc *auth.Service, tenants *tenant.Store, m *metrics.Metrics, reload *reloader, cipher *secret.Cipher, guard *middleware.AuthGuard) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -485,6 +599,7 @@ func adminHandler(gormDB *gorm.DB, holder *config.ConfigHolder, authSvc *auth.Se
 		Config:  holder,
 		Metrics: m,
 		Reload:  reload.run,
+		Cipher:  cipher,
 	})
 
 	// The embedded admin SPA. Served without credentials (see AdminAuth); every
@@ -496,11 +611,11 @@ func adminHandler(gormDB *gorm.DB, holder *config.ConfigHolder, authSvc *auth.Se
 
 	// Every admin route requires credentials plus an admin grant, including
 	// /metrics and /healthz: the metrics carry upstream backend URLs.
-	return middleware.Logging(middleware.AdminAuth(authSvc, mux))
+	return middleware.Logging(middleware.AdminAuth(authSvc, guard, mux))
 }
 
 // dataHandler builds the data listener's handler.
-func dataHandler(holder *config.ConfigHolder, authSvc *auth.Service, p *proxy.Proxy, m *metrics.Metrics) http.Handler {
+func dataHandler(holder *config.ConfigHolder, authSvc *auth.Service, p *proxy.Proxy, m *metrics.Metrics, guard *middleware.AuthGuard) http.Handler {
 	mux := http.NewServeMux()
 	// Liveness: the process is up and serving.
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -543,7 +658,7 @@ func dataHandler(holder *config.ConfigHolder, authSvc *auth.Service, p *proxy.Pr
 
 	// Order matters: BasicAuth consumes Authorization, then SanitizeHeaders
 	// drops it along with everything else outside the forwarding allowlist.
-	return middleware.Logging(middleware.BasicAuth(authSvc, middleware.SanitizeHeaders(mux)))
+	return middleware.Logging(middleware.BasicAuth(authSvc, guard, middleware.SanitizeHeaders(mux)))
 }
 
 func makeClient(d config.Duration) *http.Client {

@@ -2,14 +2,81 @@ package middleware
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"obsdatalayer/internal/auth"
+	"obsdatalayer/internal/authlimit"
 	"obsdatalayer/internal/fanout"
+	"obsdatalayer/internal/metrics"
 	"obsdatalayer/internal/ui"
 )
+
+// AuthGuard bundles the per-source failure throttle with the counters that
+// record what it did. A nil *AuthGuard disables throttling, which is what tests
+// that are not exercising it pass.
+type AuthGuard struct {
+	Limiter *authlimit.Limiter
+	Metrics *metrics.Metrics
+}
+
+// check runs the throttle for a request. It reports whether the request may
+// proceed to the credential check, having already written the response if not.
+func (g *AuthGuard) check(w http.ResponseWriter, r *http.Request, plane string) (source string, ok bool) {
+	if g == nil || g.Limiter == nil {
+		return "", true
+	}
+	source = authlimit.SourceKey(r.RemoteAddr)
+	allowed, retryAfter := g.Limiter.Allow(source)
+	if allowed {
+		return source, true
+	}
+
+	slog.Warn("authentication throttled",
+		"plane", plane, "source", source, "retry_after", retryAfter, "path", r.URL.Path)
+	if g.Metrics != nil {
+		g.Metrics.RecordAuthRejected("throttled")
+	}
+	writeRetryLater(w, http.StatusTooManyRequests, retryAfter,
+		"too many failed authentication attempts")
+	return source, false
+}
+
+// recordFailure notes a rejected credential against the source.
+func (g *AuthGuard) recordFailure(source string) {
+	if g == nil {
+		return
+	}
+	if g.Metrics != nil {
+		g.Metrics.RecordAuthFailure()
+	}
+	if g.Limiter != nil {
+		g.Limiter.RecordFailure(source)
+	}
+}
+
+// recordSuccess clears a source that has proved it holds a valid credential.
+func (g *AuthGuard) recordSuccess(source string) {
+	if g == nil || g.Limiter == nil {
+		return
+	}
+	g.Limiter.RecordSuccess(source)
+}
+
+// saturated answers a request the gateway declined to hash for.
+func (g *AuthGuard) saturated(w http.ResponseWriter, r *http.Request, plane string) {
+	slog.Warn("authentication capacity reached; shedding request",
+		"plane", plane, "path", r.URL.Path)
+	if g != nil && g.Metrics != nil {
+		g.Metrics.RecordAuthRejected("saturated")
+	}
+	writeRetryLater(w, http.StatusServiceUnavailable, time.Second,
+		"authentication capacity reached, retry shortly")
+}
 
 // BasicAuth guards the data plane. It authenticates with HTTP Basic, resolves
 // the caller's tenant IDs for the requested backend and action via Casbin, and
@@ -22,7 +89,7 @@ import (
 // the Prometheus-compatible APIs allow form-encoded query requests.
 // /healthz and /ready bypass auth so container probes work without
 // credentials; both are answered by the gateway and never forwarded.
-func BasicAuth(a auth.Authorizer, next http.Handler) http.Handler {
+func BasicAuth(a auth.Authorizer, guard *AuthGuard, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Container probes carry no credentials. Both are terminated by the
 		// gateway and never forwarded, so nothing tenant-scoped is exposed.
@@ -31,17 +98,30 @@ func BasicAuth(a auth.Authorizer, next http.Handler) http.Handler {
 			return
 		}
 
+		source, allowed := guard.check(w, r, "data")
+		if !allowed {
+			return
+		}
+
 		username, password, ok := r.BasicAuth()
 		if !ok {
+			// Not counted as a failure: no credential was offered, so nothing
+			// was hashed and this costs the gateway nothing to reject.
 			slog.Debug("data plane request without credentials", "path", r.URL.Path, "method", r.Method)
 			writeUnauthorized(w)
 			return
 		}
-		if _, err := a.Authenticate(username, password); err != nil {
+		if _, err := a.AuthenticateContext(r.Context(), username, password); err != nil {
+			if errors.Is(err, auth.ErrHashLimitReached) {
+				guard.saturated(w, r, "data")
+				return
+			}
+			guard.recordFailure(source)
 			slog.Debug("data plane authentication failed", "user", username, "path", r.URL.Path)
 			writeUnauthorized(w)
 			return
 		}
+		guard.recordSuccess(source)
 
 		backend := extractBackend(r.URL.Path)
 		action := actionForRequest(r)
@@ -76,10 +156,15 @@ func BasicAuth(a auth.Authorizer, next http.Handler) http.Handler {
 // tenant data, and the browser cannot supply credentials for the initial
 // document load, so the SPA shell is served anonymously and then authenticates
 // against these same endpoints for every piece of data it displays.
-func AdminAuth(a auth.Authorizer, next http.Handler) http.Handler {
+func AdminAuth(a auth.Authorizer, guard *AuthGuard, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if ui.IsUIPath(r.URL.Path) {
 			next.ServeHTTP(w, r)
+			return
+		}
+
+		source, allowed := guard.check(w, r, "admin")
+		if !allowed {
 			return
 		}
 
@@ -89,11 +174,17 @@ func AdminAuth(a auth.Authorizer, next http.Handler) http.Handler {
 			writeUnauthorized(w)
 			return
 		}
-		if _, err := a.Authenticate(username, password); err != nil {
+		if _, err := a.AuthenticateContext(r.Context(), username, password); err != nil {
+			if errors.Is(err, auth.ErrHashLimitReached) {
+				guard.saturated(w, r, "admin")
+				return
+			}
+			guard.recordFailure(source)
 			slog.Debug("admin authentication failed", "user", username, "path", r.URL.Path)
 			writeUnauthorized(w)
 			return
 		}
+		guard.recordSuccess(source)
 		if !a.CanAdmin(username) {
 			slog.Debug("admin request denied: no admin grant", "user", username, "path", r.URL.Path)
 			writeForbidden(w)
@@ -254,6 +345,21 @@ func writeUnauthorized(w http.ResponseWriter) {
 	w.Header().Set("WWW-Authenticate", `Basic realm="gateway"`)
 	w.WriteHeader(http.StatusUnauthorized)
 	data, _ := json.Marshal(map[string]string{"error": "unauthorized"})
+	_, _ = w.Write(data)
+}
+
+// writeRetryLater answers a shed request with a Retry-After the client can act
+// on. Both statuses it serves mean "not now", never "not ever", so a retryable
+// hint is the difference between a client backing off and a client hammering.
+func writeRetryLater(w http.ResponseWriter, status int, retryAfter time.Duration, msg string) {
+	seconds := int(retryAfter.Seconds())
+	if seconds < 1 {
+		seconds = 1
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", strconv.Itoa(seconds))
+	w.WriteHeader(status)
+	data, _ := json.Marshal(map[string]string{"error": msg})
 	_, _ = w.Write(data)
 }
 

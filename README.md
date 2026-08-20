@@ -152,6 +152,117 @@ The build process:
 
 The runtime source of truth is the configured database (SQLite or PostgreSQL). The file passed to `-config` is a minimal *bootstrap* file that opens the DB, sets listener ports, and may contain an optional `seed` block to populate a fresh database on first startup.
 
+### Credential encryption
+
+Upstream backend credentials (`basic_auth` on an instance or a push target) are
+encrypted at rest with AES-256-GCM. They cannot be hashed the way gateway user
+passwords are, because the gateway replays them on every proxied request, so
+they are encrypted instead with a key held outside the database.
+
+Generate a key:
+
+```bash
+obsgateway --generate-encryption-key --encryption-key-file /etc/obsgateway/enc.key
+```
+
+Then point the bootstrap file at it:
+
+```yaml
+gateway:
+  encryption_key_file: /etc/obsgateway/enc.key
+```
+
+The key file must be mode `0600`; a group- or world-readable key file is
+refused at startup. `OBSGATEWAY_ENCRYPTION_KEY` takes precedence over the file
+path and carries the base64 key directly, which suits containers injecting it
+from a secret store.
+
+Behaviour at startup:
+
+| Stored credentials | Key configured | Result |
+| --- | --- | --- |
+| none | no | starts normally |
+| plaintext (pre-upgrade) | no | **refuses to start**, naming the fix |
+| plaintext (pre-upgrade) | yes | encrypted in place, once, and logged |
+| encrypted | yes, correct | starts normally |
+| encrypted | no, or wrong key | **refuses to start** |
+
+Back the key up. Without it the stored credentials cannot be recovered, and the
+gateway will not start against a database it cannot read.
+
+### Authentication throttling
+
+Checking a password is deliberately expensive — an unknown username is compared
+against a dummy hash so that a wrong username costs the same as a wrong
+password, which is what stops usernames being enumerated by timing. The cost is
+that a rejected credential burns real CPU for a caller who has proved nothing.
+
+Two limits bound that, and they answer different threats:
+
+- **Per-source throttle.** A source that fails repeatedly is blocked, with
+  exponential backoff and a `Retry-After`. Blocks are per listener, so a flood
+  against the data plane cannot lock an operator out of the admin API.
+- **Hashing cap.** A process-wide limit on concurrent password hashes, defaulting
+  to half the available CPUs so the rest stay free to serve telemetry. A request
+  that cannot get a slot within `auth_hash_wait` is shed with 503 rather than
+  queued, because an unbounded queue only converts CPU exhaustion into memory
+  exhaustion.
+
+Both are edited under **Settings** in the admin UI, or through
+`GET`/`PUT /api/settings`, and take effect without a restart.
+
+Measured against a running gateway, 200 bad credentials from one source:
+
+| Configuration | Gateway CPU | Outcome |
+| --- | --- | --- |
+| Both limits off | 13.25 s | every request reached bcrypt |
+| Defaults | 0.54 s | 8 reached bcrypt, 192 got 429 |
+| Throttle off, cap only | 1.59 s | 24 reached bcrypt, 176 got 503 |
+
+**Behind a load balancer**, every request arrives from the balancer's address, so
+per-source throttling becomes all-or-nothing and should usually be disabled
+(`auth_limit_enabled: false`). The gateway does not trust `X-Forwarded-For` for
+identity. The hashing cap is unaffected and is what bounds CPU in that
+deployment — the third row above is that case.
+
+Credentials that pass bcrypt are cached briefly, which is what keeps legitimate
+callers out of the hashing queue during an attack. The cache survives config
+reloads: it is invalidated by construction — the key binds the stored password
+hash — so a rotated password or a deleted user takes effect immediately without
+the cache needing to be flushed.
+
+Both limits export counters: `gateway_auth_rejected_total{reason="throttled"}`,
+`gateway_auth_rejected_total{reason="saturated"}`, and
+`gateway_auth_failures_total`.
+
+### Fan-out reads
+
+A fan-out instance pushes to every target in `push_urls`; `fan_out_mode` decides
+only how the responses are aggregated (`any` succeeds if one target accepts,
+`all` requires them all). The targets are therefore replicas, and reads try them
+in the configured order until one answers.
+
+- Transport failures and 5xx move on to the next target. A 4xx does not — that
+  is the upstream answering, and a replica returns the same answer.
+- The configured `query_timeout` bounds the whole read, not each attempt, so
+  worst-case latency does not grow with the number of targets.
+- A target that fails repeatedly is skipped for a short cool-off, so one dead
+  replica does not add a connection timeout to every read. It is tried again
+  once the window elapses.
+
+Target order is meaningful and is edited in the admin UI: target 1 is the one
+normally queried, the rest are fallbacks. Reordering the list changes where reads
+go.
+
+This makes reads survive a target being **down**. It does not reconcile a target
+that is **up but stale** — one that missed an earlier write. That is left to the
+backends, which are replicated systems expected to reconcile themselves; the
+gateway's job is to make the divergence visible rather than to repair it. Reads
+are counted per target, so a replica that is failing shows up on the Overview
+page and in `gateway_read_requests_total{instance,target,result}`, alongside
+`gateway_read_failovers_total` and the existing
+`gateway_partial_failures_total` for writes.
+
 ## Testing
 
 Run tests: `go test ./...`

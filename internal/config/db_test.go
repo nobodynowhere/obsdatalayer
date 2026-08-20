@@ -4,9 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"gorm.io/gorm"
 
+	"obsdatalayer/internal/authlimit"
 	"obsdatalayer/internal/config"
 	"obsdatalayer/internal/db"
 )
@@ -37,7 +39,7 @@ func openTestConfigDB(t *testing.T) *gorm.DB {
 func TestEnsureSettingsCreatesDefaults(t *testing.T) {
 	gormDB := openTestConfigDB(t)
 
-	cfg, err := config.LoadFromDB(gormDB)
+	cfg, err := config.LoadFromDB(gormDB, nil)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -77,11 +79,11 @@ func TestInstanceRoundTrip(t *testing.T) {
 			Inject: map[string]string{"env": "prod"},
 		},
 	}
-	if err := config.CreateInstance(gormDB, original, nil); err != nil {
+	if err := config.CreateInstance(gormDB, original, nil, nil); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	cfg, err := config.LoadFromDB(gormDB)
+	cfg, err := config.LoadFromDB(gormDB, nil)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -106,10 +108,10 @@ func TestInstanceRoundTrip(t *testing.T) {
 func TestCreateInstanceRejectsDuplicate(t *testing.T) {
 	gormDB := openTestConfigDB(t)
 	i := inst("loki-prod", "loki", "http://loki.local")
-	if err := config.CreateInstance(gormDB, i, nil); err != nil {
+	if err := config.CreateInstance(gormDB, i, nil, nil); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	err := config.CreateInstance(gormDB, inst("loki-prod", "loki", "http://other.local"), nil)
+	err := config.CreateInstance(gormDB, inst("loki-prod", "loki", "http://other.local"), nil, nil)
 	if !errors.Is(err, config.ErrExists) {
 		t.Errorf("expected ErrExists, got %v", err)
 	}
@@ -118,10 +120,10 @@ func TestCreateInstanceRejectsDuplicate(t *testing.T) {
 func TestCreateInstanceValidates(t *testing.T) {
 	gormDB := openTestConfigDB(t)
 	// A bare path is not a usable upstream URL.
-	if err := config.CreateInstance(gormDB, inst("bad", "loki", "/not-a-url"), nil); err == nil {
+	if err := config.CreateInstance(gormDB, inst("bad", "loki", "/not-a-url"), nil, nil); err == nil {
 		t.Error("expected validation to reject the instance before writing")
 	}
-	cfg, err := config.LoadFromDB(gormDB)
+	cfg, err := config.LoadFromDB(gormDB, nil)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -140,7 +142,7 @@ func TestUpdateInstanceReplacesChildren(t *testing.T) {
 		PushURLs: []config.PushTarget{{URL: "http://a.local"}, {URL: "http://b.local"}},
 		Labels:   &config.LabelsConfig{Inject: map[string]string{"env": "prod"}},
 	}
-	if err := config.CreateInstance(gormDB, original, nil); err != nil {
+	if err := config.CreateInstance(gormDB, original, nil, nil); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
@@ -148,11 +150,11 @@ func TestUpdateInstanceReplacesChildren(t *testing.T) {
 		Name: "mimir-prod", Backend: "mimir",
 		PushURLs: []config.PushTarget{{URL: "https://c.local", SkipTLSVerify: true}},
 	}
-	if err := config.UpdateInstance(gormDB, "mimir-prod", updated, nil); err != nil {
+	if err := config.UpdateInstance(gormDB, "mimir-prod", updated, nil, nil); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 
-	cfg, err := config.LoadFromDB(gormDB)
+	cfg, err := config.LoadFromDB(gormDB, nil)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -167,7 +169,7 @@ func TestUpdateInstanceReplacesChildren(t *testing.T) {
 
 func TestUpdateMissingInstance(t *testing.T) {
 	gormDB := openTestConfigDB(t)
-	err := config.UpdateInstance(gormDB, "nope", inst("nope", "loki", "http://x.local"), nil)
+	err := config.UpdateInstance(gormDB, "nope", inst("nope", "loki", "http://x.local"), nil, nil)
 	if !errors.Is(err, config.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -180,14 +182,14 @@ func TestDeleteInstance(t *testing.T) {
 		PushURLs: []config.PushTarget{{URL: "http://a.local"}},
 		Labels:   &config.LabelsConfig{Inject: map[string]string{"env": "prod"}},
 	}
-	if err := config.CreateInstance(gormDB, i, nil); err != nil {
+	if err := config.CreateInstance(gormDB, i, nil, nil); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	if err := config.DeleteInstance(gormDB, "loki-prod"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 
-	cfg, err := config.LoadFromDB(gormDB)
+	cfg, err := config.LoadFromDB(gormDB, nil)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -219,7 +221,7 @@ func TestSaveSettings(t *testing.T) {
 		t.Fatalf("save settings: %v", err)
 	}
 
-	cfg, err := config.LoadFromDB(gormDB)
+	cfg, err := config.LoadFromDB(gormDB, nil)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -242,5 +244,255 @@ func TestSaveSettingsRejectsBadLogLevel(t *testing.T) {
 	g := config.GatewayConfig{LogLevel: "chatty"}
 	if err := config.SaveSettings(gormDB, g); err == nil {
 		t.Error("expected an invalid log level to be rejected")
+	}
+}
+
+// ---- authentication throttle settings ---------------------------------------
+
+func TestAuthLimitDefaultsOnFreshDatabase(t *testing.T) {
+	gormDB := openTestConfigDB(t)
+
+	cfg, err := config.LoadFromDB(gormDB, nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	al := cfg.Gateway.AuthLimit
+	if !al.ThrottleEnabled() {
+		t.Error("expected the throttle to default to on")
+	}
+	if al.FailureThreshold != authlimit.DefaultFailureThreshold {
+		t.Errorf("failure threshold = %d, want %d", al.FailureThreshold, authlimit.DefaultFailureThreshold)
+	}
+	if al.FailureWindow.Duration() != authlimit.DefaultFailureWindow {
+		t.Errorf("failure window = %v, want %v", al.FailureWindow.Duration(), authlimit.DefaultFailureWindow)
+	}
+	if al.HashConcurrency() <= 0 {
+		t.Errorf("expected a positive default hashing cap, got %d", al.HashConcurrency())
+	}
+}
+
+func TestAuthLimitRoundTrips(t *testing.T) {
+	gormDB := openTestConfigDB(t)
+
+	disabled := false
+	g := config.GatewayConfig{
+		MaxBodyBytes:   1024,
+		LogLevel:       "info",
+		ReloadInterval: config.Duration(30 * time.Second),
+		Timeouts: config.TimeoutConfig{
+			Query: config.Duration(10 * time.Second),
+			Push:  config.Duration(20 * time.Second),
+		},
+		AuthLimit: config.AuthLimitConfig{
+			Enabled:             &disabled,
+			FailureThreshold:    9,
+			FailureWindow:       config.Duration(2 * time.Minute),
+			BlockDuration:       config.Duration(3 * time.Minute),
+			MaxBlockDuration:    config.Duration(30 * time.Minute),
+			MaxConcurrentHashes: 6,
+			HashWait:            config.Duration(750 * time.Millisecond),
+		},
+	}
+	if err := config.SaveSettings(gormDB, g); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	cfg, err := config.LoadFromDB(gormDB, nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	got := cfg.Gateway.AuthLimit
+	if got.ThrottleEnabled() {
+		t.Error("expected the throttle to have been persisted as disabled")
+	}
+	if got.FailureThreshold != 9 {
+		t.Errorf("failure threshold = %d, want 9", got.FailureThreshold)
+	}
+	if got.BlockDuration.Duration() != 3*time.Minute {
+		t.Errorf("block duration = %v, want 3m", got.BlockDuration.Duration())
+	}
+	if got.HashConcurrency() != 6 {
+		t.Errorf("hash concurrency = %d, want 6", got.HashConcurrency())
+	}
+	if got.HashWait.Duration() != 750*time.Millisecond {
+		t.Errorf("hash wait = %v, want 750ms", got.HashWait.Duration())
+	}
+}
+
+// The upgrade case, and the reason auth_limit_enabled is nullable: a settings
+// row written before these columns existed reads them as NULL and empty. That
+// must yield a working throttle, not a silently disabled one -- a security fix
+// that turns itself off on every existing install is not a fix.
+func TestAuthLimitDefaultsOnPreUpgradeRow(t *testing.T) {
+	gormDB := openTestConfigDB(t)
+
+	// Reproduce a row from before the feature: flag NULL, everything else zero.
+	if err := gormDB.Table("gateway_settings").Where("1 = 1").Updates(map[string]any{
+		"auth_limit_enabled":         nil,
+		"auth_failure_threshold":     0,
+		"auth_failure_window":        "",
+		"auth_block_duration":        "",
+		"auth_max_block_duration":    "",
+		"auth_max_concurrent_hashes": 0,
+		"auth_hash_wait":             "",
+	}).Error; err != nil {
+		t.Fatalf("simulate pre-upgrade row: %v", err)
+	}
+
+	cfg, err := config.LoadFromDB(gormDB, nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	al := cfg.Gateway.AuthLimit
+	if !al.ThrottleEnabled() {
+		t.Error("an upgraded gateway came up with the throttle disabled")
+	}
+	if al.FailureThreshold != authlimit.DefaultFailureThreshold {
+		t.Errorf("failure threshold = %d, want the default %d",
+			al.FailureThreshold, authlimit.DefaultFailureThreshold)
+	}
+	if al.HashConcurrency() <= 0 {
+		t.Errorf("expected a working hashing cap, got %d", al.HashConcurrency())
+	}
+	// And the limiter it renders must actually throttle.
+	if !al.Limiter().Enabled {
+		t.Error("rendered limiter config is disabled")
+	}
+}
+
+// An explicit false must survive: "off" is a decision, not an absence.
+func TestAuthLimitExplicitDisableIsHonoured(t *testing.T) {
+	gormDB := openTestConfigDB(t)
+
+	cfg, err := config.LoadFromDB(gormDB, nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	g := cfg.Gateway
+	disabled := false
+	g.AuthLimit.Enabled = &disabled
+	if err := config.SaveSettings(gormDB, g); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	reloaded, err := config.LoadFromDB(gormDB, nil)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.Gateway.AuthLimit.ThrottleEnabled() {
+		t.Error("an explicit disable was lost")
+	}
+}
+
+func TestAuthLimitRejectsBlockBeyondCap(t *testing.T) {
+	gormDB := openTestConfigDB(t)
+
+	cfg, err := config.LoadFromDB(gormDB, nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	g := cfg.Gateway
+	g.AuthLimit.BlockDuration = config.Duration(time.Hour)
+	g.AuthLimit.MaxBlockDuration = config.Duration(time.Minute)
+
+	if err := config.SaveSettings(gormDB, g); err == nil {
+		t.Fatal("expected a block duration above the cap to be rejected")
+	}
+}
+
+// ---- push target ordering ---------------------------------------------------
+//
+// Order is meaningful: writes go to every target, but reads try them in order
+// and prefer the first. An operator reordering the list expects that to decide
+// which upstream is queried, so the order has to survive the database.
+
+func fanoutInst(name string, urls ...string) *config.InstanceConfig {
+	targets := make([]config.PushTarget, len(urls))
+	for i, u := range urls {
+		targets[i] = config.PushTarget{URL: u}
+	}
+	return &config.InstanceConfig{Name: name, Backend: "mimir", FanOutMode: "all", PushURLs: targets}
+}
+
+func targetURLs(inst *config.InstanceConfig) []string {
+	out := make([]string, len(inst.PushURLs))
+	for i, t := range inst.PushURLs {
+		out[i] = t.URL
+	}
+	return out
+}
+
+func TestPushTargetOrderSurvivesRoundTrip(t *testing.T) {
+	gormDB := openTestConfigDB(t)
+
+	// Deliberately not alphabetical, and not the order random UUID primary keys
+	// would produce, so a missing ORDER BY shows up rather than passing by luck.
+	want := []string{"http://z.local", "http://a.local", "http://m.local"}
+	if err := config.CreateInstance(gormDB, fanoutInst("mimir-ha", want...), nil, nil); err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+
+	cfg, err := config.LoadFromDB(gormDB, nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	got := targetURLs(cfg.Instances[0])
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("target order = %v, want %v", got, want)
+		}
+	}
+}
+
+// Reordering through the admin API must actually change which target is first,
+// which is what decides where reads go.
+func TestPushTargetOrderCanBeChanged(t *testing.T) {
+	gormDB := openTestConfigDB(t)
+
+	if err := config.CreateInstance(gormDB, fanoutInst("mimir-ha",
+		"http://first.local", "http://second.local"), nil, nil); err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+
+	// Swap them, exactly as the UI's move-up control does.
+	reordered := fanoutInst("mimir-ha", "http://second.local", "http://first.local")
+	if err := config.UpdateInstance(gormDB, "mimir-ha", reordered, nil, nil); err != nil {
+		t.Fatalf("update instance: %v", err)
+	}
+
+	cfg, err := config.LoadFromDB(gormDB, nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	got := targetURLs(cfg.Instances[0])
+	if got[0] != "http://second.local" {
+		t.Errorf("after reordering, first target = %q, want http://second.local (order = %v)", got[0], got)
+	}
+	// And the read path must agree with the stored order.
+	if read := cfg.Instances[0].GetReadTargets(); read[0].URL != "http://second.local" {
+		t.Errorf("read prefers %q, want the newly promoted target", read[0].URL)
+	}
+}
+
+// Position is persisted per instance, so two instances do not interleave.
+func TestPushTargetOrderIsPerInstance(t *testing.T) {
+	gormDB := openTestConfigDB(t)
+
+	if err := config.CreateInstance(gormDB, fanoutInst("a", "http://a1.local", "http://a2.local"), nil, nil); err != nil {
+		t.Fatalf("create a: %v", err)
+	}
+	if err := config.CreateInstance(gormDB, fanoutInst("b", "http://b1.local", "http://b2.local"), nil, nil); err != nil {
+		t.Fatalf("create b: %v", err)
+	}
+
+	cfg, err := config.LoadFromDB(gormDB, nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	for _, inst := range cfg.Instances {
+		got := targetURLs(inst)
+		if len(got) != 2 || got[0] != "http://"+inst.Name+"1.local" {
+			t.Errorf("instance %q targets = %v, want its own two in order", inst.Name, got)
+		}
 	}
 }

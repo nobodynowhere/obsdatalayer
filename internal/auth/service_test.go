@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -772,6 +774,15 @@ func serviceDB(t *testing.T, _ *auth.Service) *gorm.DB {
 	if err != nil {
 		t.Fatalf("reopen test db: %v", err)
 	}
+	// Close it with the test. A shared-cache in-memory database lives as long as
+	// any connection to it does, so leaking this handle keeps the database alive
+	// past the test and the next `go test -count=N` iteration reopens a database
+	// that still holds the previous run's rows.
+	t.Cleanup(func() {
+		if sqlDB, err := gormDB.DB(); err == nil {
+			_ = sqlDB.Close()
+		}
+	})
 	return gormDB
 }
 
@@ -874,5 +885,280 @@ func TestDeleteGrantsAreSingleTenant(t *testing.T) {
 				t.Error("expected a delete grant on tempo to be rejected")
 			}
 		})
+	}
+}
+
+// ---- hashing concurrency ----------------------------------------------------
+
+// The cap has to be enforced where bcrypt actually runs, or it bounds nothing.
+//
+// Contention is created by releasing many callers at once from a barrier rather
+// than by racing one goroutine against a polling loop: with a single slot and no
+// willingness to wait, whichever caller loses the race must be shed, and the
+// test does not depend on how long any particular bcrypt takes.
+func TestAuthenticateRespectsHashLimit(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustUser(t, svc, "alice")
+
+	svc.SetHashLimit(1, 0)
+	if got := svc.HashLimit(); got != 1 {
+		t.Fatalf("HashLimit = %d, want 1", got)
+	}
+
+	const callers = 16
+	var shed, checked atomic.Int64
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := svc.Authenticate("alice", "wrong-password-to-force-a-hash")
+			switch {
+			case errors.Is(err, auth.ErrHashLimitReached):
+				shed.Add(1)
+			case errors.Is(err, auth.ErrInvalidCredentials):
+				checked.Add(1)
+			default:
+				t.Errorf("unexpected error: %v", err)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if shed.Load() == 0 {
+		t.Errorf("with one slot and no wait, %d concurrent callers all got through; the cap bounds nothing", callers)
+	}
+	if checked.Load() == 0 {
+		t.Error("expected at least one caller to actually reach the credential check")
+	}
+}
+
+// The reason the cache is consulted before the gate: a caller presenting a
+// credential that was recently verified must not queue behind an attacker's
+// hashing. Without this, a flood of bad credentials denies service to everyone
+// holding good ones, which is the denial of service the gate exists to prevent.
+func TestCachedCredentialBypassesHashLimit(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustUser(t, svc, "alice")
+
+	// Prime the cache with a genuine verification.
+	if _, err := svc.Authenticate("alice", testPassword); err != nil {
+		t.Fatalf("priming call: %v", err)
+	}
+
+	// Now close the gate completely: no slots, no waiting.
+	svc.SetHashLimit(1, 0)
+	blocked := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		close(blocked)
+		_, _ = svc.Authenticate("alice", "wrong-password-to-occupy-the-slot")
+		close(done)
+	}()
+	<-blocked
+
+	// While that slot is held, the cached credential must still resolve.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := svc.Authenticate("alice", testPassword); err != nil {
+			t.Fatalf("a cached credential was refused while hashing was saturated: %v", err)
+		}
+		select {
+		case <-done:
+			return
+		default:
+		}
+	}
+	<-done
+}
+
+// A zero or negative cap means unlimited, which is how the feature is turned off.
+func TestHashLimitCanBeDisabled(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustUser(t, svc, "alice")
+
+	svc.SetHashLimit(0, 0)
+	if got := svc.HashLimit(); got != 0 {
+		t.Errorf("HashLimit = %d, want 0 for unlimited", got)
+	}
+	if _, err := svc.Authenticate("alice", testPassword); err != nil {
+		t.Errorf("expected an unlimited gate to admit: %v", err)
+	}
+}
+
+// Resizing while requests are in flight must not strand a slot: an in-flight
+// caller releases to the gate it acquired from, not to whatever replaced it.
+func TestSetHashLimitIsSafeWhileInFlight(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustUser(t, svc, "alice")
+	svc.SetHashLimit(2, time.Second)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = svc.Authenticate("alice", "wrong-password")
+		}()
+	}
+	for i := 0; i < 5; i++ {
+		svc.SetHashLimit(1+i%3, time.Second)
+		time.Sleep(2 * time.Millisecond)
+	}
+	wg.Wait()
+
+	// The gate must still admit afterwards; a stranded slot would show up as a
+	// permanent refusal here.
+	svc.SetHashLimit(2, time.Second)
+	if _, err := svc.Authenticate("alice", testPassword); err != nil {
+		t.Errorf("gate was left in a broken state after resizing: %v", err)
+	}
+}
+
+// ---- credential cache invalidation ------------------------------------------
+//
+// These pin the invariants that make the cache safe. The cache key binds the
+// stored password hash, and the user snapshot is consulted before the cache, so
+// invalidation is structural rather than something a caller must remember to
+// trigger. Each of these must hold regardless of whether a reload happens to
+// clear the cache.
+
+// A rotated password must stop working the instant it is rotated, cached or not.
+func TestPasswordChangeInvalidatesCachedCredential(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustUser(t, svc, "alice")
+
+	// Prime the cache with a genuine verification.
+	if _, err := svc.Authenticate("alice", testPassword); err != nil {
+		t.Fatalf("priming call: %v", err)
+	}
+
+	const rotated = "a-completely-different-password"
+	if err := svc.SetPassword("alice", rotated); err != nil {
+		t.Fatalf("set password: %v", err)
+	}
+
+	if _, err := svc.Authenticate("alice", testPassword); !errors.Is(err, auth.ErrInvalidCredentials) {
+		t.Errorf("the old password still authenticated after rotation: %v", err)
+	}
+	if _, err := svc.Authenticate("alice", rotated); err != nil {
+		t.Errorf("the new password was rejected: %v", err)
+	}
+}
+
+// Deleting a user must revoke them immediately, cached or not.
+func TestDeletedUserCannotUseCachedCredential(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustUser(t, svc, "alice")
+
+	if _, err := svc.Authenticate("alice", testPassword); err != nil {
+		t.Fatalf("priming call: %v", err)
+	}
+	if err := svc.DeleteUser("alice"); err != nil {
+		t.Fatalf("delete user: %v", err)
+	}
+
+	if _, err := svc.Authenticate("alice", testPassword); !errors.Is(err, auth.ErrInvalidCredentials) {
+		t.Errorf("a deleted user authenticated from cache: %v", err)
+	}
+}
+
+// Recreating a name must not resurrect the old credential: bcrypt salts anew, so
+// the hash differs and the old cache key cannot match.
+func TestRecreatedUserDoesNotInheritCachedCredential(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustUser(t, svc, "alice")
+
+	if _, err := svc.Authenticate("alice", testPassword); err != nil {
+		t.Fatalf("priming call: %v", err)
+	}
+	if err := svc.DeleteUser("alice"); err != nil {
+		t.Fatalf("delete user: %v", err)
+	}
+	if err := svc.CreateUser("alice", "a-brand-new-password", nil); err != nil {
+		t.Fatalf("recreate user: %v", err)
+	}
+
+	if _, err := svc.Authenticate("alice", testPassword); !errors.Is(err, auth.ErrInvalidCredentials) {
+		t.Errorf("the previous incarnation's password still worked: %v", err)
+	}
+	if _, err := svc.Authenticate("alice", "a-brand-new-password"); err != nil {
+		t.Errorf("the new password was rejected: %v", err)
+	}
+}
+
+// The cache covers authentication only. Authorization is resolved per request,
+// so a revoked grant takes effect immediately even while the credential is warm.
+func TestCachedCredentialDoesNotCacheAuthorization(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustUser(t, svc, "alice")
+	if err := svc.SetUserGrants("alice", []auth.Grant{
+		{Backend: "loki", Action: "read", TenantIDs: []string{env.a}},
+	}); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	if _, err := svc.Authenticate("alice", testPassword); err != nil {
+		t.Fatalf("priming call: %v", err)
+	}
+	if _, ok := svc.AccessFor("alice", "loki", "read"); !ok {
+		t.Fatal("expected the grant to be in force")
+	}
+
+	if err := svc.SetUserGrants("alice", nil); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	// The credential is still cached and still valid...
+	if _, err := svc.Authenticate("alice", testPassword); err != nil {
+		t.Errorf("expected the credential to still authenticate: %v", err)
+	}
+	// ...but the revoked grant must not survive with it.
+	if _, ok := svc.AccessFor("alice", "loki", "read"); ok {
+		t.Error("a revoked grant was still authorized")
+	}
+}
+
+// The behaviour change: a reload refreshes users and policy without evicting
+// credentials that are still valid. Previously every reload -- one every 30
+// seconds at the default interval -- put every caller back through bcrypt.
+func TestCachedCredentialSurvivesReload(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustUser(t, svc, "alice")
+
+	measure := func() time.Duration {
+		start := time.Now()
+		if _, err := svc.Authenticate("alice", testPassword); err != nil {
+			t.Fatalf("authenticate: %v", err)
+		}
+		return time.Since(start)
+	}
+
+	cold := measure()
+	warm := measure()
+	if warm > cold/4 {
+		t.Fatalf("expected the second call to be served from cache: cold %v, warm %v", cold, warm)
+	}
+
+	if err := svc.Reload(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+
+	// The cache must still be warm. The bound is loose so the test cannot flake
+	// on a busy machine, while still failing by orders of magnitude if the
+	// reload has evicted the entry and the call pays bcrypt again.
+	if after := measure(); after > cold/4 {
+		t.Errorf("a reload evicted a still-valid credential: cold %v, after reload %v", cold, after)
 	}
 }

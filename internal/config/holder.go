@@ -6,6 +6,8 @@ import (
 	"sync"
 
 	"gorm.io/gorm"
+
+	"obsdatalayer/internal/secret"
 )
 
 // ConfigHolder provides thread-safe access to the active Config and supports
@@ -14,6 +16,7 @@ type ConfigHolder struct {
 	mu     sync.RWMutex
 	cfg    *Config
 	db     *gorm.DB
+	cipher *secret.Cipher
 	source string
 }
 
@@ -23,13 +26,15 @@ func NewHolder(cfg *Config, source string) *ConfigHolder {
 	return &ConfigHolder{cfg: cfg, source: source}
 }
 
-// NewDBHolder loads the active config from db and returns a holder that can reload from it.
-func NewDBHolder(db *gorm.DB, source string) (*ConfigHolder, error) {
-	cfg, err := LoadFromDB(db)
+// NewDBHolder loads the active config from db and returns a holder that can
+// reload from it. The cipher is retained so that every subsequent reload
+// decrypts stored credentials the same way the initial load did.
+func NewDBHolder(db *gorm.DB, source string, c *secret.Cipher) (*ConfigHolder, error) {
+	cfg, err := LoadFromDB(db, c)
 	if err != nil {
 		return nil, err
 	}
-	return &ConfigHolder{cfg: cfg, db: db, source: source}, nil
+	return &ConfigHolder{cfg: cfg, db: db, cipher: c, source: source}, nil
 }
 
 // Get returns the current Config. Callers must not modify the returned value.
@@ -49,7 +54,7 @@ func (h *ConfigHolder) Stage() (*Config, error) {
 	if h.db == nil {
 		return nil, errors.New("config holder has no database source")
 	}
-	cfg, err := LoadFromDB(h.db)
+	cfg, err := LoadFromDB(h.db, h.cipher)
 	if err != nil {
 		return nil, err
 	}

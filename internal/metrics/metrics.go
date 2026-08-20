@@ -35,6 +35,11 @@ type partialKey struct{ instance string }
 type writeItemsKey struct{ backend, instance, kind, result string }
 type rewriteLabelsKey struct{ backend, instance, operation string }
 
+// readKey labels a proxied read. target is the upstream actually asked, so a
+// fan-out instance shows which replica served and which failed; result is
+// "success" or "failure".
+type readKey struct{ instance, target, result string }
+
 // labelKey is the contract every key type satisfies so counterSet can stay
 // generic: values() returns the label values in the order its Desc declares
 // them, and instanceName() is what RetainInstances prunes on.
@@ -62,6 +67,9 @@ func (k rewriteLabelsKey) values() []string {
 	return []string{k.backend, k.instance, k.operation}
 }
 func (k rewriteLabelsKey) instanceName() string { return k.instance }
+
+func (k readKey) values() []string     { return []string{k.instance, k.target, k.result} }
+func (k readKey) instanceName() string { return k.instance }
 
 // counterSet is a set of monotonic counters keyed by label tuple. The map is
 // guarded by a mutex; the values are atomics, so the common case (a series that
@@ -146,12 +154,27 @@ type Metrics struct {
 	partialDesc       *prometheus.Desc
 	writeItemsDesc    *prometheus.Desc
 	rewriteLabelsDesc *prometheus.Desc
+	readDesc          *prometheus.Desc
+	readFailoverDesc  *prometheus.Desc
+	authRejectedDesc  *prometheus.Desc
+	authFailuresDesc  *prometheus.Desc
 
 	fanout        *counterSet[fanoutKey]
 	suppressed    *counterSet[suppressedKey]
 	partial       *counterSet[partialKey]
 	writeItems    *counterSet[writeItemsKey]
 	rewriteLabels *counterSet[rewriteLabelsKey]
+	reads         *counterSet[readKey]
+	readFailovers *counterSet[partialKey]
+
+	// Authentication counters are plain atomics rather than a counterSet.
+	// They carry no instance label, so they must not be reachable by
+	// RetainInstances, which prunes every series whose instance is gone and
+	// would otherwise delete these on the first reload. The label space is a
+	// fixed, tiny set, so a map buys nothing here anyway.
+	authThrottled atomic.Uint64
+	authSaturated atomic.Uint64
+	authFailures  atomic.Uint64
 }
 
 var _ prometheus.Collector = (*Metrics)(nil)
@@ -186,11 +209,36 @@ func New(reg prometheus.Registerer) *Metrics {
 			[]string{"backend", "instance", "operation"}, nil,
 		),
 
+		readDesc: prometheus.NewDesc(
+			"gateway_read_requests_total",
+			"Proxied read attempts, labeled by instance, the upstream target asked, and result (success or failure).",
+			[]string{"instance", "target", "result"}, nil,
+		),
+		readFailoverDesc: prometheus.NewDesc(
+			"gateway_read_failovers_total",
+			"Reads that moved on to another target after one failed, labeled by instance.",
+			[]string{"instance"}, nil,
+		),
+
+		authRejectedDesc: prometheus.NewDesc(
+			"gateway_auth_rejected_total",
+			"Requests rejected before their credentials were checked, labeled by reason: "+
+				"throttled (the source had failed too often) or saturated (no password-hashing slot was free).",
+			[]string{"reason"}, nil,
+		),
+		authFailuresDesc: prometheus.NewDesc(
+			"gateway_auth_failures_total",
+			"Credential checks that ran and were rejected.",
+			nil, nil,
+		),
+
 		fanout:        newCounterSet[fanoutKey](),
 		suppressed:    newCounterSet[suppressedKey](),
 		partial:       newCounterSet[partialKey](),
 		writeItems:    newCounterSet[writeItemsKey](),
 		rewriteLabels: newCounterSet[rewriteLabelsKey](),
+		reads:         newCounterSet[readKey](),
+		readFailovers: newCounterSet[partialKey](),
 	}
 	reg.MustRegister(m)
 	return m
@@ -204,6 +252,10 @@ func (m *Metrics) Describe(ch chan<- *prometheus.Desc) {
 	ch <- m.partialDesc
 	ch <- m.writeItemsDesc
 	ch <- m.rewriteLabelsDesc
+	ch <- m.readDesc
+	ch <- m.readFailoverDesc
+	ch <- m.authRejectedDesc
+	ch <- m.authFailuresDesc
 }
 
 func (m *Metrics) Collect(ch chan<- prometheus.Metric) {
@@ -212,9 +264,63 @@ func (m *Metrics) Collect(ch chan<- prometheus.Metric) {
 	m.partial.collect(ch, m.partialDesc)
 	m.writeItems.collect(ch, m.writeItemsDesc)
 	m.rewriteLabels.collect(ch, m.rewriteLabelsDesc)
+	m.reads.collect(ch, m.readDesc)
+	m.readFailovers.collect(ch, m.readFailoverDesc)
+
+	// Emitted unconditionally, zeros included, so an alert on the rate of these
+	// has a series to attach to from process start rather than only once the
+	// gateway has first been attacked.
+	ch <- prometheus.MustNewConstMetric(m.authRejectedDesc, prometheus.CounterValue,
+		float64(m.authThrottled.Load()), "throttled")
+	ch <- prometheus.MustNewConstMetric(m.authRejectedDesc, prometheus.CounterValue,
+		float64(m.authSaturated.Load()), "saturated")
+	ch <- prometheus.MustNewConstMetric(m.authFailuresDesc, prometheus.CounterValue,
+		float64(m.authFailures.Load()))
 }
 
 // ---- recording --------------------------------------------------------------
+
+// RecordRead counts one proxied read attempt against one upstream target.
+// A read that fails over records a failure for the target that failed and a
+// success for the one that answered, so the counters show both that the read
+// was served and that a replica is unwell.
+func (m *Metrics) RecordRead(instance, target string, ok bool) {
+	result := "failure"
+	if ok {
+		result = "success"
+	}
+	m.reads.add(readKey{instance, target, result}, 1)
+}
+
+// RecordReadFailover counts a read that had to try more than one target.
+func (m *Metrics) RecordReadFailover(instance string) {
+	m.readFailovers.add(partialKey{instance}, 1)
+}
+
+// ReadValue returns the count for one instance, target and result.
+func (m *Metrics) ReadValue(instance, target, result string) uint64 {
+	return m.reads.value(readKey{instance, target, result})
+}
+
+// ReadFailoverValue returns how many reads for an instance failed over.
+func (m *Metrics) ReadFailoverValue(instance string) uint64 {
+	return m.readFailovers.value(partialKey{instance})
+}
+
+// RecordAuthRejected counts a request refused before any credential check.
+func (m *Metrics) RecordAuthRejected(reason string) {
+	switch reason {
+	case "throttled":
+		m.authThrottled.Add(1)
+	case "saturated":
+		m.authSaturated.Add(1)
+	default:
+		slog.Warn("unknown auth rejection reason", "reason", reason)
+	}
+}
+
+// RecordAuthFailure counts a credential check that ran and failed.
+func (m *Metrics) RecordAuthFailure() { m.authFailures.Add(1) }
 
 func (m *Metrics) RecordFanout(instance, target string, status int) {
 	m.fanout.add(fanoutKey{instance, target, strconv.Itoa(status)}, 1)
@@ -268,6 +374,21 @@ func (m *Metrics) RewriteLabelsValue(backend, instance, operation string) uint64
 	return m.rewriteLabels.value(rewriteLabelsKey{backend, instance, operation})
 }
 
+// AuthFailureValue returns credential checks that ran and were rejected.
+func (m *Metrics) AuthFailureValue() uint64 { return m.authFailures.Load() }
+
+// AuthRejectedValue returns requests refused before any credential check, for
+// reason "throttled" or "saturated".
+func (m *Metrics) AuthRejectedValue(reason string) uint64 {
+	switch reason {
+	case "throttled":
+		return m.authThrottled.Load()
+	case "saturated":
+		return m.authSaturated.Load()
+	}
+	return 0
+}
+
 // ---- lifecycle --------------------------------------------------------------
 
 // RetainInstances drops the counters of every instance not named in live. The
@@ -286,7 +407,9 @@ func (m *Metrics) RetainInstances(names []string) {
 		m.suppressed.retain(live) +
 		m.partial.retain(live) +
 		m.writeItems.retain(live) +
-		m.rewriteLabels.retain(live)
+		m.rewriteLabels.retain(live) +
+		m.reads.retain(live) +
+		m.readFailovers.retain(live)
 	if dropped > 0 {
 		slog.Debug("dropped metric series for removed instances",
 			"series", dropped, "live_instances", len(live))
@@ -304,6 +427,9 @@ type Summary struct {
 	PartialFailures  uint64            `json:"partial_failures"`
 	ItemsForwarded   uint64            `json:"items_forwarded"`
 	LabelsRewritten  uint64            `json:"labels_rewritten"`
+	ReadSuccesses    uint64            `json:"read_successes"`
+	ReadFailures     uint64            `json:"read_failures"`
+	ReadFailovers    uint64            `json:"read_failovers"`
 	Instances        []InstanceSummary `json:"instances"`
 }
 
@@ -316,6 +442,19 @@ type InstanceSummary struct {
 	PartialFailures  uint64 `json:"partial_failures"`
 	ItemsForwarded   uint64 `json:"items_forwarded"`
 	LabelsRewritten  uint64 `json:"labels_rewritten"`
+	ReadSuccesses    uint64 `json:"read_successes"`
+	ReadFailures     uint64 `json:"read_failures"`
+	ReadFailovers    uint64 `json:"read_failovers"`
+	// ReadTargets breaks the read counts down by upstream, so a dashboard can
+	// show which replica is failing rather than only that something is.
+	ReadTargets []ReadTargetSummary `json:"read_targets,omitempty"`
+}
+
+// ReadTargetSummary is the read outcome for one upstream target.
+type ReadTargetSummary struct {
+	Target    string `json:"target"`
+	Successes uint64 `json:"successes"`
+	Failures  uint64 `json:"failures"`
 }
 
 // Summary aggregates the current counters. Each set is snapshotted separately,
@@ -357,6 +496,45 @@ func (m *Metrics) Summary() Summary {
 		at(k.instance).ItemsForwarded += v
 		out.ItemsForwarded += v
 	}
+	// Read outcomes, aggregated per instance and broken down per target.
+	readTargets := map[string]map[string]*ReadTargetSummary{}
+	for k, v := range m.reads.snapshot() {
+		s := at(k.instance)
+		byTarget, ok := readTargets[k.instance]
+		if !ok {
+			byTarget = map[string]*ReadTargetSummary{}
+			readTargets[k.instance] = byTarget
+		}
+		t, ok := byTarget[k.target]
+		if !ok {
+			t = &ReadTargetSummary{Target: k.target}
+			byTarget[k.target] = t
+		}
+		if k.result == "success" {
+			s.ReadSuccesses += v
+			out.ReadSuccesses += v
+			t.Successes += v
+			continue
+		}
+		s.ReadFailures += v
+		out.ReadFailures += v
+		t.Failures += v
+	}
+	for k, v := range m.readFailovers.snapshot() {
+		at(k.instance).ReadFailovers += v
+		out.ReadFailovers += v
+	}
+	for instance, byTarget := range readTargets {
+		s := at(instance)
+		for _, t := range byTarget {
+			s.ReadTargets = append(s.ReadTargets, *t)
+		}
+		// Stable output so the dashboard does not reshuffle between polls.
+		sort.Slice(s.ReadTargets, func(i, j int) bool {
+			return s.ReadTargets[i].Target < s.ReadTargets[j].Target
+		})
+	}
+
 	for k, v := range m.rewriteLabels.snapshot() {
 		at(k.instance).LabelsRewritten += v
 		out.LabelsRewritten += v

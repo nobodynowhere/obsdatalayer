@@ -13,6 +13,7 @@ import (
 	"obsdatalayer/internal/config"
 	"obsdatalayer/internal/metrics"
 	"obsdatalayer/internal/rewrite"
+	"obsdatalayer/internal/secret"
 	"obsdatalayer/internal/tenant"
 )
 
@@ -27,11 +28,12 @@ type Deps struct {
 	Metrics     *metrics.Metrics
 	MimirClient *http.Client
 	Reload      func() error
+	Cipher      *secret.Cipher
 }
 
 // Register mounts the tenant, user, role, instance and settings endpoints.
 func Register(mux *http.ServeMux, d Deps) {
-	h := &handler{svc: d.Auth, tenants: d.Tenants, db: d.DB, cfg: d.Config, metrics: d.Metrics, mimirClient: d.MimirClient, reload: d.Reload}
+	h := &handler{svc: d.Auth, tenants: d.Tenants, db: d.DB, cfg: d.Config, metrics: d.Metrics, mimirClient: d.MimirClient, reload: d.Reload, cipher: d.Cipher}
 
 	// Reads are registered directly; every mutation is wrapped so it emits a
 	// started/finished pair naming the actor.
@@ -77,6 +79,7 @@ type handler struct {
 	cfg         *config.ConfigHolder
 	mimirClient *http.Client
 	reload      func() error
+	cipher      *secret.Cipher
 }
 
 // afterChange republishes configuration so a mutation is visible immediately.

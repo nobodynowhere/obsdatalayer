@@ -17,6 +17,18 @@ type GatewaySetting struct {
 	PushTimeout    string
 	LogLevel       string
 	ReloadInterval string
+
+	// Authentication throttling. AuthLimitEnabled is nullable on purpose: a row
+	// written before these columns existed reads as NULL, which the config
+	// layer takes as "default on". A plain bool would read as false and leave
+	// an upgraded gateway silently unprotected.
+	AuthLimitEnabled        *bool
+	AuthFailureThreshold    int
+	AuthFailureWindow       string
+	AuthBlockDuration       string
+	AuthMaxBlockDuration    string
+	AuthMaxConcurrentHashes int
+	AuthHashWait            string
 }
 
 // Instance is a configured backend tenant.
@@ -35,9 +47,17 @@ type Instance struct {
 }
 
 // PushTarget is an explicit fan-out target for an instance.
+//
+// Position records where the target sits in the configured list. Without it the
+// order rows come back in is whatever the database chooses, which is not the
+// order the operator wrote: the primary key is a random UUID, so ordering by it
+// is arbitrary, and nothing else in the row carries the sequence. That matters
+// now that reads try targets in order -- the first target is the preferred one,
+// and an operator reordering the list in the UI expects that to take effect.
 type PushTarget struct {
 	ID            uuid.UUID `gorm:"type:text;primaryKey"`
 	InstanceID    uuid.UUID `gorm:"type:text;index"`
+	Position      int
 	URL           string
 	BasicAuth     string
 	TenantID      string

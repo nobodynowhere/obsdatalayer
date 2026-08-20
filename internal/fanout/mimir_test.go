@@ -30,7 +30,7 @@ func newMimirTestMux(cfg *config.Config, p *proxy.Proxy) http.Handler {
 	fanout.LokiDSRoutes(mux, "/loki", h, p)
 	fanout.MimirDSRoutes(mux, "/prometheus", h, p)
 	fanout.TempoDSRoutes(mux, "/tempo", h, p)
-	return middleware.BasicAuth(testAuth, mux)
+	return middleware.BasicAuth(testAuth, nil, mux)
 }
 
 func withAuthTenants(t *testing.T, tenants ...string) {

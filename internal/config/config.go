@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/goccy/go-yaml"
+
+	"obsdatalayer/internal/authlimit"
 )
 
 var validName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
@@ -91,10 +93,59 @@ func (c *Config) ValidateTenants(reg TenantRegistry) error {
 // Listener addresses are deliberately absent: they are process-level concerns
 // owned by the bootstrap file (see GatewayBootstrap), not hot-reloadable state.
 type GatewayConfig struct {
-	MaxBodyBytes   int64         `yaml:"max_body_bytes"`
-	Timeouts       TimeoutConfig `yaml:"timeouts"`
-	LogLevel       string        `yaml:"log_level"`
-	ReloadInterval Duration      `yaml:"reload_interval"`
+	MaxBodyBytes   int64           `yaml:"max_body_bytes"`
+	Timeouts       TimeoutConfig   `yaml:"timeouts"`
+	LogLevel       string          `yaml:"log_level"`
+	ReloadInterval Duration        `yaml:"reload_interval"`
+	AuthLimit      AuthLimitConfig `yaml:"auth_limit"`
+}
+
+// AuthLimitConfig bounds the cost an unauthenticated caller can impose.
+// See package authlimit for why both a per-source throttle and a global
+// hashing cap are needed.
+type AuthLimitConfig struct {
+	// Enabled controls the per-source failure throttle only. It is a pointer so
+	// that a settings row predating this feature reads as nil and takes the
+	// default rather than reading as false and silently disabling the defence.
+	Enabled *bool `yaml:"enabled"`
+
+	FailureThreshold int      `yaml:"failure_threshold"`
+	FailureWindow    Duration `yaml:"failure_window"`
+	BlockDuration    Duration `yaml:"block_duration"`
+	MaxBlockDuration Duration `yaml:"max_block_duration"`
+
+	// MaxConcurrentHashes caps concurrent password hashing across the process.
+	// Zero takes the default; a negative value removes the cap.
+	MaxConcurrentHashes int      `yaml:"max_concurrent_hashes"`
+	HashWait            Duration `yaml:"hash_wait"`
+}
+
+// ThrottleEnabled reports whether per-source throttling is on, defaulting to on.
+func (a AuthLimitConfig) ThrottleEnabled() bool {
+	return a.Enabled == nil || *a.Enabled
+}
+
+// HashConcurrency resolves the configured hashing cap: zero means the default,
+// negative means unlimited.
+func (a AuthLimitConfig) HashConcurrency() int {
+	if a.MaxConcurrentHashes < 0 {
+		return 0
+	}
+	if a.MaxConcurrentHashes == 0 {
+		return authlimit.DefaultMaxConcurrentHashes()
+	}
+	return a.MaxConcurrentHashes
+}
+
+// Limiter renders the config into the form the limiter takes.
+func (a AuthLimitConfig) Limiter() authlimit.Config {
+	return authlimit.Config{
+		Enabled:          a.ThrottleEnabled(),
+		FailureThreshold: a.FailureThreshold,
+		FailureWindow:    a.FailureWindow.Duration(),
+		BlockDuration:    a.BlockDuration.Duration(),
+		MaxBlockDuration: a.MaxBlockDuration.Duration(),
+	}
 }
 
 type TimeoutConfig struct {
@@ -157,6 +208,22 @@ func applyDefaults(cfg *Config) {
 	if cfg.Gateway.ReloadInterval == 0 {
 		cfg.Gateway.ReloadInterval = Duration(30 * time.Second)
 	}
+	al := &cfg.Gateway.AuthLimit
+	if al.FailureThreshold == 0 {
+		al.FailureThreshold = authlimit.DefaultFailureThreshold
+	}
+	if al.FailureWindow == 0 {
+		al.FailureWindow = Duration(authlimit.DefaultFailureWindow)
+	}
+	if al.BlockDuration == 0 {
+		al.BlockDuration = Duration(authlimit.DefaultBlockDuration)
+	}
+	if al.MaxBlockDuration == 0 {
+		al.MaxBlockDuration = Duration(authlimit.DefaultMaxBlockDuration)
+	}
+	if al.HashWait == 0 {
+		al.HashWait = Duration(authlimit.DefaultHashWait)
+	}
 	for _, inst := range cfg.Instances {
 		if inst.FanOutMode == "" && len(inst.PushURLs) > 0 {
 			inst.FanOutMode = "any"
@@ -186,6 +253,25 @@ func validateGateway(g *GatewayConfig) error {
 	var lvl slog.Level
 	if err := lvl.UnmarshalText([]byte(g.LogLevel)); err != nil {
 		return fmt.Errorf("config: invalid log_level %q (debug, info, warn or error)", g.LogLevel)
+	}
+	return validateAuthLimit(&g.AuthLimit)
+}
+
+func validateAuthLimit(a *AuthLimitConfig) error {
+	if a.FailureThreshold < 0 {
+		return fmt.Errorf("config: auth_limit.failure_threshold must not be negative")
+	}
+	if a.FailureWindow < 0 || a.BlockDuration < 0 || a.MaxBlockDuration < 0 {
+		return fmt.Errorf("config: auth_limit durations must not be negative")
+	}
+	if a.HashWait < 0 {
+		return fmt.Errorf("config: auth_limit.hash_wait must not be negative")
+	}
+	// A cap below the block would silently never be reached, which reads as a
+	// configuration the operator did not get.
+	if a.MaxBlockDuration > 0 && a.BlockDuration > a.MaxBlockDuration {
+		return fmt.Errorf("config: auth_limit.block_duration (%s) exceeds max_block_duration (%s)",
+			a.BlockDuration.Duration(), a.MaxBlockDuration.Duration())
 	}
 	return nil
 }
@@ -328,6 +414,23 @@ func (inst *InstanceConfig) GetPushTargets() []PushTarget {
 		return targets
 	}
 	return []PushTarget{{URL: inst.URL, BasicAuth: inst.BasicAuth, TenantID: inst.TenantID, SkipTLSVerify: inst.SkipTLSVerify}}
+}
+
+// GetReadTargets returns the candidates for a read, in preference order.
+//
+// It is the same ordered list writes go to, and deliberately so. A fan-out
+// instance always pushes to every target -- the fan_out_mode only decides how
+// the responses are aggregated -- so the targets are replicas of one another
+// and any of them can answer a query. Reading down the list therefore survives
+// a target being down without needing a separate read endpoint to be
+// configured, or query results to be merged.
+//
+// What it does not survive is a target that is up but stale, which answers
+// successfully with less data than its peers. That divergence comes from a push
+// that failed against one target while succeeding against another, and belongs
+// to the fan-out delivery contract rather than here.
+func (inst *InstanceConfig) GetReadTargets() []PushTarget {
+	return inst.GetPushTargets()
 }
 
 // GetQueryTarget returns the query target (first push target or single URL).

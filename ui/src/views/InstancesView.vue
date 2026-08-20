@@ -173,6 +173,15 @@ function remove(inst) {
 
 const addTarget = () => form.value.push_urls.push({ url: '', basic_auth: '', tenant_id: '', skip_tls_verify: false })
 const removeTarget = (i) => form.value.push_urls.splice(i, 1)
+
+// Order is meaningful: writes go to every target, but reads try them in this
+// order and prefer the first, so moving a target up makes it the one queried.
+const moveTarget = (from, to) => {
+  const list = form.value.push_urls
+  if (to < 0 || to >= list.length) return
+  const [t] = list.splice(from, 1)
+  list.splice(to, 0, t)
+}
 const addInject = () => form.value.injectPairs.push({ key: '', value: '' })
 const removeInject = (i) => form.value.injectPairs.splice(i, 1)
 
@@ -305,6 +314,7 @@ onMounted(load)
             class="target-row"
             style="margin-top: 0.5rem"
           >
+            <span class="target-rank" :title="i === 0 ? 'Preferred for reads' : `Read fallback ${i}`">{{ i + 1 }}</span>
             <PrimeInputText v-model="t.url" placeholder="http://target.local" class="mono" />
             <PrimeSelect
               v-model="t.tenant_id"
@@ -323,8 +333,30 @@ onMounted(load)
               option-label="label"
               option-value="value"
             />
+            <PrimeButton
+              icon="pi pi-arrow-up"
+              text
+              rounded
+              severity="secondary"
+              :disabled="i === 0"
+              aria-label="Move target up"
+              @click="moveTarget(i, i - 1)"
+            />
+            <PrimeButton
+              icon="pi pi-arrow-down"
+              text
+              rounded
+              severity="secondary"
+              :disabled="i === form.push_urls.length - 1"
+              aria-label="Move target down"
+              @click="moveTarget(i, i + 1)"
+            />
             <PrimeButton icon="pi pi-times" text rounded severity="danger" @click="removeTarget(i)" />
           </div>
+          <small v-if="form.push_urls.length > 1" style="display: block; margin-top: 0.5rem">
+            Every target receives every write. Reads try them in this order, so target 1 is the one
+            normally queried and the rest are fallbacks used when it cannot answer.
+          </small>
           <div style="margin-top: 0.75rem">
             <PrimeButton icon="pi pi-plus" label="Add target" size="small" severity="secondary" outlined @click="addTarget" />
           </div>

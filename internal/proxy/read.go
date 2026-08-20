@@ -1,0 +1,346 @@
+package proxy
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"obsdatalayer/internal/config"
+)
+
+// maxReplayableReadBody caps how much of a read request's body is buffered so
+// it can be replayed against another target.
+//
+// Reads carry a body only on the form-encoded query endpoints, where it holds a
+// LogQL or PromQL expression and a time range. A megabyte is far more than any
+// real query needs. A body larger than this is streamed straight through to a
+// single target instead, which loses failover for that request rather than
+// holding an arbitrary amount of memory to preserve it.
+const maxReplayableReadBody = 1 << 20
+
+// readAttempt is one upstream read, held back from the client until it is known
+// whether the next target should be tried instead.
+type readAttempt struct {
+	url      string
+	duration time.Duration
+
+	// resp is non-nil when the upstream answered. Its body is still open and
+	// must be either committed or discarded.
+	resp *http.Response
+
+	// body is the response body already read, for a status this attempt has
+	// decided not to stream. Set for 5xx, where the body is needed for logging.
+	body []byte
+
+	// err is the transport failure, when the upstream did not answer at all.
+	err error
+
+	// retryable reports whether another target should be tried.
+	retryable bool
+}
+
+// ForwardQuery forwards a read, trying each target in turn until one answers.
+//
+// A fan-out instance pushes to every target, so the targets are replicas and
+// any of them can serve a query. Trying them in order means one target being
+// down degrades read latency rather than failing reads outright, which is what
+// happened when every read went to the first push target unconditionally.
+//
+// Only transport failures and 5xx move on to the next target. A 4xx is the
+// upstream answering: asking a replica the same malformed question returns the
+// same answer while doubling the work, and a 404 from a query endpoint is a
+// legitimate result, not an outage.
+func (p *Proxy) ForwardQuery(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, upstreamPath string) {
+	targets := inst.GetReadTargets()
+	if len(targets) == 0 {
+		WriteJSONError(w, http.StatusInternalServerError, map[string]string{
+			"error": "instance has no read target", "instance": inst.Name,
+		})
+		return
+	}
+	client := p.QueryClient()
+
+	body, replayable, err := readReplayableBody(r)
+	if err != nil {
+		var maxBytes *http.MaxBytesError
+		if errors.As(err, &maxBytes) {
+			WriteJSONError(w, http.StatusRequestEntityTooLarge, map[string]string{
+				"error": "request body too large", "instance": inst.Name,
+			})
+			return
+		}
+		WriteJSONError(w, http.StatusBadRequest, map[string]string{
+			"error": "failed to read request body", "instance": inst.Name,
+		})
+		return
+	}
+
+	// One deadline for the whole read, not one per attempt. A client's worst
+	// case must not scale with how many targets happen to be configured -- the
+	// caller gave up long before the third replica was asked.
+	ctx := r.Context()
+	if client.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, client.Timeout)
+		defer cancel()
+	}
+
+	ordered := p.health.order(targets)
+	if !replayable {
+		// The body was too large to buffer, so it can only be sent once.
+		ordered = ordered[:1]
+	}
+
+	// Each attempt needs its own reader over the buffered body. When the body
+	// could not be buffered there is only one attempt, and it streams directly.
+	bodyFor := func() io.Reader {
+		if !replayable {
+			return r.Body
+		}
+		if len(body) == 0 {
+			return nil
+		}
+		return bytes.NewReader(body)
+	}
+
+	var last *readAttempt
+	for i, target := range ordered {
+		if last != nil {
+			last.discard()
+		}
+		attempt := p.attemptRead(ctx, len(ordered)-i, r, bodyFor, inst, target, upstreamPath, client)
+		if !attempt.retryable {
+			p.health.recordSuccess(target.URL)
+			p.recordRead(inst.Name, target.URL, true)
+			if i > 0 {
+				// The read was served, but only after something failed. Counted
+				// separately so a dashboard can distinguish "healthy" from
+				// "working because a replica covered for a broken one".
+				p.recordReadFailover(inst.Name)
+			}
+			attempt.commit(w, r, inst)
+			return
+		}
+
+		p.health.recordFailure(target.URL)
+		p.recordRead(inst.Name, target.URL, false)
+		last = attempt
+		if i < len(ordered)-1 {
+			slog.Warn("read target failed, trying the next",
+				"instance", inst.Name, "target", target.URL,
+				"status", attempt.status(), "error", attempt.err,
+				"duration", attempt.duration)
+		}
+	}
+
+	// Every target failed. Report the last failure rather than inventing one,
+	// so the client sees a real upstream status where there was one.
+	slog.Warn("every read target failed",
+		"instance", inst.Name, "targets", len(ordered), "last_target", last.url)
+	if len(ordered) > 1 {
+		p.recordReadFailover(inst.Name)
+	}
+	last.commit(w, r, inst)
+}
+
+// attemptRead performs one upstream read and classifies the outcome without
+// touching the client's ResponseWriter.
+func (p *Proxy) attemptRead(
+	ctx context.Context,
+	remaining int,
+	r *http.Request,
+	bodyFor func() io.Reader,
+	inst *config.InstanceConfig,
+	target config.PushTarget,
+	upstreamPath string,
+	client *http.Client,
+) *readAttempt {
+
+	upstreamURL := target.URL + upstreamPath
+	if r.URL.RawQuery != "" {
+		upstreamURL += "?" + r.URL.RawQuery
+	}
+
+	// Divide what is left of the budget across the targets still to try. A
+	// single deadline for the whole read is not enough on its own: a target
+	// that accepts the connection and then hangs would spend the entire budget
+	// and leave nothing for the replica that could have answered, so a timeout
+	// -- the most common way a backend fails -- would never fail over. Slicing
+	// keeps the caller's overall bound while guaranteeing every target a turn.
+	//
+	// A target that fails quickly gives its unused share back: the next slice is
+	// computed from the time actually remaining, not from a fixed fraction.
+	attemptCtx, cancelAttempt := sliceBudget(ctx, remaining)
+	defer cancelAttempt()
+	if target.SkipTLSVerify {
+		attemptCtx = WithSkipTLSVerify(attemptCtx)
+	}
+
+	req, err := http.NewRequestWithContext(attemptCtx, r.Method, upstreamURL, bodyFor())
+	if err != nil {
+		// A malformed target URL is a configuration fault, not an outage, and
+		// the next target would be built the same way. Do not retry it.
+		return &readAttempt{url: upstreamURL, err: err}
+	}
+	CopyHeadersForUpstream(req, r.Header, target)
+
+	slog.Debug("forwarding upstream",
+		"instance", inst.Name, "method", r.Method, "url", upstreamURL,
+		"org_id", req.Header.Get("X-Scope-OrgID"))
+
+	started := time.Now()
+	resp, err := client.Do(req)
+	if err != nil {
+		slog.Debug("upstream request failed",
+			"instance", inst.Name, "url", upstreamURL,
+			"duration", time.Since(started), "error", err)
+		return &readAttempt{
+			url: upstreamURL, err: err, duration: time.Since(started),
+			// This attempt's own deadline expiring is exactly the case worth
+			// retrying: the target hung, and another may answer inside what is
+			// left. The outer context is what says to stop -- the whole budget
+			// is spent, or the caller has gone. A body limit breach is the
+			// caller's fault and identical at every target.
+			retryable: !isBodyLimitError(err) && ctx.Err() == nil,
+		}
+	}
+
+	slog.Debug("upstream responded",
+		"instance", inst.Name, "url", upstreamURL,
+		"status", resp.StatusCode, "duration", time.Since(started))
+
+	attempt := &readAttempt{url: upstreamURL, resp: resp, duration: time.Since(started)}
+	if resp.StatusCode >= 500 {
+		// Read the body now: it is needed for the log line, and holding the
+		// connection open across another attempt would pin it for nothing.
+		payload, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		attempt.body = payload
+		attempt.retryable = true
+		LogUpstreamNon2XX(inst.Name, r.Method, upstreamURL, resp.StatusCode,
+			attempt.duration, req.Header.Get("X-Scope-OrgID"), payload, readErr)
+	}
+	return attempt
+}
+
+// sliceBudget returns a context for one attempt, holding its share of the time
+// remaining on ctx. With no deadline, or on the last attempt, the attempt simply
+// inherits what is left.
+func sliceBudget(ctx context.Context, remaining int) (context.Context, context.CancelFunc) {
+	deadline, ok := ctx.Deadline()
+	if !ok || remaining <= 1 {
+		return context.WithCancel(ctx)
+	}
+	share := time.Until(deadline) / time.Duration(remaining)
+	if share <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, share)
+}
+
+func (a *readAttempt) status() int {
+	if a.resp == nil {
+		return 0
+	}
+	return a.resp.StatusCode
+}
+
+// discard releases an attempt that will not be sent to the client.
+func (a *readAttempt) discard() {
+	if a == nil || a.resp == nil || a.body != nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, a.resp.Body)
+	_ = a.resp.Body.Close()
+}
+
+// commit writes the attempt to the client. It is called exactly once per
+// request, on the attempt that decided the outcome.
+func (a *readAttempt) commit(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig) {
+	if a.resp == nil {
+		writeTransportError(w, inst, a.err)
+		return
+	}
+
+	for key, vals := range a.resp.Header {
+		for _, v := range vals {
+			w.Header().Add(key, v)
+		}
+	}
+
+	// A body already read is written from the buffer; anything else is streamed
+	// so a large query result is not held in memory.
+	if a.body != nil {
+		w.WriteHeader(a.resp.StatusCode)
+		if len(a.body) > 0 {
+			_, _ = w.Write(a.body)
+		}
+		return
+	}
+	defer a.resp.Body.Close()
+
+	if isNon2XX(a.resp.StatusCode) {
+		payload, readErr := io.ReadAll(a.resp.Body)
+		LogUpstreamNon2XX(inst.Name, r.Method, a.url, a.resp.StatusCode,
+			a.duration, "", payload, readErr)
+		w.WriteHeader(a.resp.StatusCode)
+		if len(payload) > 0 {
+			_, _ = w.Write(payload)
+		}
+		return
+	}
+	w.WriteHeader(a.resp.StatusCode)
+	_, _ = io.Copy(w, a.resp.Body)
+}
+
+// writeTransportError maps a failure to reach an upstream onto a client status.
+func writeTransportError(w http.ResponseWriter, inst *config.InstanceConfig, err error) {
+	switch {
+	case isBodyLimitError(err):
+		WriteJSONError(w, http.StatusRequestEntityTooLarge, map[string]string{
+			"error": "request body too large", "instance": inst.Name,
+		})
+	case isTimeoutError(err):
+		WriteJSONError(w, http.StatusGatewayTimeout, map[string]string{
+			"error": "upstream timeout", "instance": inst.Name,
+		})
+	default:
+		WriteJSONError(w, http.StatusBadGateway, map[string]string{
+			"error": "upstream unavailable", "instance": inst.Name,
+		})
+	}
+}
+
+func isBodyLimitError(err error) bool {
+	var maxBytes *http.MaxBytesError
+	return errors.As(err, &maxBytes)
+}
+
+// readReplayableBody buffers a read request's body so it can be sent to more
+// than one target. It reports whether the body fits the replay cap; a body that
+// does not is left on the request to be streamed to a single target.
+func readReplayableBody(r *http.Request) (body []byte, replayable bool, err error) {
+	if r.Body == nil || r.Body == http.NoBody {
+		return nil, true, nil
+	}
+
+	limited := io.LimitReader(r.Body, maxReplayableReadBody+1)
+	buf, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(buf) > maxReplayableReadBody {
+		// Too big to hold. Put what was read back in front of the rest so the
+		// single attempt still sends the whole body.
+		r.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(bytes.NewReader(buf), r.Body), r.Body}
+		return nil, false, nil
+	}
+	return buf, true, nil
+}

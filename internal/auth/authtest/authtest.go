@@ -3,6 +3,8 @@
 package authtest
 
 import (
+	"context"
+
 	"obsdatalayer/internal/auth"
 )
 
@@ -47,6 +49,12 @@ func (s *Stub) Authenticate(name, password string) (*auth.User, error) {
 		return nil, auth.ErrInvalidCredentials
 	}
 	return &auth.User{Name: name}, nil
+}
+
+// AuthenticateContext implements auth.Authorizer. The stub does no hashing, so
+// there is no slot to wait for and the context is unused.
+func (s *Stub) AuthenticateContext(_ context.Context, name, password string) (*auth.User, error) {
+	return s.Authenticate(name, password)
 }
 
 // AccessFor implements auth.Authorizer.

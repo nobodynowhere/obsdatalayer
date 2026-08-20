@@ -24,6 +24,12 @@ type GatewayBootstrap struct {
 	Listen      ListenAddr `yaml:"listen"`
 	AdminListen ListenAddr `yaml:"admin_listen"`
 	TLS         TLSConfig  `yaml:"tls"`
+
+	// EncryptionKeyFile points at a file holding the base64 key used to encrypt
+	// upstream backend credentials at rest. It belongs here, not in the
+	// database, because a key stored beside the ciphertext protects nothing.
+	// The OBSGATEWAY_ENCRYPTION_KEY environment variable takes precedence.
+	EncryptionKeyFile string `yaml:"encryption_key_file"`
 }
 
 // TLSConfig holds the process-level TLS settings for both listeners.

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -482,5 +483,116 @@ func TestPartialFailureMetricCountedOncePerRequest(t *testing.T) {
 	count := m.PartialFailureValue("loki-prod")
 	if count != 0 {
 		t.Errorf("Do() must not call RecordPartialFailure; expected counter=0, got %v", count)
+	}
+}
+
+// ---- per-target upstream credentials on the write path ----------------------
+
+// Fan-out targets are independent systems: two Mimir clusters behind one
+// instance may each require their own credential. Every target is written to on
+// every push, so each must be presented its own key -- sending one upstream's
+// password to another both leaks it and fails the write.
+func TestFanOutPresentsEachTargetsOwnCredential(t *testing.T) {
+	type seen struct {
+		cred string
+		org  string
+	}
+	got := map[string]seen{}
+	var mu sync.Mutex
+
+	newUpstream := func(name string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			user, pass, ok := r.BasicAuth()
+			cred := "<none>"
+			if ok {
+				cred = user + ":" + pass
+			}
+			mu.Lock()
+			got[name] = seen{cred: cred, org: r.Header.Get("X-Scope-OrgID")}
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		}))
+	}
+	a := newUpstream("a")
+	b := newUpstream("b")
+	c := newUpstream("c")
+	defer a.Close()
+	defer b.Close()
+	defer c.Close()
+
+	inst := newInstance("mimir-ha", "mimir", "all")
+	// Instance-level credential, overridden by two of the three targets.
+	inst.BasicAuth = "shared-user:shared-password"
+	inst.PushURLs = []config.PushTarget{
+		{URL: a.URL, BasicAuth: "user-a:password-a"},
+		{URL: b.URL, BasicAuth: "user-b:password-b"},
+		{URL: c.URL}, // inherits the instance credential
+	}
+
+	status, _, _, failures := fanout.Do(context.Background(), inst, inst.GetPushTargets(),
+		[]byte("payload"), http.Header{}, "/api/v1/push", a.Client(), newMetrics())
+
+	if status < 200 || status >= 300 {
+		t.Fatalf("expected the fan-out to succeed, got %d", status)
+	}
+	if len(failures) != 0 {
+		t.Fatalf("unexpected partial failures: %v", failures)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 3 {
+		t.Fatalf("expected all three targets to be written to, got %d", len(got))
+	}
+	if got["a"].cred != "user-a:password-a" {
+		t.Errorf("target a saw %q, want its own credential", got["a"].cred)
+	}
+	if got["b"].cred != "user-b:password-b" {
+		t.Errorf("target b saw %q, want its own credential", got["b"].cred)
+	}
+	if got["c"].cred != "shared-user:shared-password" {
+		t.Errorf("target c saw %q, want the instance-level credential", got["c"].cred)
+	}
+}
+
+// A per-target tenant must travel with the same target as its credential, so a
+// target scoped to its own tenant is addressed correctly on both counts.
+func TestFanOutPairsCredentialWithTargetTenant(t *testing.T) {
+	type seen struct{ cred, org string }
+	got := map[string]seen{}
+	var mu sync.Mutex
+
+	newUpstream := func(name string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			user, pass, _ := r.BasicAuth()
+			mu.Lock()
+			got[name] = seen{cred: user + ":" + pass, org: r.Header.Get("X-Scope-OrgID")}
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		}))
+	}
+	a := newUpstream("a")
+	b := newUpstream("b")
+	defer a.Close()
+	defer b.Close()
+
+	inst := newInstance("mimir-split", "mimir", "all")
+	inst.PushURLs = []config.PushTarget{
+		{URL: a.URL, BasicAuth: "user-a:password-a", TenantID: "tenant-a"},
+		{URL: b.URL, BasicAuth: "user-b:password-b", TenantID: "tenant-b"},
+	}
+
+	if status, _, _, _ := fanout.Do(context.Background(), inst, inst.GetPushTargets(),
+		[]byte("payload"), http.Header{}, "/api/v1/push", a.Client(), newMetrics()); status >= 300 {
+		t.Fatalf("fan-out failed: %d", status)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got["a"].cred != "user-a:password-a" || got["a"].org != "tenant-a" {
+		t.Errorf("target a saw %+v, want its own credential and tenant", got["a"])
+	}
+	if got["b"].cred != "user-b:password-b" || got["b"].org != "tenant-b" {
+		t.Errorf("target b saw %+v, want its own credential and tenant", got["b"])
 	}
 }

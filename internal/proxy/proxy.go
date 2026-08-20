@@ -16,6 +16,7 @@ import (
 
 	"obsdatalayer/internal/auth"
 	"obsdatalayer/internal/config"
+	"obsdatalayer/internal/metrics"
 )
 
 const upstreamErrorBodyPreviewBytes = 4096
@@ -38,11 +39,40 @@ type clients struct {
 // The underlying HTTP clients are stored atomically so timeouts can be reloaded.
 type Proxy struct {
 	clients atomic.Pointer[clients]
+
+	// health tracks which read targets are failing. It is owned by the Proxy
+	// rather than the config so that it survives a reload; see targetHealth.
+	health *targetHealth
+
+	// metrics is optional so that tests and the upgrade path can construct a
+	// Proxy without one. Every use is nil-guarded.
+	metrics atomic.Pointer[metrics.Metrics]
+}
+
+// SetMetrics attaches the counter sink. It is a setter rather than a
+// constructor argument because the Proxy is built before the registry in
+// main.go, and because most tests have no interest in counters.
+func (p *Proxy) SetMetrics(m *metrics.Metrics) {
+	p.metrics.Store(m)
+}
+
+// recordRead counts one read attempt, if a sink is attached.
+func (p *Proxy) recordRead(instance, target string, ok bool) {
+	if m := p.metrics.Load(); m != nil {
+		m.RecordRead(instance, target, ok)
+	}
+}
+
+// recordReadFailover counts a read that had to try more than one target.
+func (p *Proxy) recordReadFailover(instance string) {
+	if m := p.metrics.Load(); m != nil {
+		m.RecordReadFailover(instance)
+	}
 }
 
 // New creates a Proxy with separate query and push clients.
 func New(queryClient, pushClient *http.Client) *Proxy {
-	p := &Proxy{}
+	p := &Proxy{health: newTargetHealth()}
 	p.clients.Store(&clients{query: queryClient, push: pushClient})
 	return p
 }
@@ -57,11 +87,6 @@ func (p *Proxy) QueryClient() *http.Client { return p.clients.Load().query }
 
 // PushClient returns the current push HTTP client.
 func (p *Proxy) PushClient() *http.Client { return p.clients.Load().push }
-
-// ForwardQuery forwards a read request using the query client.
-func (p *Proxy) ForwardQuery(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, upstreamPath string) {
-	p.forward(w, r, inst, inst.GetQueryTarget(), upstreamPath, p.QueryClient())
-}
 
 // ForwardPush forwards a push request using the push client (Tempo single-target).
 // maxBodyBytes caps the request body; pass 0 to leave it uncapped. The body is

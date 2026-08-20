@@ -186,7 +186,7 @@ func newDataPlane(t *testing.T, transport http.RoundTripper, stub *authtest.Stub
 	fanout.TempoDSRoutes(mux, "/tempo", h, p)
 	fanout.AlertmanagerDSRoutes(mux, "/alertmanager", h, p)
 
-	return middleware.BasicAuth(stub, middleware.SanitizeHeaders(mux))
+	return middleware.BasicAuth(stub, nil, middleware.SanitizeHeaders(mux))
 }
 
 // TestEveryRouteStripsClientHeadersAndInjectsTenancy is the guarantee: for every

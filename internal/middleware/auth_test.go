@@ -1,13 +1,19 @@
 package middleware_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 
 	"obsdatalayer/internal/auth"
 	"obsdatalayer/internal/auth/authtest"
+	"obsdatalayer/internal/authlimit"
+	"obsdatalayer/internal/metrics"
 	"obsdatalayer/internal/middleware"
 )
 
@@ -34,7 +40,7 @@ func decodeError(t *testing.T, rec *httptest.ResponseRecorder) string {
 func TestBasicAuthValidCreds(t *testing.T) {
 	inner, called := newHandlerCalledFlag()
 	stub := authtest.New()
-	h := middleware.BasicAuth(stub, inner)
+	h := middleware.BasicAuth(stub, nil, inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/loki/loki/api/v1/labels", nil)
 	req.Header.Set("Authorization", stub.Header())
@@ -51,7 +57,7 @@ func TestBasicAuthValidCreds(t *testing.T) {
 
 func TestBasicAuthWrongPassword(t *testing.T) {
 	inner, called := newHandlerCalledFlag()
-	h := middleware.BasicAuth(authtest.New(), inner)
+	h := middleware.BasicAuth(authtest.New(), nil, inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/loki/loki/api/v1/labels", nil)
 	req.Header.Set("Authorization", authtest.BasicHeader("testuser", "nope"))
@@ -68,7 +74,7 @@ func TestBasicAuthWrongPassword(t *testing.T) {
 
 func TestBasicAuthMissingHeader(t *testing.T) {
 	inner, called := newHandlerCalledFlag()
-	h := middleware.BasicAuth(authtest.New(), inner)
+	h := middleware.BasicAuth(authtest.New(), nil, inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/loki/loki/api/v1/labels", nil)
 	rec := httptest.NewRecorder()
@@ -90,7 +96,7 @@ func TestBasicAuthForbiddenWhenNoGrant(t *testing.T) {
 	stub := authtest.New()
 	// Read-only: no loki:write grant.
 	stub.Allow = map[string]bool{"loki:read": true}
-	h := middleware.BasicAuth(stub, inner)
+	h := middleware.BasicAuth(stub, nil, inner)
 
 	req := httptest.NewRequest(http.MethodPost, "/loki/api/v1/push", nil)
 	req.Header.Set("Authorization", stub.Header())
@@ -110,7 +116,7 @@ func TestBasicAuthForbiddenWhenNoGrant(t *testing.T) {
 
 func TestBasicAuthSkipsHealthz(t *testing.T) {
 	inner, called := newHandlerCalledFlag()
-	h := middleware.BasicAuth(authtest.New(), inner)
+	h := middleware.BasicAuth(authtest.New(), nil, inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
@@ -131,7 +137,7 @@ func TestBasicAuthAttachesRequestAuth(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 	stub := authtest.New()
-	h := middleware.BasicAuth(stub, inner)
+	h := middleware.BasicAuth(stub, nil, inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/loki/loki/api/v1/labels", nil)
 	req.Header.Set("Authorization", stub.Header())
@@ -159,7 +165,7 @@ func TestBasicAuthPostIsWrite(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 	stub := authtest.New()
-	h := middleware.BasicAuth(stub, inner)
+	h := middleware.BasicAuth(stub, nil, inner)
 
 	req := httptest.NewRequest(http.MethodPost, "/loki/api/v1/push", nil)
 	req.Header.Set("Authorization", stub.Header())
@@ -188,7 +194,7 @@ func TestBasicAuthPrometheusPostQueryIsRead(t *testing.T) {
 			})
 			stub := authtest.New()
 			stub.Allow = map[string]bool{"mimir:read": true}
-			h := middleware.BasicAuth(stub, inner)
+			h := middleware.BasicAuth(stub, nil, inner)
 
 			req := httptest.NewRequest(http.MethodPost, path, nil)
 			req.Header.Set("Authorization", stub.Header())
@@ -218,7 +224,7 @@ func TestBasicAuthRootPrometheusPathUsesMimirBackend(t *testing.T) {
 			inner, called := newHandlerCalledFlag()
 			stub := authtest.New()
 			stub.Allow = map[string]bool{"mimir:read": true}
-			h := middleware.BasicAuth(stub, inner)
+			h := middleware.BasicAuth(stub, nil, inner)
 
 			req := httptest.NewRequest(http.MethodGet, path, nil)
 			req.Header.Set("Authorization", stub.Header())
@@ -261,7 +267,7 @@ func TestBasicAuthMimirRulesAndAlertsUseDiscreteActions(t *testing.T) {
 			})
 			stub := authtest.New()
 			stub.Allow = map[string]bool{"mimir:" + tc.action: true}
-			h := middleware.BasicAuth(stub, inner)
+			h := middleware.BasicAuth(stub, nil, inner)
 
 			req := httptest.NewRequest(tc.method, tc.path, nil)
 			req.Header.Set("Authorization", stub.Header())
@@ -290,7 +296,7 @@ func TestBasicAuthMimirMetricReadDoesNotAllowRulesOrAlerts(t *testing.T) {
 			inner, called := newHandlerCalledFlag()
 			stub := authtest.New()
 			stub.Allow = map[string]bool{"mimir:read": true}
-			h := middleware.BasicAuth(stub, inner)
+			h := middleware.BasicAuth(stub, nil, inner)
 
 			req := httptest.NewRequest(http.MethodGet, path, nil)
 			req.Header.Set("Authorization", stub.Header())
@@ -309,7 +315,7 @@ func TestBasicAuthMimirMetricReadDoesNotAllowRulesOrAlerts(t *testing.T) {
 
 func TestBasicAuthUnauthorizedHeaders(t *testing.T) {
 	inner, _ := newHandlerCalledFlag()
-	h := middleware.BasicAuth(authtest.New(), inner)
+	h := middleware.BasicAuth(authtest.New(), nil, inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/loki/loki/api/v1/labels", nil)
 	rec := httptest.NewRecorder()
@@ -328,7 +334,7 @@ func TestBasicAuthUnauthorizedHeaders(t *testing.T) {
 func TestAdminAuthAllowsAdmin(t *testing.T) {
 	inner, called := newHandlerCalledFlag()
 	stub := authtest.NewAdmin()
-	h := middleware.AdminAuth(stub, inner)
+	h := middleware.AdminAuth(stub, nil, inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
 	req.Header.Set("Authorization", stub.Header())
@@ -346,7 +352,7 @@ func TestAdminAuthAllowsAdmin(t *testing.T) {
 func TestAdminAuthRejectsNonAdmin(t *testing.T) {
 	inner, called := newHandlerCalledFlag()
 	stub := authtest.New() // valid credentials, no admin grant
-	h := middleware.AdminAuth(stub, inner)
+	h := middleware.AdminAuth(stub, nil, inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
 	req.Header.Set("Authorization", stub.Header())
@@ -367,7 +373,7 @@ func TestAdminAuthProtectsMetricsAndHealthz(t *testing.T) {
 	for _, path := range []string{"/metrics", "/healthz"} {
 		t.Run(path, func(t *testing.T) {
 			inner, called := newHandlerCalledFlag()
-			h := middleware.AdminAuth(authtest.NewAdmin(), inner)
+			h := middleware.AdminAuth(authtest.NewAdmin(), nil, inner)
 
 			req := httptest.NewRequest(http.MethodGet, path, nil)
 			rec := httptest.NewRecorder()
@@ -385,7 +391,7 @@ func TestAdminAuthProtectsMetricsAndHealthz(t *testing.T) {
 
 func TestAdminAuthRejectsBadPassword(t *testing.T) {
 	inner, _ := newHandlerCalledFlag()
-	h := middleware.AdminAuth(authtest.NewAdmin(), inner)
+	h := middleware.AdminAuth(authtest.NewAdmin(), nil, inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
 	req.Header.Set("Authorization", authtest.BasicHeader("testuser", "wrong"))
@@ -406,7 +412,7 @@ func TestAdminAuthServesUIWithoutCredentials(t *testing.T) {
 	for _, path := range []string{"/", "/ui/", "/ui/assets/index-abc123.js", "/ui/tenants"} {
 		t.Run(path, func(t *testing.T) {
 			inner, called := newHandlerCalledFlag()
-			h := middleware.AdminAuth(authtest.NewAdmin(), inner)
+			h := middleware.AdminAuth(authtest.NewAdmin(), nil, inner)
 
 			req := httptest.NewRequest(http.MethodGet, path, nil)
 			rec := httptest.NewRecorder()
@@ -427,7 +433,7 @@ func TestAdminAuthExemptionDoesNotLeakToAPI(t *testing.T) {
 	for _, path := range []string{"/api/tenants", "/api/users", "/api/roles", "/api/config", "/api/whoami", "/uiconfig"} {
 		t.Run(path, func(t *testing.T) {
 			inner, called := newHandlerCalledFlag()
-			h := middleware.AdminAuth(authtest.NewAdmin(), inner)
+			h := middleware.AdminAuth(authtest.NewAdmin(), nil, inner)
 
 			req := httptest.NewRequest(http.MethodGet, path, nil)
 			rec := httptest.NewRecorder()
@@ -471,7 +477,7 @@ func TestBasicAuthLokiRulesAndAlertsUseDiscreteActions(t *testing.T) {
 			})
 			stub := authtest.New()
 			stub.Allow = map[string]bool{"loki:" + tc.action: true}
-			h := middleware.BasicAuth(stub, inner)
+			h := middleware.BasicAuth(stub, nil, inner)
 
 			req := httptest.NewRequest(tc.method, tc.path, nil)
 			req.Header.Set("Authorization", stub.Header())
@@ -514,7 +520,7 @@ func TestBasicAuthLokiDataGrantsDoNotReachRulesOrAlerts(t *testing.T) {
 			inner, called := newHandlerCalledFlag()
 			stub := authtest.New()
 			stub.Allow = map[string]bool{tc.grant: true}
-			h := middleware.BasicAuth(stub, inner)
+			h := middleware.BasicAuth(stub, nil, inner)
 
 			req := httptest.NewRequest(tc.method, tc.path, nil)
 			req.Header.Set("Authorization", stub.Header())
@@ -537,7 +543,7 @@ func TestBasicAuthLokiRulesReadDoesNotImplyRulesWrite(t *testing.T) {
 	inner, called := newHandlerCalledFlag()
 	stub := authtest.New()
 	stub.Allow = map[string]bool{"loki:" + auth.ActionRulesRead: true}
-	h := middleware.BasicAuth(stub, inner)
+	h := middleware.BasicAuth(stub, nil, inner)
 
 	req := httptest.NewRequest(http.MethodPost, "/loki/loki/api/v1/rules/team-a", nil)
 	req.Header.Set("Authorization", stub.Header())
@@ -558,7 +564,7 @@ func TestLokiRulesPathMatchingIsNotOverEager(t *testing.T) {
 	inner, called := newHandlerCalledFlag()
 	stub := authtest.New()
 	stub.Allow = map[string]bool{"loki:read": true}
-	h := middleware.BasicAuth(stub, inner)
+	h := middleware.BasicAuth(stub, nil, inner)
 
 	// Not a rules path, so a plain read grant must still work.
 	req := httptest.NewRequest(http.MethodGet, "/loki/loki/api/v1/rulesomething", nil)
@@ -596,7 +602,7 @@ func TestLokiNativePathsResolveToLokiBackend(t *testing.T) {
 			inner, called := newHandlerCalledFlag()
 			stub := authtest.New()
 			stub.Allow = map[string]bool{"loki:read": true}
-			h := middleware.BasicAuth(stub, inner)
+			h := middleware.BasicAuth(stub, nil, inner)
 
 			req := httptest.NewRequest(http.MethodGet, path, nil)
 			req.Header.Set("Authorization", stub.Header())
@@ -620,7 +626,7 @@ func TestLokiNativePathsAreNotMimir(t *testing.T) {
 	inner, called := newHandlerCalledFlag()
 	stub := authtest.New()
 	stub.Allow = map[string]bool{"mimir:read": true, "mimir:*": true}
-	h := middleware.BasicAuth(stub, inner)
+	h := middleware.BasicAuth(stub, nil, inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/loki/loki/api/v1/query", nil)
 	req.Header.Set("Authorization", stub.Header())
@@ -641,7 +647,7 @@ func TestLokiNativePushIsAWrite(t *testing.T) {
 	inner, called := newHandlerCalledFlag()
 	stub := authtest.New()
 	stub.Allow = map[string]bool{"loki:read": true}
-	h := middleware.BasicAuth(stub, inner)
+	h := middleware.BasicAuth(stub, nil, inner)
 
 	req := httptest.NewRequest(http.MethodPost, "/loki/api/v1/push", nil)
 	req.Header.Set("Authorization", stub.Header())
@@ -677,7 +683,7 @@ func TestLokiFormPostsAreReads(t *testing.T) {
 			})
 			stub := authtest.New()
 			stub.Allow = map[string]bool{"loki:read": true}
-			h := middleware.BasicAuth(stub, inner)
+			h := middleware.BasicAuth(stub, nil, inner)
 
 			req := httptest.NewRequest(http.MethodPost, path, nil)
 			req.Header.Set("Authorization", stub.Header())
@@ -722,7 +728,7 @@ func TestLokiNativeAndLegacyRulerUseControlActions(t *testing.T) {
 			inner, called := newHandlerCalledFlag()
 			denied := authtest.New()
 			denied.Allow = map[string]bool{"loki:read": true, "loki:write": true}
-			middleware.BasicAuth(denied, inner).ServeHTTP(
+			middleware.BasicAuth(denied, nil, inner).ServeHTTP(
 				httptest.NewRecorder(), authedRequest(tc.method, tc.path, denied))
 			if *called {
 				t.Fatal("a plain loki data grant must not reach the ruler API")
@@ -733,7 +739,7 @@ func TestLokiNativeAndLegacyRulerUseControlActions(t *testing.T) {
 			stub.Allow = map[string]bool{"loki:" + tc.action: true}
 			req := authedRequest(tc.method, tc.path, stub)
 			rec := httptest.NewRecorder()
-			middleware.BasicAuth(stub, inner2).ServeHTTP(rec, req)
+			middleware.BasicAuth(stub, nil, inner2).ServeHTTP(rec, req)
 
 			if rec.Code != http.StatusOK {
 				t.Fatalf("expected 200 with %s, got %d", tc.action, rec.Code)
@@ -772,7 +778,7 @@ func TestIngestionPathsResolveToTheirBackend(t *testing.T) {
 			stub := authtest.New()
 			stub.Allow = map[string]bool{tc.backend + ":write": true}
 			rec := httptest.NewRecorder()
-			middleware.BasicAuth(stub, inner).ServeHTTP(rec, authedRequest(http.MethodPost, tc.path, stub))
+			middleware.BasicAuth(stub, nil, inner).ServeHTTP(rec, authedRequest(http.MethodPost, tc.path, stub))
 			if rec.Code != http.StatusOK {
 				t.Fatalf("expected 200 with %s:write, got %d", tc.backend, rec.Code)
 			}
@@ -789,7 +795,7 @@ func TestIngestionPathsResolveToTheirBackend(t *testing.T) {
 			stub2 := authtest.New()
 			stub2.Allow = map[string]bool{other + ":write": true, other + ":*": true}
 			rec2 := httptest.NewRecorder()
-			middleware.BasicAuth(stub2, inner2).ServeHTTP(rec2, authedRequest(http.MethodPost, tc.path, stub2))
+			middleware.BasicAuth(stub2, nil, inner2).ServeHTTP(rec2, authedRequest(http.MethodPost, tc.path, stub2))
 			if rec2.Code != http.StatusForbidden {
 				t.Fatalf("expected 403 with %s grant, got %d", other, rec2.Code)
 			}
@@ -817,7 +823,7 @@ func TestIngestionPathsAreWrites(t *testing.T) {
 			stub := authtest.New()
 			stub.Allow = map[string]bool{tc.backend + ":read": true}
 			rec := httptest.NewRecorder()
-			middleware.BasicAuth(stub, inner).ServeHTTP(rec, authedRequest(http.MethodPost, tc.path, stub))
+			middleware.BasicAuth(stub, nil, inner).ServeHTTP(rec, authedRequest(http.MethodPost, tc.path, stub))
 			if rec.Code != http.StatusForbidden {
 				t.Fatalf("a read grant must not authorize ingestion; got %d", rec.Code)
 			}
@@ -857,7 +863,7 @@ func TestAlertmanagerMountUsesAlertActions(t *testing.T) {
 			stub := authtest.New()
 			stub.Allow = map[string]bool{"mimir:" + tc.action: true}
 			rec := httptest.NewRecorder()
-			middleware.BasicAuth(stub, inner).ServeHTTP(rec, authedRequest(tc.method, tc.path, stub))
+			middleware.BasicAuth(stub, nil, inner).ServeHTTP(rec, authedRequest(tc.method, tc.path, stub))
 			if rec.Code != http.StatusOK {
 				t.Fatalf("expected 200 with mimir:%s, got %d", tc.action, rec.Code)
 			}
@@ -870,7 +876,7 @@ func TestAlertmanagerMountUsesAlertActions(t *testing.T) {
 			denied := authtest.New()
 			denied.Allow = map[string]bool{"mimir:read": true, "mimir:write": true}
 			rec2 := httptest.NewRecorder()
-			middleware.BasicAuth(denied, inner2).ServeHTTP(rec2, authedRequest(tc.method, tc.path, denied))
+			middleware.BasicAuth(denied, nil, inner2).ServeHTTP(rec2, authedRequest(tc.method, tc.path, denied))
 			if rec2.Code != http.StatusForbidden {
 				t.Fatalf("expected 403 with a plain data grant, got %d", rec2.Code)
 			}
@@ -883,7 +889,7 @@ func TestAlertmanagerMountUsesAlertActions(t *testing.T) {
 			loki := authtest.New()
 			loki.Allow = map[string]bool{"loki:" + tc.action: true, "loki:*": true}
 			rec3 := httptest.NewRecorder()
-			middleware.BasicAuth(loki, inner3).ServeHTTP(rec3, authedRequest(tc.method, tc.path, loki))
+			middleware.BasicAuth(loki, nil, inner3).ServeHTTP(rec3, authedRequest(tc.method, tc.path, loki))
 			if rec3.Code != http.StatusForbidden {
 				t.Fatalf("expected 403 with a loki grant, got %d", rec3.Code)
 			}
@@ -907,7 +913,7 @@ func TestLokiDeleteUsesDeleteActions(t *testing.T) {
 			stub := authtest.New()
 			stub.Allow = map[string]bool{"loki:" + tc.action: true}
 			rec := httptest.NewRecorder()
-			middleware.BasicAuth(stub, inner).ServeHTTP(rec, authedRequest(tc.method, path, stub))
+			middleware.BasicAuth(stub, nil, inner).ServeHTTP(rec, authedRequest(tc.method, path, stub))
 			if rec.Code != http.StatusOK {
 				t.Fatalf("expected 200 with loki:%s, got %d", tc.action, rec.Code)
 			}
@@ -920,7 +926,7 @@ func TestLokiDeleteUsesDeleteActions(t *testing.T) {
 			denied := authtest.New()
 			denied.Allow = map[string]bool{"loki:read": true, "loki:write": true}
 			rec2 := httptest.NewRecorder()
-			middleware.BasicAuth(denied, inner2).ServeHTTP(rec2, authedRequest(tc.method, path, denied))
+			middleware.BasicAuth(denied, nil, inner2).ServeHTTP(rec2, authedRequest(tc.method, path, denied))
 			if rec2.Code != http.StatusForbidden {
 				t.Fatalf("a read+write grant must not authorize deletion; got %d", rec2.Code)
 			}
@@ -928,5 +934,254 @@ func TestLokiDeleteUsesDeleteActions(t *testing.T) {
 				t.Fatal("handler must not run for a denied request")
 			}
 		})
+	}
+}
+
+// ---- authentication throttling ---------------------------------------------
+
+func newGuard(threshold int) (*middleware.AuthGuard, *metrics.Metrics) {
+	m := metrics.New(prometheus.NewRegistry())
+	return &middleware.AuthGuard{
+		Limiter: authlimit.NewLimiter(authlimit.Config{
+			Enabled:          true,
+			FailureThreshold: threshold,
+			FailureWindow:    time.Minute,
+			BlockDuration:    time.Minute,
+			MaxBlockDuration: 10 * time.Minute,
+		}),
+		Metrics: m,
+	}, m
+}
+
+// badRequest is one wrong-password attempt from source.
+func badRequest(h http.Handler, source string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet, "/loki/loki/api/v1/labels", nil)
+	req.RemoteAddr = source + ":50000"
+	req.Header.Set("Authorization", authtest.BasicHeader("testuser", "nope"))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// The defect this closes: repeated wrong credentials from one source must stop
+// reaching the password hash, rather than costing a full bcrypt every time.
+func TestBasicAuthThrottlesRepeatedFailures(t *testing.T) {
+	inner, _ := newHandlerCalledFlag()
+	guard, m := newGuard(3)
+	h := middleware.BasicAuth(authtest.New(), guard, inner)
+
+	for i := 0; i < 3; i++ {
+		if rec := badRequest(h, "10.0.0.1"); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: expected 401, got %d", i, rec.Code)
+		}
+	}
+
+	rec := badRequest(h, "10.0.0.1")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 once throttled, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Retry-After"); got == "" || got == "0" {
+		t.Errorf("expected an actionable Retry-After, got %q", got)
+	}
+	if got := m.AuthRejectedValue("throttled"); got != 1 {
+		t.Errorf("expected 1 throttled rejection recorded, got %d", got)
+	}
+	if got := m.AuthFailureValue(); got != 3 {
+		t.Errorf("expected 3 credential checks to have run, got %d", got)
+	}
+}
+
+// A throttled source must not be able to starve everyone else.
+func TestBasicAuthThrottleIsPerSource(t *testing.T) {
+	inner, _ := newHandlerCalledFlag()
+	guard, _ := newGuard(2)
+	h := middleware.BasicAuth(authtest.New(), guard, inner)
+
+	badRequest(h, "10.0.0.1")
+	badRequest(h, "10.0.0.1")
+	if rec := badRequest(h, "10.0.0.1"); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected the offending source to be throttled, got %d", rec.Code)
+	}
+
+	if rec := badRequest(h, "10.0.0.2"); rec.Code != http.StatusUnauthorized {
+		t.Errorf("expected an unrelated source to still be served, got %d", rec.Code)
+	}
+}
+
+// A valid credential clears the source, so a user who mistypes a password a few
+// times and then gets it right is not left locked out.
+func TestBasicAuthSuccessClearsThrottle(t *testing.T) {
+	inner, _ := newHandlerCalledFlag()
+	guard, _ := newGuard(3)
+	stub := authtest.New()
+	h := middleware.BasicAuth(stub, guard, inner)
+
+	badRequest(h, "10.0.0.1")
+	badRequest(h, "10.0.0.1")
+
+	req := httptest.NewRequest(http.MethodGet, "/loki/loki/api/v1/labels", nil)
+	req.RemoteAddr = "10.0.0.1:50000"
+	req.Header.Set("Authorization", stub.Header())
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected the valid credential to be accepted, got %d", rec.Code)
+	}
+
+	// Two more failures would have crossed the threshold had the success not
+	// reset the count.
+	badRequest(h, "10.0.0.1")
+	if rec := badRequest(h, "10.0.0.1"); rec.Code != http.StatusUnauthorized {
+		t.Errorf("expected the counter to have been cleared, got %d", rec.Code)
+	}
+}
+
+// A request with no credentials at all costs no hashing, so it must not count
+// toward the throttle -- otherwise a browser loading the UI could lock itself out.
+func TestBasicAuthMissingCredentialsAreNotCounted(t *testing.T) {
+	inner, _ := newHandlerCalledFlag()
+	guard, m := newGuard(2)
+	h := middleware.BasicAuth(authtest.New(), guard, inner)
+
+	for i := 0; i < 10; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/loki/loki/api/v1/labels", nil)
+		req.RemoteAddr = "10.0.0.1:50000"
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: expected 401, got %d", i, rec.Code)
+		}
+	}
+	if got := m.AuthFailureValue(); got != 0 {
+		t.Errorf("expected no credential checks to be counted, got %d", got)
+	}
+}
+
+// Probes must stay reachable: throttling them would make an attacker able to
+// fail a container's health check.
+func TestBasicAuthThrottleSkipsProbes(t *testing.T) {
+	inner, _ := newHandlerCalledFlag()
+	guard, _ := newGuard(1)
+	h := middleware.BasicAuth(authtest.New(), guard, inner)
+
+	badRequest(h, "10.0.0.1")
+	badRequest(h, "10.0.0.1")
+
+	for _, path := range []string{"/healthz", "/ready"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.RemoteAddr = "10.0.0.1:50000"
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s: expected the probe to bypass throttling, got %d", path, rec.Code)
+		}
+	}
+}
+
+// Each plane carries its own counter. Sharing one was tried and had to be
+// reversed: with a single counter, flooding the data listener blocked the
+// operator out of the admin API, removing the only means of changing anything
+// -- including turning the throttle off -- while under attack. Losing the
+// recovery path is worse than the CPU exhaustion being defended against.
+//
+// The admin plane still throttles the same source on its own counter, and the
+// process-wide hashing gate still bounds what the two planes cost together.
+func TestThrottleIsPerPlane(t *testing.T) {
+	dataGuard, _ := newGuard(2)
+	adminGuard, _ := newGuard(2)
+	dataInner, _ := newHandlerCalledFlag()
+	adminInner, _ := newHandlerCalledFlag()
+	stub := authtest.NewAdmin()
+
+	data := middleware.BasicAuth(stub, dataGuard, dataInner)
+	admin := middleware.AdminAuth(stub, adminGuard, adminInner)
+
+	// Flood the data plane until it blocks.
+	badRequest(data, "10.0.0.1")
+	badRequest(data, "10.0.0.1")
+	if rec := badRequest(data, "10.0.0.1"); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected the data plane to be throttled, got %d", rec.Code)
+	}
+
+	// The operator, arriving from the same address, can still reach admin.
+	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	req.RemoteAddr = "10.0.0.1:50000"
+	req.Header.Set("Authorization", stub.Header())
+	rec := httptest.NewRecorder()
+	admin.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("a data-plane flood locked the operator out of the admin plane (got %d)", rec.Code)
+	}
+}
+
+// Separate counters must not mean the admin plane is unthrottled: an attacker
+// who does reach it is still held off, just on its own allowance.
+func TestAdminPlaneThrottlesIndependently(t *testing.T) {
+	adminGuard, _ := newGuard(2)
+	adminInner, _ := newHandlerCalledFlag()
+	admin := middleware.AdminAuth(authtest.NewAdmin(), adminGuard, adminInner)
+
+	badAdmin := func() int {
+		req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+		req.RemoteAddr = "10.0.0.1:50000"
+		req.Header.Set("Authorization", authtest.BasicHeader("testuser", "nope"))
+		rec := httptest.NewRecorder()
+		admin.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	badAdmin()
+	badAdmin()
+	if got := badAdmin(); got != http.StatusTooManyRequests {
+		t.Errorf("expected the admin plane to throttle on its own counter, got %d", got)
+	}
+}
+
+// saturatedAuthorizer stands in for a gateway already hashing at capacity.
+type saturatedAuthorizer struct{ *authtest.Stub }
+
+func (saturatedAuthorizer) AuthenticateContext(context.Context, string, string) (*auth.User, error) {
+	return nil, auth.ErrHashLimitReached
+}
+
+// A caller shed for want of a hashing slot had its credential never checked.
+// Answering 401 would tell a client with a perfectly good password that it was
+// wrong; 503 with a Retry-After is the honest answer.
+func TestBasicAuthSheds503WhenHashingIsSaturated(t *testing.T) {
+	inner, called := newHandlerCalledFlag()
+	guard, m := newGuard(3)
+	h := middleware.BasicAuth(saturatedAuthorizer{authtest.New()}, guard, inner)
+
+	rec := badRequest(h, "10.0.0.1")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Retry-After"); got == "" {
+		t.Error("expected a Retry-After on a shed request")
+	}
+	if *called {
+		t.Error("inner handler ran for an unauthenticated request")
+	}
+	if got := m.AuthRejectedValue("saturated"); got != 1 {
+		t.Errorf("expected 1 saturated rejection recorded, got %d", got)
+	}
+	// Being shed is the gateway's fault, not the caller's, so it must not count
+	// against the source: an outage would otherwise lock out every client.
+	if got := m.AuthFailureValue(); got != 0 {
+		t.Errorf("expected a shed request not to count as a credential failure, got %d", got)
+	}
+}
+
+// A nil guard is what every test that is not exercising throttling passes, and
+// what a gateway with the feature disabled runs with.
+func TestNilGuardDisablesThrottling(t *testing.T) {
+	inner, _ := newHandlerCalledFlag()
+	h := middleware.BasicAuth(authtest.New(), nil, inner)
+
+	for i := 0; i < 50; i++ {
+		if rec := badRequest(h, "10.0.0.1"); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: expected 401 with no guard, got %d", i, rec.Code)
+		}
 	}
 }

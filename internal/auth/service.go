@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -19,6 +20,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
+	"obsdatalayer/internal/authlimit"
 	dbstore "obsdatalayer/internal/db"
 	"obsdatalayer/internal/tenant"
 )
@@ -75,6 +77,9 @@ var ErrInvalidGrant = errors.New("invalid grant")
 // Authorizer is the subset of Service the HTTP layer depends on.
 type Authorizer interface {
 	Authenticate(name, password string) (*User, error)
+	// AuthenticateContext is Authenticate bound to a request, so a caller that
+	// disconnects stops occupying a password-hashing slot.
+	AuthenticateContext(ctx context.Context, name, password string) (*User, error)
 	AccessFor(name, backend, action string) (Access, bool)
 	CanAdmin(name string) bool
 }
@@ -93,6 +98,12 @@ type Service struct {
 	tenants *tenant.Store
 	users   atomic.Pointer[map[string]*User]
 	cache   *credentialCache
+
+	// hashGate bounds concurrent bcrypt work. It is swapped wholesale on a
+	// settings reload rather than resized: an in-flight caller holds the gate
+	// it acquired from and releases back to that same one, so a resize can
+	// never leave a slot stranded in the new gate.
+	hashGate atomic.Pointer[authlimit.Gate]
 }
 
 var _ Authorizer = (*Service)(nil)
@@ -118,10 +129,22 @@ func NewService(db *gorm.DB, tenants *tenant.Store) (*Service, error) {
 	}
 
 	s := &Service{db: db, enf: enf, tenants: tenants, cache: newCredentialCache(time.Minute)}
+	s.SetHashLimit(authlimit.DefaultMaxConcurrentHashes(), authlimit.DefaultHashWait)
 	if err := s.Reload(); err != nil {
 		return nil, err
 	}
 	return s, nil
+}
+
+// SetHashLimit replaces the concurrency bound on password hashing. A max of
+// zero or less removes the bound. Safe to call while requests are in flight.
+func (s *Service) SetHashLimit(max int, wait time.Duration) {
+	s.hashGate.Store(authlimit.NewGate(max, wait))
+}
+
+// HashLimit reports the configured hashing concurrency, or zero when unbounded.
+func (s *Service) HashLimit() int {
+	return s.hashGate.Load().Cap()
 }
 
 // Reload refreshes the user snapshot and the policy set from the database.
@@ -135,7 +158,11 @@ func (s *Service) Reload() error {
 		idx[r.Name] = &User{Name: r.Name, PasswordBcrypt: r.PasswordBcrypt}
 	}
 	s.users.Store(&idx)
-	s.cache.Clear()
+	// The credential cache is deliberately not cleared here. Invalidation is
+	// structural -- see credentialCache -- and wiping it on every reload put
+	// every valid caller back through bcrypt twice a minute at the default
+	// reload interval, which is precisely when they most need to stay out of
+	// the hashing queue an attacker is filling.
 
 	if err := s.enf.LoadPolicy(); err != nil {
 		return fmt.Errorf("auth: reload policy: %w", err)
@@ -155,16 +182,35 @@ func (s *Service) Tenants() *tenant.Store { return s.tenants }
 // Authenticate verifies a username and plaintext password. Unknown usernames
 // still run a real bcrypt comparison so they are not cheaply enumerable.
 func (s *Service) Authenticate(name, password string) (*User, error) {
+	return s.AuthenticateContext(context.Background(), name, password)
+}
+
+// AuthenticateContext is Authenticate with a context, so a caller that has gone
+// away stops waiting for a hashing slot.
+//
+// The cache is consulted before the gate is taken. A caller presenting a
+// credential that was recently verified therefore never queues behind an
+// attacker's hashing, which is what keeps a flood of bad credentials from
+// denying service to callers holding good ones.
+func (s *Service) AuthenticateContext(ctx context.Context, name, password string) (*User, error) {
 	idx := *s.users.Load()
 	u, ok := idx[name]
+	if ok && s.cache.Valid(name, password, u.PasswordBcrypt) {
+		return u, nil
+	}
+
+	gate := s.hashGate.Load()
+	if !gate.Acquire(ctx) {
+		return nil, ErrHashLimitReached
+	}
+	defer gate.Release()
+
 	if !ok {
 		// Compare against a real hash so the unknown-user path costs the same
-		// as the known-user path. See dummyHash.
+		// as the known-user path. See dummyHash. The gate is held across this
+		// too, or the equalizer would be undone by the gate itself.
 		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
 		return nil, ErrInvalidCredentials
-	}
-	if s.cache.Valid(name, password, u.PasswordBcrypt) {
-		return u, nil
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordBcrypt), []byte(password)); err != nil {
 		return nil, ErrInvalidCredentials
@@ -173,14 +219,28 @@ func (s *Service) Authenticate(name, password string) (*User, error) {
 	return u, nil
 }
 
+// credentialCache remembers credentials that have already passed bcrypt, so a
+// repeat caller does not pay tens of milliseconds of CPU on every request.
+//
+// Its safety does not rest on anything remembering to invalidate it. The key
+// binds the stored password hash, and Valid is always called with the hash from
+// the current user snapshot, so a rotated password yields a different key and
+// can never match a stale entry. A deleted user fails the snapshot lookup before
+// the cache is consulted at all. And the cache covers authentication only --
+// authorization is resolved per request by AccessFor -- so a revoked grant takes
+// effect immediately regardless of what is cached here.
+//
+// Only a successful compare populates it, so a caller guessing passwords cannot
+// grow it.
 type credentialCache struct {
-	mu      sync.Mutex
-	ttl     time.Duration
-	entries map[string]time.Time
+	mu        sync.Mutex
+	ttl       time.Duration
+	entries   map[string]time.Time
+	lastSweep time.Time
 }
 
 func newCredentialCache(ttl time.Duration) *credentialCache {
-	return &credentialCache{ttl: ttl, entries: make(map[string]time.Time)}
+	return &credentialCache{ttl: ttl, entries: make(map[string]time.Time), lastSweep: time.Now()}
 }
 
 func (c *credentialCache) Valid(name, password, passwordHash string) bool {
@@ -198,15 +258,36 @@ func (c *credentialCache) Valid(name, password, passwordHash string) bool {
 
 func (c *credentialCache) Store(name, password, passwordHash string) {
 	key := credentialCacheKey(name, password, passwordHash)
+	now := time.Now()
 	c.mu.Lock()
-	c.entries[key] = time.Now().Add(c.ttl)
+	c.sweepLocked(now)
+	c.entries[key] = now.Add(c.ttl)
 	c.mu.Unlock()
 }
 
-func (c *credentialCache) Clear() {
+// sweepLocked drops expired entries. Valid only ever evicts the key it looks
+// up, so an entry that is never looked up again -- the usual fate of an entry
+// orphaned by a password rotation -- would otherwise live for the lifetime of
+// the process. Sweeping once per TTL bounds the map to the credentials actually
+// used in the last window.
+func (c *credentialCache) sweepLocked(now time.Time) {
+	if now.Sub(c.lastSweep) < c.ttl {
+		return
+	}
+	c.lastSweep = now
+	for key, expires := range c.entries {
+		if !now.Before(expires) {
+			delete(c.entries, key)
+		}
+	}
+}
+
+// size reports the number of live entries. Used by tests to assert the sweep
+// actually bounds the map.
+func (c *credentialCache) size() int {
 	c.mu.Lock()
-	c.entries = make(map[string]time.Time)
-	c.mu.Unlock()
+	defer c.mu.Unlock()
+	return len(c.entries)
 }
 
 func credentialCacheKey(name, password, passwordHash string) string {

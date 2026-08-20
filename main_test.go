@@ -114,7 +114,7 @@ func TestReadyIsAnsweredByTheGateway(t *testing.T) {
 	holder := config.NewHolder(cfg, "")
 
 	// No upstream client at all: a proxied /ready could not succeed here.
-	handler := dataHandler(holder, nil, proxy.New(nil, nil), metrics.New(prometheus.NewRegistry()))
+	handler := dataHandler(holder, nil, proxy.New(nil, nil), metrics.New(prometheus.NewRegistry()), nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
 	rec := httptest.NewRecorder()
@@ -143,7 +143,7 @@ func TestReadyNeedsNoCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config: %v", err)
 	}
-	handler := dataHandler(config.NewHolder(cfg, ""), nil, proxy.New(nil, nil), metrics.New(prometheus.NewRegistry()))
+	handler := dataHandler(config.NewHolder(cfg, ""), nil, proxy.New(nil, nil), metrics.New(prometheus.NewRegistry()), nil)
 
 	for _, path := range []string{"/ready", "/healthz"} {
 		t.Run(path, func(t *testing.T) {

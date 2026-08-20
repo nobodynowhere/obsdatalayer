@@ -37,6 +37,24 @@ gateway:
   # the admin plane. Use "*:9091" to expose the admin plane deliberately.
   listen: 8080
   admin_listen: 9091
+
+  # Upstream backend credentials are encrypted at rest with this key. It lives
+  # outside the database on purpose: a key stored beside the ciphertext would
+  # protect nothing, and the point is that a database backup is not enough to
+  # read the credentials.
+  #
+  # Generate one with:
+  #   obsgateway --generate-encryption-key --encryption-key-file /etc/obsgateway/enc.key
+  #
+  # The file must not be readable by group or others (mode 0600). Back it up:
+  # without it the stored credentials cannot be recovered.
+  #
+  # OBSGATEWAY_ENCRYPTION_KEY overrides this path, carrying the base64 key
+  # directly, which suits containers that inject it from a secret store.
+  #
+  # The gateway refuses to start if credentials are stored and no key is
+  # configured. A fresh install with no credentials starts without one.
+  # encryption_key_file: /etc/obsgateway/enc.key
   tls:
     enabled: false
     # Generate a local test certificate:

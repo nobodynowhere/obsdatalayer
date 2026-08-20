@@ -50,7 +50,7 @@ func newTestMux(cfg *config.Config, p *proxy.Proxy, m *metrics.Metrics) http.Han
 	fanout.LokiDSRoutes(mux, "/loki", h, p)
 	fanout.MimirDSRoutes(mux, "/prometheus", h, p)
 	fanout.TempoDSRoutes(mux, "/tempo", h, p)
-	return middleware.BasicAuth(testAuth, mux)
+	return middleware.BasicAuth(testAuth, nil, mux)
 }
 
 func lokiInst(name string, url string) *config.InstanceConfig {
@@ -481,7 +481,7 @@ func TestLokiTailUpgradesAndStreams(t *testing.T) {
 	// Logging wraps the ResponseWriter, so it must be in the chain here: the
 	// production handler includes it, and a wrapper that is not an
 	// http.Hijacker silently breaks the upgrade.
-	gw := httptest.NewServer(middleware.Logging(middleware.BasicAuth(testAuth, middleware.SanitizeHeaders(mux))))
+	gw := httptest.NewServer(middleware.Logging(middleware.BasicAuth(testAuth, nil, middleware.SanitizeHeaders(mux))))
 	t.Cleanup(gw.Close)
 
 	// Speak the handshake over a raw connection; http.Client cannot express one.

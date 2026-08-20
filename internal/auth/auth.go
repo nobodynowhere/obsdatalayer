@@ -165,6 +165,15 @@ func FromContext(ctx context.Context) *RequestAuth {
 // error is used whether the user is unknown or the password is wrong.
 var ErrInvalidCredentials = errors.New("invalid credentials")
 
+// ErrHashLimitReached is returned when the gateway is already running as many
+// password hashes as it will run at once and no slot came free in time.
+//
+// It is deliberately distinct from ErrInvalidCredentials. The credential was
+// never checked, so answering 401 would tell a caller with a perfectly good
+// password that it was rejected; the honest answer is that the gateway is busy
+// and the caller should retry.
+var ErrHashLimitReached = errors.New("authentication capacity reached")
+
 // dummyHash is a real bcrypt hash at the same cost as stored credentials. It is
 // compared against when the username does not exist so that the response time
 // for an unknown user matches that of a known one.

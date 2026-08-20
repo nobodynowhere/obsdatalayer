@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm"
 
 	dbstore "obsdatalayer/internal/db"
+	"obsdatalayer/internal/secret"
 )
 
 // Errors returned by the instance operations.
@@ -17,8 +18,9 @@ var (
 	ErrExists   = errors.New("instance already exists")
 )
 
-// LoadFromDB loads the active Config from the database.
-func LoadFromDB(db *gorm.DB) (*Config, error) {
+// LoadFromDB loads the active Config from the database, decrypting stored
+// credentials with c. A nil cipher tolerates plaintext but rejects ciphertext.
+func LoadFromDB(db *gorm.DB, c *secret.Cipher) (*Config, error) {
 	setting, err := loadSetting(db)
 	if err != nil {
 		return nil, err
@@ -26,14 +28,18 @@ func LoadFromDB(db *gorm.DB) (*Config, error) {
 
 	var instances []dbstore.Instance
 	if err := db.
-		Preload("PushTargets").
+		Preload("PushTargets", func(db *gorm.DB) *gorm.DB {
+			// Explicit: reads try targets in this order, so it has to be the
+			// order the operator configured, not the database's choice.
+			return db.Order("position")
+		}).
 		Preload("LabelsGroup.Filter.Names").
 		Preload("LabelsGroup.Injects").
 		Find(&instances).Error; err != nil {
 		return nil, fmt.Errorf("load instances: %w", err)
 	}
 
-	cfg, err := mapConfig(setting, instances)
+	cfg, err := mapConfig(setting, instances, c)
 	if err != nil {
 		return nil, err
 	}
@@ -59,6 +65,7 @@ func EnsureSettings(db *gorm.DB) error {
 	if err != nil {
 		return fmt.Errorf("generate setting id: %w", err)
 	}
+	enabled := defaults.Gateway.AuthLimit.ThrottleEnabled()
 	row := dbstore.GatewaySetting{
 		ID:             id,
 		MaxBodyBytes:   defaults.Gateway.MaxBodyBytes,
@@ -66,6 +73,14 @@ func EnsureSettings(db *gorm.DB) error {
 		PushTimeout:    durationString(defaults.Gateway.Timeouts.Push),
 		LogLevel:       defaults.Gateway.LogLevel,
 		ReloadInterval: durationString(defaults.Gateway.ReloadInterval),
+
+		AuthLimitEnabled:        &enabled,
+		AuthFailureThreshold:    defaults.Gateway.AuthLimit.FailureThreshold,
+		AuthFailureWindow:       durationString(defaults.Gateway.AuthLimit.FailureWindow),
+		AuthBlockDuration:       durationString(defaults.Gateway.AuthLimit.BlockDuration),
+		AuthMaxBlockDuration:    durationString(defaults.Gateway.AuthLimit.MaxBlockDuration),
+		AuthMaxConcurrentHashes: defaults.Gateway.AuthLimit.MaxConcurrentHashes,
+		AuthHashWait:            durationString(defaults.Gateway.AuthLimit.HashWait),
 	}
 	if err := db.Create(&row).Error; err != nil {
 		return fmt.Errorf("create gateway settings: %w", err)
@@ -85,12 +100,21 @@ func SaveSettings(db *gorm.DB, g GatewayConfig) error {
 	if err != nil {
 		return err
 	}
+	enabled := cfg.Gateway.AuthLimit.ThrottleEnabled()
 	updates := map[string]any{
 		"max_body_bytes":  cfg.Gateway.MaxBodyBytes,
 		"query_timeout":   durationString(cfg.Gateway.Timeouts.Query),
 		"push_timeout":    durationString(cfg.Gateway.Timeouts.Push),
 		"log_level":       cfg.Gateway.LogLevel,
 		"reload_interval": durationString(cfg.Gateway.ReloadInterval),
+
+		"auth_limit_enabled":         enabled,
+		"auth_failure_threshold":     cfg.Gateway.AuthLimit.FailureThreshold,
+		"auth_failure_window":        durationString(cfg.Gateway.AuthLimit.FailureWindow),
+		"auth_block_duration":        durationString(cfg.Gateway.AuthLimit.BlockDuration),
+		"auth_max_block_duration":    durationString(cfg.Gateway.AuthLimit.MaxBlockDuration),
+		"auth_max_concurrent_hashes": cfg.Gateway.AuthLimit.MaxConcurrentHashes,
+		"auth_hash_wait":             durationString(cfg.Gateway.AuthLimit.HashWait),
 	}
 	if err := db.Model(&dbstore.GatewaySetting{}).Where("id = ?", setting.ID).Updates(updates).Error; err != nil {
 		return fmt.Errorf("update gateway settings: %w", err)
@@ -114,8 +138,9 @@ func loadSetting(db *gorm.DB) (*dbstore.GatewaySetting, error) {
 
 // ---- instance management ----------------------------------------------------
 
-// CreateInstance validates and inserts a new instance.
-func CreateInstance(db *gorm.DB, inst *InstanceConfig, reg TenantRegistry) error {
+// CreateInstance validates and inserts a new instance, encrypting its
+// credentials with c.
+func CreateInstance(db *gorm.DB, inst *InstanceConfig, reg TenantRegistry, c *secret.Cipher) error {
 	if err := prepareInstance(inst, reg); err != nil {
 		return err
 	}
@@ -127,14 +152,14 @@ func CreateInstance(db *gorm.DB, inst *InstanceConfig, reg TenantRegistry) error
 		return ErrExists
 	}
 	return db.Transaction(func(tx *gorm.DB) error {
-		return saveInstance(tx, inst)
+		return saveInstance(tx, inst, c)
 	})
 }
 
 // UpdateInstance replaces an existing instance in place. Child rows (push
 // targets, labels) are rebuilt rather than diffed: they are small, and a full
 // replace keeps the stored shape exactly matching the submitted document.
-func UpdateInstance(db *gorm.DB, name string, inst *InstanceConfig, reg TenantRegistry) error {
+func UpdateInstance(db *gorm.DB, name string, inst *InstanceConfig, reg TenantRegistry, c *secret.Cipher) error {
 	if err := prepareInstance(inst, reg); err != nil {
 		return err
 	}
@@ -161,7 +186,7 @@ func UpdateInstance(db *gorm.DB, name string, inst *InstanceConfig, reg TenantRe
 		if err := tx.Where("id = ?", existing.ID).Delete(&dbstore.Instance{}).Error; err != nil {
 			return fmt.Errorf("replace instance %q: %w", name, err)
 		}
-		return saveInstance(tx, inst)
+		return saveInstance(tx, inst, c)
 	})
 }
 
@@ -251,7 +276,7 @@ func parseDurationString(s string) (Duration, error) {
 	return Duration(d), nil
 }
 
-func mapConfig(setting *dbstore.GatewaySetting, instances []dbstore.Instance) (*Config, error) {
+func mapConfig(setting *dbstore.GatewaySetting, instances []dbstore.Instance, c *secret.Cipher) (*Config, error) {
 	queryDur, err := parseDurationString(setting.QueryTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("invalid query_timeout %q: %w", setting.QueryTimeout, err)
@@ -265,6 +290,11 @@ func mapConfig(setting *dbstore.GatewaySetting, instances []dbstore.Instance) (*
 		return nil, fmt.Errorf("invalid reload_interval %q: %w", setting.ReloadInterval, err)
 	}
 
+	authLimit, err := mapAuthLimit(setting)
+	if err != nil {
+		return nil, err
+	}
+
 	cfg := &Config{
 		Gateway: GatewayConfig{
 			MaxBodyBytes:   setting.MaxBodyBytes,
@@ -274,23 +304,64 @@ func mapConfig(setting *dbstore.GatewaySetting, instances []dbstore.Instance) (*
 				Query: queryDur,
 				Push:  pushDur,
 			},
+			AuthLimit: authLimit,
 		},
 		Instances: make([]*InstanceConfig, 0, len(instances)),
 	}
 
 	for _, inst := range instances {
-		cfg.Instances = append(cfg.Instances, mapInstance(&inst))
+		ic, err := mapInstance(&inst, c)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Instances = append(cfg.Instances, ic)
 	}
 	return cfg, nil
 }
 
-func mapInstance(inst *dbstore.Instance) *InstanceConfig {
+// mapAuthLimit reads the throttle columns. Each duration is optional: an empty
+// string is a column added by a migration to a row that predates it, and takes
+// the default rather than failing the load.
+func mapAuthLimit(setting *dbstore.GatewaySetting) (AuthLimitConfig, error) {
+	out := AuthLimitConfig{
+		Enabled:             setting.AuthLimitEnabled,
+		FailureThreshold:    setting.AuthFailureThreshold,
+		MaxConcurrentHashes: setting.AuthMaxConcurrentHashes,
+	}
+	for _, f := range []struct {
+		name string
+		raw  string
+		dst  *Duration
+	}{
+		{"auth_failure_window", setting.AuthFailureWindow, &out.FailureWindow},
+		{"auth_block_duration", setting.AuthBlockDuration, &out.BlockDuration},
+		{"auth_max_block_duration", setting.AuthMaxBlockDuration, &out.MaxBlockDuration},
+		{"auth_hash_wait", setting.AuthHashWait, &out.HashWait},
+	} {
+		if f.raw == "" {
+			continue
+		}
+		d, err := parseDurationString(f.raw)
+		if err != nil {
+			return AuthLimitConfig{}, fmt.Errorf("invalid %s %q: %w", f.name, f.raw, err)
+		}
+		*f.dst = d
+	}
+	return out, nil
+}
+
+func mapInstance(inst *dbstore.Instance, c *secret.Cipher) (*InstanceConfig, error) {
+	basicAuth, err := c.Decrypt(inst.BasicAuth)
+	if err != nil {
+		return nil, fmt.Errorf("instance %q basic_auth: %w", inst.Name, err)
+	}
+
 	ic := &InstanceConfig{
 		Name:          inst.Name,
 		Backend:       inst.Backend,
 		URL:           inst.URL,
 		FanOutMode:    inst.FanOutMode,
-		BasicAuth:     inst.BasicAuth,
+		BasicAuth:     basicAuth,
 		TenantID:      inst.TenantID,
 		SkipTLSVerify: inst.SkipTLSVerify,
 	}
@@ -298,9 +369,13 @@ func mapInstance(inst *dbstore.Instance) *InstanceConfig {
 	if len(inst.PushTargets) > 0 {
 		ic.PushURLs = make([]PushTarget, 0, len(inst.PushTargets))
 		for _, pt := range inst.PushTargets {
+			ptAuth, err := c.Decrypt(pt.BasicAuth)
+			if err != nil {
+				return nil, fmt.Errorf("instance %q push target %q basic_auth: %w", inst.Name, pt.URL, err)
+			}
 			ic.PushURLs = append(ic.PushURLs, PushTarget{
 				URL:           pt.URL,
-				BasicAuth:     pt.BasicAuth,
+				BasicAuth:     ptAuth,
 				TenantID:      pt.TenantID,
 				SkipTLSVerify: pt.SkipTLSVerify,
 			})
@@ -327,15 +402,20 @@ func mapInstance(inst *dbstore.Instance) *InstanceConfig {
 		}
 	}
 
-	return ic
+	return ic, nil
 }
 
 // ---- writers ----------------------------------------------------------------
 
-func saveInstance(tx *gorm.DB, inst *InstanceConfig) error {
+func saveInstance(tx *gorm.DB, inst *InstanceConfig, c *secret.Cipher) error {
 	instID, err := uuid.NewV4()
 	if err != nil {
 		return fmt.Errorf("generate instance id: %w", err)
+	}
+
+	basicAuth, err := c.Encrypt(inst.BasicAuth)
+	if err != nil {
+		return fmt.Errorf("encrypt instance %q basic_auth: %w", inst.Name, err)
 	}
 
 	dbInst := dbstore.Instance{
@@ -344,7 +424,7 @@ func saveInstance(tx *gorm.DB, inst *InstanceConfig) error {
 		Backend:       inst.Backend,
 		URL:           inst.URL,
 		FanOutMode:    inst.FanOutMode,
-		BasicAuth:     inst.BasicAuth,
+		BasicAuth:     basicAuth,
 		TenantID:      inst.TenantID,
 		SkipTLSVerify: inst.SkipTLSVerify,
 	}
@@ -355,8 +435,8 @@ func saveInstance(tx *gorm.DB, inst *InstanceConfig) error {
 		return fmt.Errorf("create instance %q: %w", inst.Name, err)
 	}
 
-	for _, pt := range inst.PushURLs {
-		if err := savePushTarget(tx, instID, pt); err != nil {
+	for i, pt := range inst.PushURLs {
+		if err := savePushTarget(tx, instID, i, pt, c); err != nil {
 			return err
 		}
 	}
@@ -370,16 +450,21 @@ func saveInstance(tx *gorm.DB, inst *InstanceConfig) error {
 	return nil
 }
 
-func savePushTarget(tx *gorm.DB, instID uuid.UUID, pt PushTarget) error {
+func savePushTarget(tx *gorm.DB, instID uuid.UUID, position int, pt PushTarget, c *secret.Cipher) error {
 	ptID, err := uuid.NewV4()
 	if err != nil {
 		return fmt.Errorf("generate push target id: %w", err)
 	}
+	basicAuth, err := c.Encrypt(pt.BasicAuth)
+	if err != nil {
+		return fmt.Errorf("encrypt push target %q basic_auth: %w", pt.URL, err)
+	}
 	dbPt := dbstore.PushTarget{
 		ID:            ptID,
 		InstanceID:    instID,
+		Position:      position,
 		URL:           pt.URL,
-		BasicAuth:     pt.BasicAuth,
+		BasicAuth:     basicAuth,
 		TenantID:      pt.TenantID,
 		SkipTLSVerify: pt.SkipTLSVerify,
 	}

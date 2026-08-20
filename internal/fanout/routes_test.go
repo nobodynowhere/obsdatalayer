@@ -57,7 +57,7 @@ func newRouteOnlyMux(cfg *config.Config, transport http.RoundTripper) http.Handl
 	fanout.MimirDSRoutes(mux, "/prometheus", h, p)
 	fanout.TempoDSRoutes(mux, "/tempo", h, p)
 	fanout.AlertmanagerDSRoutes(mux, "/alertmanager", h, p)
-	return middleware.BasicAuth(testAuth, mux)
+	return middleware.BasicAuth(testAuth, nil, mux)
 }
 
 func withAuthSelectors(t *testing.T, selectors ...string) {
@@ -266,7 +266,7 @@ func TestLokiPushRecordsPayloadCounters(t *testing.T) {
 	mux := http.NewServeMux()
 	fanout.IngestRoutes(mux, h, p, m)
 	fanout.LokiDSRoutes(mux, "/loki", h, p)
-	handler := middleware.BasicAuth(testAuth, mux)
+	handler := middleware.BasicAuth(testAuth, nil, mux)
 
 	body := `{"streams":[{"stream":{"app":"api","env":"dev"},"values":[["1","a"]]},{"stream":{"app":"worker"},"values":[["2","b"]]}]}`
 	req := httptest.NewRequest(http.MethodPost, "/loki/api/v1/push", strings.NewReader(body))

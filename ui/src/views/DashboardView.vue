@@ -32,7 +32,38 @@ const trafficCards = computed(() => {
     { key: 'partial', label: 'Partial failures', value: t.partial_failures, hint: 'Succeeded with a target down', alert: t.partial_failures > 0 },
     { key: 'items', label: 'Items forwarded', value: t.items_forwarded, hint: 'Series and log streams' },
     { key: 'labels', label: 'Labels rewritten', value: t.labels_rewritten, hint: 'Dropped, injected or overwritten' },
+    { key: 'reads-ok', label: 'Reads served', value: t.read_successes, hint: 'Queries answered upstream' },
+    { key: 'reads-fail', label: 'Read failures', value: t.read_failures, hint: 'Target unreachable or 5xx', alert: t.read_failures > 0 },
+    {
+      key: 'reads-failover',
+      label: 'Read failovers',
+      value: t.read_failovers,
+      hint: 'Served only after a target failed',
+      alert: t.read_failovers > 0,
+    },
   ]
+})
+
+// Per-target read health. Only instances that have actually served a read
+// appear: an instance nobody has queried has nothing to report, and showing it
+// at zero would read as a problem rather than as an absence of traffic.
+const readTargets = computed(() => {
+  const out = []
+  for (const inst of traffic.value?.instances ?? []) {
+    const rows = (inst.read_targets ?? []).map((t) => {
+      const total = (t.successes ?? 0) + (t.failures ?? 0)
+      return {
+        target: t.target,
+        successes: t.successes ?? 0,
+        failures: t.failures ?? 0,
+        total,
+        // Width of the healthy portion of the bar.
+        okPct: total ? Math.round(((t.successes ?? 0) / total) * 100) : 0,
+      }
+    })
+    if (rows.length) out.push({ instance: inst.instance, rows })
+  }
+  return out
 })
 
 function fmt(n) {
@@ -129,6 +160,40 @@ onMounted(load)
         <div class="stat-card__hint">{{ card.hint }}</div>
       </div>
     </div>
+
+    <template v-if="readTargets.length">
+      <div class="section-label">
+        Read targets
+        <span class="section-label__note">which upstream answered, per instance</span>
+      </div>
+
+      <PrimeCard class="mb-3">
+        <template #content>
+          <div v-for="group in readTargets" :key="group.instance" class="read-group">
+            <div class="read-group__name mono">{{ group.instance }}</div>
+            <div v-for="(row, i) in group.rows" :key="row.target" class="read-target">
+              <div class="read-target__name mono" :title="row.target">
+                <span class="target-rank">{{ i + 1 }}</span>{{ row.target }}
+              </div>
+              <div class="read-bar" :title="`${fmt(row.successes)} served, ${fmt(row.failures)} failed`">
+                <div class="read-bar__ok" :style="{ width: row.okPct + '%' }"></div>
+                <div class="read-bar__fail" :style="{ width: 100 - row.okPct + '%' }"></div>
+              </div>
+              <div class="read-target__counts">
+                <span class="read-count read-count--ok">{{ fmt(row.successes) }}</span>
+                <span class="read-count read-count--fail" :class="{ 'is-zero': !row.failures }">
+                  {{ fmt(row.failures) }}
+                </span>
+              </div>
+            </div>
+          </div>
+          <small>
+            Every target receives every write; reads try them in configured order. A target with
+            failures is being skipped for a short cool-off and retried after it.
+          </small>
+        </template>
+      </PrimeCard>
+    </template>
 
     <PrimeMessage
       v-if="unmappedTenants.length"
