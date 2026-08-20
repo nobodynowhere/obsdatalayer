@@ -111,3 +111,46 @@ func TestSanitizeInboundDropsAllValues(t *testing.T) {
 		t.Errorf("expected every value dropped, got %v", vals)
 	}
 }
+
+// TestUpgradeHeadersSurviveOnlyOnAnUpgrade is the narrow exception the tail
+// route needs. The handshake headers are kept on a genuine upgrade and dropped
+// on everything else, including a request that names them without asking to
+// switch protocols.
+func TestUpgradeHeadersSurviveOnlyOnAnUpgrade(t *testing.T) {
+	upgrade := http.Header{}
+	upgrade.Set("Upgrade", "websocket")
+	upgrade.Set("Connection", "Upgrade")
+	upgrade.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	upgrade.Set("Sec-WebSocket-Version", "13")
+	upgrade.Set("X-Scope-OrgID", "spoofed")
+	proxy.SanitizeInbound(upgrade)
+
+	for _, key := range []string{"Upgrade", "Connection", "Sec-Websocket-Key", "Sec-Websocket-Version"} {
+		if upgrade.Get(key) == "" {
+			t.Errorf("handshake header %s was dropped from a genuine upgrade", key)
+		}
+	}
+	if upgrade.Get("X-Scope-OrgID") != "" {
+		t.Error("an upgrade must not carry a client tenant assertion")
+	}
+
+	// Same headers, no upgrade intent: all dropped, as before.
+	plain := http.Header{}
+	plain.Set("Connection", "keep-alive")
+	plain.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	plain.Set("Upgrade", "h2c")
+	proxy.SanitizeInbound(plain)
+	for _, key := range []string{"Upgrade", "Connection", "Sec-Websocket-Key"} {
+		if plain.Get(key) != "" {
+			t.Errorf("header %s survived on a non-WebSocket request", key)
+		}
+	}
+
+	// Upgrade headers are still not forwardable in the ordinary copy path, so
+	// no non-tail route can relay them.
+	for _, key := range []string{"Upgrade", "Connection", "Sec-Websocket-Key"} {
+		if proxy.IsForwardable(key) {
+			t.Errorf("%s must not be on the ordinary forwarding allowlist", key)
+		}
+	}
+}

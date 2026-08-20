@@ -176,7 +176,12 @@ func controlAction(method, path string) string {
 
 func isMimirRulesPath(path string) bool {
 	return path == "/prometheus/api/v1/rules" ||
-		strings.HasPrefix(path, "/prometheus/config/v1/rules")
+		strings.HasPrefix(path, "/prometheus/config/v1/rules") ||
+		// Grafana's other spelling of the ruler configuration API, matched
+		// exactly and with a trailing slash so that a future
+		// /prometheus/rulesomething route cannot inherit rule permissions.
+		path == "/prometheus/rules" ||
+		strings.HasPrefix(path, "/prometheus/rules/")
 }
 
 func isMimirAlertsPath(path string) bool {

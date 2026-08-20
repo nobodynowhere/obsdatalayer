@@ -26,8 +26,6 @@ import (
 //
 // Not implemented:
 //
-//   - GET /loki/api/v1/tail. A WebSocket; the proxy buffers responses and
-//     cannot carry an upgrade. Live tail in Explore will fail until it is.
 //   - The log deletion API (/loki/api/v1/delete). Destructive and reachable
 //     under an ordinary write grant, so it wants a permission of its own
 //     before being exposed.
@@ -61,6 +59,15 @@ func LokiDSRoutes(mux *http.ServeMux, mount string, h *config.ConfigHolder, p *p
 	read("GET", "/loki/api/v1/format_query")
 	read("POST", "/loki/api/v1/format_query")
 	read("GET", "/loki/api/v1/status/buildinfo")
+
+	// Live tail. A WebSocket, so it takes the upgrade-aware forwarding path
+	// rather than the buffering one. Single-tenant: Loki answers 400 to a tail
+	// whose X-Scope-OrgID names more than one tenant.
+	mux.HandleFunc("GET "+mount+"/loki/api/v1/tail", func(w http.ResponseWriter, r *http.Request) {
+		if inst := getInstance(h, r, w, "loki"); inst != nil && requireSingleTenant(w, r) {
+			p.ForwardUpgrade(w, r, inst, "/loki/api/v1/tail")
+		}
+	})
 
 	// Ruler configuration, in both spellings Loki serves. Grafana's data
 	// source-managed alert rules use the legacy /api/prom form.

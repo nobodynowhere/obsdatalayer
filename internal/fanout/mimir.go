@@ -77,6 +77,23 @@ func MimirDSRoutes(mux *http.ServeMux, mount string, h *config.ConfigHolder, p *
 	registerMimirTenantConfig(mux, "POST "+mount+"/config/v1/rules/{namespace}", h, p, "/prometheus/config/v1/rules/{namespace}")
 	registerMimirTenantConfig(mux, "DELETE "+mount+"/config/v1/rules/{namespace}/{groupName}", h, p, "/prometheus/config/v1/rules/{namespace}/{groupName}")
 	registerMimirTenantConfig(mux, "DELETE "+mount+"/config/v1/rules/{namespace}", h, p, "/prometheus/config/v1/rules/{namespace}")
+
+	// The same ruler configuration API under Grafana's other spelling.
+	//
+	// Grafana's ruler client picks its prefix from the data source subtype:
+	// "mimir" gives /config/v1/rules above, while "cortex", "prometheus" and
+	// any unrecognised or absent value give /rules. Mimir itself serves only
+	// the /config/v1 form, so these six are an alias rather than a passthrough
+	// -- the one place the gateway deviates from "mount plus exact upstream
+	// path", and it is deliberate: without them a data source that Grafana has
+	// not been told is Mimir can list rules but not edit them, which reads as a
+	// gateway fault rather than a data source setting.
+	registerMimirTenantConfig(mux, "GET "+mount+"/rules", h, p, "/prometheus/config/v1/rules")
+	registerMimirTenantConfig(mux, "GET "+mount+"/rules/{namespace}", h, p, "/prometheus/config/v1/rules/{namespace}")
+	registerMimirTenantConfig(mux, "GET "+mount+"/rules/{namespace}/{groupName}", h, p, "/prometheus/config/v1/rules/{namespace}/{groupName}")
+	registerMimirTenantConfig(mux, "POST "+mount+"/rules/{namespace}", h, p, "/prometheus/config/v1/rules/{namespace}")
+	registerMimirTenantConfig(mux, "DELETE "+mount+"/rules/{namespace}/{groupName}", h, p, "/prometheus/config/v1/rules/{namespace}/{groupName}")
+	registerMimirTenantConfig(mux, "DELETE "+mount+"/rules/{namespace}", h, p, "/prometheus/config/v1/rules/{namespace}")
 }
 
 func forwardMimirPush(w http.ResponseWriter, r *http.Request, h *config.ConfigHolder, p *proxy.Proxy, m *metrics.Metrics, upstreamPath string, rewriteLabels bool) {

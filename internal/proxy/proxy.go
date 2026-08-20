@@ -8,6 +8,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -142,6 +144,92 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, inst *config.Ins
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
+}
+
+// ForwardUpgrade proxies a protocol-upgrade request, which is what Loki's live
+// tail endpoint is. It cannot go through forward(): that reads a response body
+// and copies it, whereas an upgrade hands back the raw connection after a 101
+// and streams in both directions until either side closes.
+//
+// httputil.ReverseProxy handles the hijack and the bidirectional copy. Three
+// things still have to be got right here:
+//
+//   - Headers. The outbound set is rebuilt from the forwarding allowlist plus
+//     the handshake headers, so a tail request relays no more than any other
+//     request does, apart from what the handshake itself requires.
+//   - Tenancy. X-Scope-OrgID is injected exactly as on every other path. Loki
+//     reads it at handshake time and the socket stays bound to that scope, so
+//     there is no per-frame authorization to do.
+//   - Timeouts. The query client's timeout covers a whole exchange and would
+//     sever a tail stream when it expired, so the client's transport is used
+//     directly. Connection pooling is preserved; the overall deadline is not.
+//
+// A hijacked connection is not tracked by http.Server.Shutdown, so a tail
+// stream is cut when the process stops rather than drained.
+func (p *Proxy) ForwardUpgrade(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, upstreamPath string) {
+	target := inst.GetQueryTarget()
+	upstreamURL, err := url.Parse(target.URL)
+	if err != nil {
+		WriteJSONError(w, http.StatusInternalServerError, map[string]string{
+			"error": "invalid upstream URL", "instance": inst.Name,
+		})
+		return
+	}
+
+	ctx := r.Context()
+	if target.SkipTLSVerify {
+		ctx = WithSkipTLSVerify(ctx)
+	}
+	ra := auth.FromContext(ctx)
+
+	rp := &httputil.ReverseProxy{
+		Transport: p.QueryClient().Transport,
+		Director: func(req *http.Request) {
+			req.URL.Scheme = upstreamURL.Scheme
+			req.URL.Host = upstreamURL.Host
+			req.URL.Path = upstreamURL.Path + upstreamPath
+			req.URL.RawQuery = r.URL.RawQuery
+			req.Host = upstreamURL.Host
+
+			out := make(http.Header, len(r.Header))
+			for key, vals := range r.Header {
+				if forwardableHeaders[key] || upgradeHeaders[key] {
+					out[key] = vals
+				}
+			}
+			// ReverseProxy appends the client IP to X-Forwarded-For after the
+			// Director runs. A nil entry is its documented opt-out. Without it
+			// the gateway would leak the caller's address upstream on this one
+			// route while stripping it on every other.
+			out["X-Forwarded-For"] = nil
+			req.Header = out
+
+			if target.BasicAuth != "" {
+				if parts := strings.SplitN(target.BasicAuth, ":", 2); len(parts) == 2 {
+					req.SetBasicAuth(parts[0], parts[1])
+				}
+			}
+			switch {
+			case target.TenantID != "":
+				req.Header.Set("X-Scope-OrgID", target.TenantID)
+			case ra != nil && len(ra.TenantIDs) > 0:
+				// Loki answers 400 to a tail whose X-Scope-OrgID names more
+				// than one tenant, so the caller is narrowed to one before
+				// reaching here; see requireSingleTenant.
+				req.Header.Set("X-Scope-OrgID", ra.TenantIDs[0])
+			}
+			slog.Debug("forwarding upgrade upstream",
+				"instance", inst.Name, "url", req.URL.String(),
+				"org_id", req.Header.Get("X-Scope-OrgID"))
+		},
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			slog.Debug("upgrade request failed", "instance", inst.Name, "error", err)
+			WriteJSONError(w, http.StatusBadGateway, map[string]string{
+				"error": "upstream unavailable", "instance": inst.Name,
+			})
+		},
+	}
+	rp.ServeHTTP(w, r.WithContext(ctx))
 }
 
 // NewHTTPClient returns a client whose transport can skip upstream TLS

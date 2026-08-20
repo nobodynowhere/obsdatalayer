@@ -72,6 +72,43 @@ func ForwardableHeaderNames() []string {
 	return names
 }
 
+// upgradeHeaders are the headers a WebSocket handshake needs. They are
+// deliberately absent from forwardableHeaders: on an ordinary request they must
+// never reach a backend, because an intermediary that honours them would be
+// asked to change protocols by a client the gateway is supposed to terminate.
+//
+// They survive SanitizeInbound only on a request that is genuinely an upgrade,
+// and only the upgrade forwarding path relays them. CopyHeadersForUpstream is
+// unchanged and still drops them, so every ordinary route keeps exactly the
+// guarantee it had before.
+var upgradeHeaders = map[string]bool{
+	"Connection":               true,
+	"Upgrade":                  true,
+	"Sec-Websocket-Key":        true,
+	"Sec-Websocket-Version":    true,
+	"Sec-Websocket-Protocol":   true,
+	"Sec-Websocket-Extensions": true,
+}
+
+// IsUpgradeRequest reports whether h asks to switch protocols to WebSocket.
+// Both conditions are required: a Connection token list containing "upgrade",
+// and an Upgrade header naming websocket.
+func IsUpgradeRequest(h http.Header) bool {
+	if !strings.EqualFold(strings.TrimSpace(h.Get("Upgrade")), "websocket") {
+		return false
+	}
+	for _, token := range strings.Split(h.Get("Connection"), ",") {
+		if strings.EqualFold(strings.TrimSpace(token), "upgrade") {
+			return true
+		}
+	}
+	return false
+}
+
+// IsUpgradeHeader reports whether a canonical header key belongs to the
+// WebSocket handshake.
+func IsUpgradeHeader(canonicalKey string) bool { return upgradeHeaders[canonicalKey] }
+
 // SanitizeInbound removes every header that may not be relayed upstream,
 // mutating h in place. It returns the names it dropped so the caller can log
 // them: a silently dropped header is otherwise very hard to diagnose.
@@ -81,8 +118,15 @@ func ForwardableHeaderNames() []string {
 // set. CopyHeadersForUpstream applies the same predicate again at the point of
 // forwarding, so neither layer is load-bearing on its own.
 func SanitizeInbound(h http.Header) []string {
+	// A genuine WebSocket handshake keeps the headers that make it one. Every
+	// other request, including one that merely names those headers without
+	// asking to upgrade, loses them exactly as before.
+	keepUpgrade := IsUpgradeRequest(h)
 	var dropped []string
 	for key := range h {
+		if keepUpgrade && upgradeHeaders[key] {
+			continue
+		}
 		if !forwardableHeaders[key] {
 			dropped = append(dropped, key)
 			delete(h, key)

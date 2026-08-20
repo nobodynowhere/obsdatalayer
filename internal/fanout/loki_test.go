@@ -3,6 +3,7 @@ package fanout_test
 import (
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -436,5 +437,96 @@ func TestLokiRulerListingsRefuseMultiTenant(t *testing.T) {
 				t.Fatalf("expected X-Scope-OrgID tenant-a, got %q", got)
 			}
 		})
+	}
+}
+
+// TestLokiTailUpgradesAndStreams drives a real WebSocket handshake through the
+// gateway: a 101 from the upstream, then bytes in both directions over the
+// hijacked connection. A buffering proxy cannot do this, which is why tail has
+// its own forwarding path.
+func TestLokiTailUpgradesAndStreams(t *testing.T) {
+	withAuthTenants(t, "tenant-a")
+	var gotPath, gotOrg, gotKey, gotUpgrade, gotXFF string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotOrg = r.Header.Get("X-Scope-OrgID")
+		gotKey = r.Header.Get("Sec-WebSocket-Key")
+		gotUpgrade = r.Header.Get("Upgrade")
+		gotXFF = r.Header.Get("X-Forwarded-For")
+
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("upstream ResponseWriter is not a Hijacker")
+			return
+		}
+		conn, buf, err := hj.Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		defer conn.Close()
+		_, _ = buf.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+		_, _ = buf.WriteString("tailed-line\n")
+		_ = buf.Flush()
+	}))
+	t.Cleanup(upstream.Close)
+
+	cfg := newTestConfig([]*config.InstanceConfig{{
+		Name: "loki-prod", Backend: "loki", URL: upstream.URL,
+	}})
+	h := config.NewHolder(cfg, "")
+	client := &http.Client{Timeout: 5 * time.Second, Transport: proxy.NewTransport()}
+	mux := http.NewServeMux()
+	fanout.LokiDSRoutes(mux, "/loki", h, proxy.New(client, client))
+	// Logging wraps the ResponseWriter, so it must be in the chain here: the
+	// production handler includes it, and a wrapper that is not an
+	// http.Hijacker silently breaks the upgrade.
+	gw := httptest.NewServer(middleware.Logging(middleware.BasicAuth(testAuth, middleware.SanitizeHeaders(mux))))
+	t.Cleanup(gw.Close)
+
+	// Speak the handshake over a raw connection; http.Client cannot express one.
+	conn, err := net.Dial("tcp", strings.TrimPrefix(gw.URL, "http://"))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	req := "GET /loki/loki/api/v1/tail?query=%7Ba%3D%22b%22%7D HTTP/1.1\r\n" +
+		"Host: " + strings.TrimPrefix(gw.URL, "http://") + "\r\n" +
+		"Authorization: " + authHeader() + "\r\n" +
+		"Upgrade: websocket\r\n" +
+		"Connection: Upgrade\r\n" +
+		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
+		"Sec-WebSocket-Version: 13\r\n" +
+		"X-Scope-OrgID: spoofed\r\n" +
+		"\r\n"
+	if _, err := conn.Write([]byte(req)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	got, err := io.ReadAll(conn)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	res := string(got)
+
+	if !strings.Contains(res, "101 Switching Protocols") {
+		t.Fatalf("expected a 101 upgrade, got:\n%s", res)
+	}
+	if !strings.Contains(res, "tailed-line") {
+		t.Errorf("expected streamed data after the upgrade, got:\n%s", res)
+	}
+	if gotPath != "/loki/api/v1/tail" {
+		t.Errorf("expected upstream path /loki/api/v1/tail, got %q", gotPath)
+	}
+	// The handshake headers survive; the spoofed tenant and the client address
+	// do not.
+	if gotUpgrade != "websocket" || gotKey != "dGhlIHNhbXBsZSBub25jZQ==" {
+		t.Errorf("handshake headers did not survive: upgrade=%q key=%q", gotUpgrade, gotKey)
+	}
+	if gotOrg != "tenant-a" {
+		t.Errorf("expected injected tenant tenant-a, got %q", gotOrg)
+	}
+	if gotXFF != "" {
+		t.Errorf("client address leaked upstream as X-Forwarded-For %q", gotXFF)
 	}
 }

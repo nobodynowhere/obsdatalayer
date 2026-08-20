@@ -154,8 +154,10 @@ or leak cross-tenant information (`/distributor/all_user_stats`).
 | GET | `/loki/api/v1/status/buildinfo` |
 | GET | `/loki/api/v1/tail` | **WebSocket** |
 
-`/loki/api/v1/tail` upgrades to a WebSocket and cannot be carried by an ordinary
-buffering HTTP proxy.
+`/loki/api/v1/tail` upgrades to a WebSocket, so it takes a separate forwarding
+path in the gateway that hijacks the connection rather than buffering a
+response. It is single-tenant: Loki answers 400 when more than one tenant is
+supplied.
 
 ### Ruler
 
@@ -324,6 +326,15 @@ A row works only when a single base URL turns column 1 into column 2.
 | `GET /config/v1/rules[/{ns}[/{grp}]]` | `/prometheus/config/v1/rules...` | same |
 | `POST /config/v1/rules/{ns}` | `/prometheus/config/v1/rules/{ns}` | same |
 | `DELETE /config/v1/rules/{ns}[/{grp}]` | `/prometheus/config/v1/rules...` | same |
+| `GET /rules[/{ns}[/{grp}]]` | `/prometheus/rules...` | `/prometheus/config/v1/rules...` |
+| `POST /rules/{ns}` | `/prometheus/rules/{ns}` | `/prometheus/config/v1/rules/{ns}` |
+| `DELETE /rules/{ns}[/{grp}]` | `/prometheus/rules...` | `/prometheus/config/v1/rules...` |
+
+The `/rules` rows are Grafana's other spelling of the ruler configuration API,
+used when the data source subtype is `cortex`, `prometheus`, or absent. Mimir
+serves only the `/config/v1` form, so these six are an alias rather than a
+passthrough -- the one place the gateway does not forward mount plus the exact
+upstream path.
 
 **Status: complete and identity-mapped.** `/prometheus` is simultaneously the
 base the user types and Mimir's own API prefix, so nothing is rewritten.
@@ -347,14 +358,14 @@ base the user types and Mimir's own API prefix, so nothing is rewritten.
 | `GET,POST,DELETE /api/prom/rules...` | `/loki/api/prom/rules...` | `/api/prom/rules...` |
 | `GET /prometheus/api/v1/rules` | `/loki/prometheus/api/v1/rules` | `/prometheus/api/v1/rules` |
 | `GET /prometheus/api/v1/alerts` | `/loki/prometheus/api/v1/alerts` | `/prometheus/api/v1/alerts` |
-| `GET /loki/api/v1/tail` | — **not implemented** | WebSocket |
+| `GET /loki/api/v1/tail` | `/loki/loki/api/v1/tail` | `/loki/api/v1/tail` (WebSocket) |
 
 The `/loki/loki` doubling is correct: the mount is a gateway concept and
 `/loki/api/v1` is genuinely part of Loki's own paths. Under the mount, Loki's
 rule and alert state no longer competes with Mimir's identical paths at the
 gateway root.
 
-**Status: complete except live tail.**
+**Status: complete.**
 
 ### Tempo — base `gateway:port/tempo`
 
@@ -402,7 +413,7 @@ endpoints are deliberately excluded.
 | --- | --- | --- |
 | Mimir | `gateway:port/prometheus` | complete, identity-mapped |
 | Alertmanager | `gateway:port/alertmanager` | complete |
-| Loki | `gateway:port/loki` | complete except live tail (WebSocket) |
+| Loki | `gateway:port/loki` | complete |
 | Tempo | `gateway:port/tempo` | complete |
 
 Each mount serves its backend's exact upstream layout, and the gateway strips
