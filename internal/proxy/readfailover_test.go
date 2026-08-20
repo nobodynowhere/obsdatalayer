@@ -697,3 +697,62 @@ func TestFailoverIsTransparentToTheCaller(t *testing.T) {
 		t.Errorf("Content-Type = %q, want MIMIR2's own header passed through", got)
 	}
 }
+
+// Slicing must not starve later attempts: a target that fails immediately
+// returns its unused share, so the next target gets nearly the whole budget
+// rather than a fixed fraction of it.
+func TestFastFailureReturnsItsBudgetShare(t *testing.T) {
+	quick := newTarget(t, http.StatusBadGateway, "unwell") // fails in ~0ms
+
+	// Answers after longer than an even split of the budget would allow.
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(700 * time.Millisecond):
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, "slow-but-fine")
+		case <-r.Context().Done():
+		}
+	}))
+	defer slow.Close()
+
+	// An even two-way split of 1s would give the slow target 500ms and time it
+	// out. Because the first target failed instantly, nearly the full second is
+	// still available to it.
+	p := newProxy(&http.Client{Timeout: time.Second})
+	rec := doQuery(p, fanoutInstance("loki-ha", quick.srv.URL, slow.URL))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected the slow target to be given the remaining budget, got %d", rec.Code)
+	}
+	if got := rec.Body.String(); got != "slow-but-fine" {
+		t.Errorf("body = %q", got)
+	}
+}
+
+// The overall bound still holds: the caller's worst case does not grow with the
+// number of targets, however they fail.
+func TestHangingTargetsStillRespectTheOverallBudget(t *testing.T) {
+	hang := func() *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			<-r.Context().Done()
+		}))
+	}
+	a, b, c := hang(), hang(), hang()
+	defer a.Close()
+	defer b.Close()
+	defer c.Close()
+
+	const budget = 600 * time.Millisecond
+	p := newProxy(&http.Client{Timeout: budget})
+
+	start := time.Now()
+	rec := doQuery(p, fanoutInstance("loki-slow", a.URL, b.URL, c.URL))
+	elapsed := time.Since(start)
+
+	if rec.Code != http.StatusGatewayTimeout {
+		t.Errorf("expected 504 once every target hung, got %d", rec.Code)
+	}
+	if elapsed > 2*budget {
+		t.Errorf("three hanging targets took %v against a %v budget", elapsed, budget)
+	}
+}

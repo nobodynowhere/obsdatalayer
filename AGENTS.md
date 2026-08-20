@@ -35,6 +35,77 @@
   When the tool is unavailable/unauthenticated, rely on `go vet`, `go test`,
   and manual security review.
 
+## Credential Encryption
+
+- Upstream backend credentials (`basic_auth` on instances and push targets) are
+  encrypted at rest with AES-256-GCM (`internal/secret`).
+- The key comes from `OBSGATEWAY_ENCRYPTION_KEY` or the file named by
+  `gateway.encryption_key_file` in the bootstrap config, in that order. Key
+  files must be mode 0600.
+- Generate a key: `obsgateway --generate-encryption-key --encryption-key-file PATH`
+  (omit the path to print it to stdout).
+- Encryption happens at the database boundary only: `saveInstance` and
+  `savePushTarget` encrypt, `mapInstance` decrypts. Everything above that layer
+  — the proxy, API redaction, by-URL mask resolution — sees plaintext and is
+  unaffected.
+- `config.EnsureCredentialsEncrypted` runs at startup. It migrates pre-encryption
+  plaintext in place and refuses to start when stored credentials cannot be
+  protected or read with the configured key.
+- A nil `*secret.Cipher` means "no key configured": it passes plaintext through
+  and rejects ciphertext. Tests pass `nil` where encryption is not under test.
+
+## Authentication Throttling
+
+- `internal/authlimit` holds both defences: `Limiter` (per-source failure
+  backoff) and `Gate` (process-wide cap on concurrent bcrypt).
+- The gate is consulted inside `auth.Service.AuthenticateContext`, **after** the
+  credential cache. That ordering is load-bearing: a cached valid credential
+  must never queue behind an attacker's hashing.
+- `middleware.AuthGuard` bundles the limiter with its metrics. A nil guard
+  disables throttling, which is what tests pass.
+- Each listener gets its own `AuthGuard` (`newAuthGuards` in `main.go`). Do not
+  merge them: a shared counter lets a data-plane flood lock the operator out of
+  the admin API.
+- The source key is the transport peer address; `X-Forwarded-For` is not
+  trusted. Behind a proxy, per-source throttling should be disabled and the gate
+  relied on instead.
+- The credential cache is **not** cleared by `Service.Reload`, and must not be.
+  Invalidation is structural: the key binds the stored password hash, the user
+  snapshot is checked before the cache, and authorization is resolved per
+  request. The cache sweeps itself on a TTL; do not reintroduce a blanket clear,
+  which put every valid caller back through bcrypt on every reload.
+- Settings live in the gateway settings row and hot-reload via `applyAuthLimit`.
+  `auth_limit_enabled` is a nullable bool so a pre-upgrade row reads as NULL and
+  defaults to on rather than off.
+
+## Read Failover
+
+- `Proxy.ForwardQuery` tries an instance's targets in configured order
+  (`InstanceConfig.GetReadTargets`), not just the first. Fan-out always pushes
+  to every target — `fan_out_mode` only aggregates responses — so targets are
+  replicas and any can serve a query.
+- Only transport errors and 5xx fail over. A 4xx is the upstream answering.
+- One deadline covers the whole read (`internal/proxy/read.go`), not each
+  attempt, so worst-case latency does not scale with target count.
+- Nothing is written to the client until an attempt is known good: see
+  `readAttempt.commit` / `.discard`. Do not write headers before that decision.
+- `targetHealth` (`internal/proxy/health.go`) skips a repeatedly-failing target
+  for a short cool-off. It is keyed by URL and owned by the Proxy so it survives
+  config reloads; keyed by instance it would reset every reload interval and
+  never reach the threshold. It never returns an empty target list.
+- POST reads (form-encoded queries) are buffered up to `maxReplayableReadBody`
+  so they can be replayed; a larger body is streamed to a single target.
+- Push-target order is load-bearing (target 1 is preferred for reads) and is
+  persisted as `push_targets.position`. The load must keep its `Order("position")`
+  — without it the row order is the database's choice and reordering in the UI
+  silently does nothing.
+- Reads are counted per target via `Proxy.recordRead` →
+  `gateway_read_requests_total{instance,target,result}`, with
+  `gateway_read_failovers_total` for reads that needed more than one target. The
+  metrics sink is optional (`Proxy.SetMetrics`); all uses are nil-guarded. New
+  instance-labelled counter sets must be added to `RetainInstances` or they leak
+  series for deleted instances.
+
 ## Dependencies
 
 - Uses the pure-Go SQLite driver `github.com/glebarez/sqlite` so the binary can
