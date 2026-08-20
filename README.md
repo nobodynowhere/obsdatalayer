@@ -16,6 +16,9 @@ mimir:
     multitenancy_enabled: true
     tenant_federation:
       enabled: true
+    ruler:
+      tenant_federation:
+        enabled: true
 ``` 
 
 or you can modify the mimir.yaml
@@ -24,6 +27,9 @@ or you can modify the mimir.yaml
 multitenancy_enabled: true
 tenant_federation:
   enabled: true
+ruler:
+  tenant_federation:
+    enabled: true
 ```
 
 ## Ingestion Routes
