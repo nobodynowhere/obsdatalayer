@@ -12,116 +12,71 @@ import (
 	"obsdatalayer/internal/rewrite"
 )
 
-// RegisterMimir registers all Mimir routes on mux.
-func RegisterMimir(mux *http.ServeMux, h *config.ConfigHolder, p *proxy.Proxy, m *metrics.Metrics) {
-	mux.HandleFunc("POST /api/mimir/push", func(w http.ResponseWriter, r *http.Request) {
-		forwardMimirPush(w, r, h, p, m, "/api/v1/push", true)
-	})
-	mux.HandleFunc("POST /api/mimir/api/v1/push", func(w http.ResponseWriter, r *http.Request) {
-		forwardMimirPush(w, r, h, p, m, "/api/v1/push", true)
-	})
-	mux.HandleFunc("POST /api/mimir/otlp/v1/metrics", func(w http.ResponseWriter, r *http.Request) {
-		forwardMimirPush(w, r, h, p, m, "/otlp/v1/metrics", false)
-	})
-	mux.HandleFunc("POST /api/mimir/api/v1/push/influx/write", func(w http.ResponseWriter, r *http.Request) {
-		forwardMimirPush(w, r, h, p, m, "/api/v1/push/influx/write", false)
-	})
+// MimirDSRoutes registers the routes a Grafana Prometheus data source
+// addresses when it is pointed at Mimir.
+//
+// Data source URL: gateway:port/prometheus
+//
+// Mimir's own API prefix is also /prometheus, so the mount and the upstream
+// prefix are the same string and nothing beneath the mount is rewritten. This
+// is the only backend where the mapping is an identity.
+//
+// Covered: the Prometheus-compatible query API (instant, range, exemplars,
+// series, labels, label values, metadata, remote read, format_query, build
+// info, cardinality and the experimental search endpoints), the ruler
+// configuration API, and rule and alert state.
+//
+// Not implemented:
+//
+//   - The Alertmanager, which is a separate Grafana data source and has its
+//     own bundle; see AlertmanagerDSRoutes.
+//   - Tenant limits and stats (/api/v1/user_limits, /api/v1/user_stats).
+//   - Block upload (/api/v1/upload/block/...), which is an operator tool.
+//
+// Ingestion is a separate bundle; see IngestRoutes.
+func MimirDSRoutes(mux *http.ServeMux, mount string, h *config.ConfigHolder, p *proxy.Proxy) {
+	registerMimirRead(mux, "GET "+mount+"/api/v1/query_range", h, p, "query_range", "/prometheus/api/v1/query_range")
+	registerMimirRead(mux, "POST "+mount+"/api/v1/query_range", h, p, "query_range", "/prometheus/api/v1/query_range")
+	registerMimirRead(mux, "GET "+mount+"/api/v1/query", h, p, "query", "/prometheus/api/v1/query")
+	registerMimirRead(mux, "POST "+mount+"/api/v1/query", h, p, "query", "/prometheus/api/v1/query")
+	registerMimirRead(mux, "GET "+mount+"/api/v1/query_exemplars", h, p, "query_exemplars", "/prometheus/api/v1/query_exemplars")
+	registerMimirRead(mux, "POST "+mount+"/api/v1/query_exemplars", h, p, "query_exemplars", "/prometheus/api/v1/query_exemplars")
+	registerMimirRead(mux, "GET "+mount+"/api/v1/labels", h, p, "labels", "/prometheus/api/v1/labels")
+	registerMimirRead(mux, "POST "+mount+"/api/v1/labels", h, p, "labels", "/prometheus/api/v1/labels")
+	registerMimirRead(mux, "GET "+mount+"/api/v1/label/{name}/values", h, p, "label_values", "/prometheus/api/v1/label/{name}/values")
+	registerMimirRead(mux, "POST "+mount+"/api/v1/label/{name}/values", h, p, "label_values", "/prometheus/api/v1/label/{name}/values")
+	registerMimirRead(mux, "GET "+mount+"/api/v1/series", h, p, "series", "/prometheus/api/v1/series")
+	registerMimirRead(mux, "POST "+mount+"/api/v1/series", h, p, "series", "/prometheus/api/v1/series")
+	registerMimirRead(mux, "GET "+mount+"/api/v1/search/metric_names", h, p, "search", "/prometheus/api/v1/search/metric_names")
+	registerMimirRead(mux, "POST "+mount+"/api/v1/search/metric_names", h, p, "search", "/prometheus/api/v1/search/metric_names")
+	registerMimirRead(mux, "GET "+mount+"/api/v1/search/label_names", h, p, "search", "/prometheus/api/v1/search/label_names")
+	registerMimirRead(mux, "POST "+mount+"/api/v1/search/label_names", h, p, "search", "/prometheus/api/v1/search/label_names")
+	registerMimirRead(mux, "GET "+mount+"/api/v1/search/label_values", h, p, "search", "/prometheus/api/v1/search/label_values")
+	registerMimirRead(mux, "POST "+mount+"/api/v1/search/label_values", h, p, "search", "/prometheus/api/v1/search/label_values")
+	registerMimirRead(mux, "GET "+mount+"/api/v1/metadata", h, p, "metadata", "/prometheus/api/v1/metadata")
+	registerMimirRead(mux, "POST "+mount+"/api/v1/metadata", h, p, "metadata", "/prometheus/api/v1/metadata")
+	registerMimirRead(mux, "POST "+mount+"/api/v1/read", h, p, "read", "/prometheus/api/v1/read")
+	registerMimirRead(mux, "GET "+mount+"/api/v1/cardinality/active_series", h, p, "cardinality", "/prometheus/api/v1/cardinality/active_series")
+	registerMimirRead(mux, "POST "+mount+"/api/v1/cardinality/active_series", h, p, "cardinality", "/prometheus/api/v1/cardinality/active_series")
+	registerMimirRead(mux, "GET "+mount+"/api/v1/cardinality/label_names", h, p, "cardinality", "/prometheus/api/v1/cardinality/label_names")
+	registerMimirRead(mux, "POST "+mount+"/api/v1/cardinality/label_names", h, p, "cardinality", "/prometheus/api/v1/cardinality/label_names")
+	registerMimirRead(mux, "GET "+mount+"/api/v1/cardinality/label_values", h, p, "cardinality", "/prometheus/api/v1/cardinality/label_values")
+	registerMimirRead(mux, "POST "+mount+"/api/v1/cardinality/label_values", h, p, "cardinality", "/prometheus/api/v1/cardinality/label_values")
+	registerMimirRead(mux, "GET "+mount+"/ready", h, p, "", "/ready")
+	registerMimirRead(mux, "GET "+mount+"/api/v1/status/buildinfo", h, p, "", "/prometheus/api/v1/status/buildinfo")
+	registerMimirRead(mux, "GET "+mount+"/api/v1/status/config", h, p, "", "/api/v1/status/config")
+	registerMimirRead(mux, "GET "+mount+"/api/v1/status/flags", h, p, "", "/api/v1/status/flags")
+	registerMimirRead(mux, "GET "+mount+"/api/v1/format_query", h, p, "", "/prometheus/api/v1/format_query")
+	registerMimirRead(mux, "POST "+mount+"/api/v1/format_query", h, p, "", "/prometheus/api/v1/format_query")
+	registerMimirRead(mux, "GET "+mount+"/api/v1/rules", h, p, "", "/prometheus/api/v1/rules")
+	registerMimirRead(mux, "GET "+mount+"/api/v1/alerts", h, p, "", "/prometheus/api/v1/alerts")
 
-	registerMimirRead(mux, "GET /api/mimir/query_range", h, p, "query_range", "/prometheus/api/v1/query_range")
-	registerMimirRead(mux, "POST /api/mimir/query_range", h, p, "query_range", "/prometheus/api/v1/query_range")
-	registerMimirRead(mux, "GET /api/mimir/query", h, p, "query", "/prometheus/api/v1/query")
-	registerMimirRead(mux, "POST /api/mimir/query", h, p, "query", "/prometheus/api/v1/query")
-	registerMimirRead(mux, "GET /api/mimir/query_exemplars", h, p, "query_exemplars", "/prometheus/api/v1/query_exemplars")
-	registerMimirRead(mux, "POST /api/mimir/query_exemplars", h, p, "query_exemplars", "/prometheus/api/v1/query_exemplars")
-	registerMimirRead(mux, "GET /api/mimir/labels", h, p, "labels", "/prometheus/api/v1/labels")
-	registerMimirRead(mux, "POST /api/mimir/labels", h, p, "labels", "/prometheus/api/v1/labels")
-	registerMimirRead(mux, "GET /api/mimir/label/{name}/values", h, p, "label_values", "/prometheus/api/v1/label/{name}/values")
-	registerMimirRead(mux, "POST /api/mimir/label/{name}/values", h, p, "label_values", "/prometheus/api/v1/label/{name}/values")
-	registerMimirRead(mux, "GET /api/mimir/series", h, p, "series", "/prometheus/api/v1/series")
-	registerMimirRead(mux, "POST /api/mimir/series", h, p, "series", "/prometheus/api/v1/series")
-	registerMimirRead(mux, "GET /api/mimir/search/metric_names", h, p, "search", "/prometheus/api/v1/search/metric_names")
-	registerMimirRead(mux, "POST /api/mimir/search/metric_names", h, p, "search", "/prometheus/api/v1/search/metric_names")
-	registerMimirRead(mux, "GET /api/mimir/search/label_names", h, p, "search", "/prometheus/api/v1/search/label_names")
-	registerMimirRead(mux, "POST /api/mimir/search/label_names", h, p, "search", "/prometheus/api/v1/search/label_names")
-	registerMimirRead(mux, "GET /api/mimir/search/label_values", h, p, "search", "/prometheus/api/v1/search/label_values")
-	registerMimirRead(mux, "POST /api/mimir/search/label_values", h, p, "search", "/prometheus/api/v1/search/label_values")
-	registerMimirRead(mux, "GET /api/mimir/metadata", h, p, "metadata", "/prometheus/api/v1/metadata")
-	registerMimirRead(mux, "POST /api/mimir/metadata", h, p, "metadata", "/prometheus/api/v1/metadata")
-	registerMimirRead(mux, "POST /api/mimir/read", h, p, "read", "/prometheus/api/v1/read")
-	registerMimirRead(mux, "GET /api/mimir/cardinality/active_series", h, p, "cardinality", "/prometheus/api/v1/cardinality/active_series")
-	registerMimirRead(mux, "POST /api/mimir/cardinality/active_series", h, p, "cardinality", "/prometheus/api/v1/cardinality/active_series")
-	registerMimirRead(mux, "GET /api/mimir/cardinality/label_names", h, p, "cardinality", "/prometheus/api/v1/cardinality/label_names")
-	registerMimirRead(mux, "POST /api/mimir/cardinality/label_names", h, p, "cardinality", "/prometheus/api/v1/cardinality/label_names")
-	registerMimirRead(mux, "GET /api/mimir/cardinality/label_values", h, p, "cardinality", "/prometheus/api/v1/cardinality/label_values")
-	registerMimirRead(mux, "POST /api/mimir/cardinality/label_values", h, p, "cardinality", "/prometheus/api/v1/cardinality/label_values")
-	registerMimirRead(mux, "GET /api/mimir/ready", h, p, "", "/ready")
-	registerMimirRead(mux, "GET /api/mimir/status/buildinfo", h, p, "", "/prometheus/api/v1/status/buildinfo")
-	registerMimirRead(mux, "GET /api/mimir/status/config", h, p, "", "/api/v1/status/config")
-	registerMimirRead(mux, "GET /api/mimir/status/flags", h, p, "", "/api/v1/status/flags")
-	registerMimirRead(mux, "GET /api/mimir/format_query", h, p, "", "/prometheus/api/v1/format_query")
-	registerMimirRead(mux, "POST /api/mimir/format_query", h, p, "", "/prometheus/api/v1/format_query")
-
-	registerMimirPrometheusRoutes(mux, "/api/mimir/prometheus", h, p)
-	registerMimirPrometheusRoutes(mux, "/prometheus", h, p)
-	registerMimirRead(mux, "GET /ready", h, p, "", "/ready")
-	registerMimirTenantConfig(mux, "GET /api/mimir/config/v1/rules", h, p, "/prometheus/config/v1/rules")
-	registerMimirTenantConfig(mux, "GET /api/mimir/config/v1/rules/{namespace}", h, p, "/prometheus/config/v1/rules/{namespace}")
-	registerMimirTenantConfig(mux, "GET /api/mimir/config/v1/rules/{namespace}/{groupName}", h, p, "/prometheus/config/v1/rules/{namespace}/{groupName}")
-	registerMimirTenantConfig(mux, "POST /api/mimir/config/v1/rules/{namespace}", h, p, "/prometheus/config/v1/rules/{namespace}")
-	registerMimirTenantConfig(mux, "DELETE /api/mimir/config/v1/rules/{namespace}/{groupName}", h, p, "/prometheus/config/v1/rules/{namespace}/{groupName}")
-	registerMimirTenantConfig(mux, "DELETE /api/mimir/config/v1/rules/{namespace}", h, p, "/prometheus/config/v1/rules/{namespace}")
-
-	registerMimirTenantConfig(mux, "GET /api/mimir/api/v1/alerts", h, p, "/api/v1/alerts")
-	registerMimirTenantConfig(mux, "POST /api/mimir/api/v1/alerts", h, p, "/api/v1/alerts")
-	registerMimirTenantConfig(mux, "DELETE /api/mimir/api/v1/alerts", h, p, "/api/v1/alerts")
-	registerMimirTenantConfig(mux, "GET /api/mimir/alertmanager/api/v1/alerts", h, p, "/api/v1/alerts")
-	registerMimirTenantConfig(mux, "POST /api/mimir/alertmanager/api/v1/alerts", h, p, "/api/v1/alerts")
-	registerMimirTenantConfig(mux, "DELETE /api/mimir/alertmanager/api/v1/alerts", h, p, "/api/v1/alerts")
-}
-
-func registerMimirPrometheusRoutes(mux *http.ServeMux, prefix string, h *config.ConfigHolder, p *proxy.Proxy) {
-	registerMimirRead(mux, "GET "+prefix+"/api/v1/query_range", h, p, "query_range", "/prometheus/api/v1/query_range")
-	registerMimirRead(mux, "POST "+prefix+"/api/v1/query_range", h, p, "query_range", "/prometheus/api/v1/query_range")
-	registerMimirRead(mux, "GET "+prefix+"/api/v1/query", h, p, "query", "/prometheus/api/v1/query")
-	registerMimirRead(mux, "POST "+prefix+"/api/v1/query", h, p, "query", "/prometheus/api/v1/query")
-	registerMimirRead(mux, "GET "+prefix+"/api/v1/query_exemplars", h, p, "query_exemplars", "/prometheus/api/v1/query_exemplars")
-	registerMimirRead(mux, "POST "+prefix+"/api/v1/query_exemplars", h, p, "query_exemplars", "/prometheus/api/v1/query_exemplars")
-	registerMimirRead(mux, "GET "+prefix+"/api/v1/labels", h, p, "labels", "/prometheus/api/v1/labels")
-	registerMimirRead(mux, "POST "+prefix+"/api/v1/labels", h, p, "labels", "/prometheus/api/v1/labels")
-	registerMimirRead(mux, "GET "+prefix+"/api/v1/label/{name}/values", h, p, "label_values", "/prometheus/api/v1/label/{name}/values")
-	registerMimirRead(mux, "POST "+prefix+"/api/v1/label/{name}/values", h, p, "label_values", "/prometheus/api/v1/label/{name}/values")
-	registerMimirRead(mux, "GET "+prefix+"/api/v1/series", h, p, "series", "/prometheus/api/v1/series")
-	registerMimirRead(mux, "POST "+prefix+"/api/v1/series", h, p, "series", "/prometheus/api/v1/series")
-	registerMimirRead(mux, "GET "+prefix+"/api/v1/search/metric_names", h, p, "search", "/prometheus/api/v1/search/metric_names")
-	registerMimirRead(mux, "POST "+prefix+"/api/v1/search/metric_names", h, p, "search", "/prometheus/api/v1/search/metric_names")
-	registerMimirRead(mux, "GET "+prefix+"/api/v1/search/label_names", h, p, "search", "/prometheus/api/v1/search/label_names")
-	registerMimirRead(mux, "POST "+prefix+"/api/v1/search/label_names", h, p, "search", "/prometheus/api/v1/search/label_names")
-	registerMimirRead(mux, "GET "+prefix+"/api/v1/search/label_values", h, p, "search", "/prometheus/api/v1/search/label_values")
-	registerMimirRead(mux, "POST "+prefix+"/api/v1/search/label_values", h, p, "search", "/prometheus/api/v1/search/label_values")
-	registerMimirRead(mux, "GET "+prefix+"/api/v1/metadata", h, p, "metadata", "/prometheus/api/v1/metadata")
-	registerMimirRead(mux, "POST "+prefix+"/api/v1/metadata", h, p, "metadata", "/prometheus/api/v1/metadata")
-	registerMimirRead(mux, "POST "+prefix+"/api/v1/read", h, p, "read", "/prometheus/api/v1/read")
-	registerMimirRead(mux, "GET "+prefix+"/api/v1/cardinality/active_series", h, p, "cardinality", "/prometheus/api/v1/cardinality/active_series")
-	registerMimirRead(mux, "POST "+prefix+"/api/v1/cardinality/active_series", h, p, "cardinality", "/prometheus/api/v1/cardinality/active_series")
-	registerMimirRead(mux, "GET "+prefix+"/api/v1/cardinality/label_names", h, p, "cardinality", "/prometheus/api/v1/cardinality/label_names")
-	registerMimirRead(mux, "POST "+prefix+"/api/v1/cardinality/label_names", h, p, "cardinality", "/prometheus/api/v1/cardinality/label_names")
-	registerMimirRead(mux, "GET "+prefix+"/api/v1/cardinality/label_values", h, p, "cardinality", "/prometheus/api/v1/cardinality/label_values")
-	registerMimirRead(mux, "POST "+prefix+"/api/v1/cardinality/label_values", h, p, "cardinality", "/prometheus/api/v1/cardinality/label_values")
-	registerMimirRead(mux, "GET "+prefix+"/ready", h, p, "", "/ready")
-	registerMimirRead(mux, "GET "+prefix+"/api/v1/status/buildinfo", h, p, "", "/prometheus/api/v1/status/buildinfo")
-	registerMimirRead(mux, "GET "+prefix+"/api/v1/status/config", h, p, "", "/api/v1/status/config")
-	registerMimirRead(mux, "GET "+prefix+"/api/v1/status/flags", h, p, "", "/api/v1/status/flags")
-	registerMimirRead(mux, "GET "+prefix+"/api/v1/format_query", h, p, "", "/prometheus/api/v1/format_query")
-	registerMimirRead(mux, "POST "+prefix+"/api/v1/format_query", h, p, "", "/prometheus/api/v1/format_query")
-	registerMimirRead(mux, "GET "+prefix+"/api/v1/rules", h, p, "", "/prometheus/api/v1/rules")
-	registerMimirRead(mux, "GET "+prefix+"/api/v1/alerts", h, p, "", "/prometheus/api/v1/alerts")
-
-	registerMimirTenantConfig(mux, "GET "+prefix+"/config/v1/rules", h, p, "/prometheus/config/v1/rules")
-	registerMimirTenantConfig(mux, "GET "+prefix+"/config/v1/rules/{namespace}", h, p, "/prometheus/config/v1/rules/{namespace}")
-	registerMimirTenantConfig(mux, "GET "+prefix+"/config/v1/rules/{namespace}/{groupName}", h, p, "/prometheus/config/v1/rules/{namespace}/{groupName}")
-	registerMimirTenantConfig(mux, "POST "+prefix+"/config/v1/rules/{namespace}", h, p, "/prometheus/config/v1/rules/{namespace}")
-	registerMimirTenantConfig(mux, "DELETE "+prefix+"/config/v1/rules/{namespace}/{groupName}", h, p, "/prometheus/config/v1/rules/{namespace}/{groupName}")
-	registerMimirTenantConfig(mux, "DELETE "+prefix+"/config/v1/rules/{namespace}", h, p, "/prometheus/config/v1/rules/{namespace}")
+	registerMimirTenantConfig(mux, "GET "+mount+"/config/v1/rules", h, p, "/prometheus/config/v1/rules")
+	registerMimirTenantConfig(mux, "GET "+mount+"/config/v1/rules/{namespace}", h, p, "/prometheus/config/v1/rules/{namespace}")
+	registerMimirTenantConfig(mux, "GET "+mount+"/config/v1/rules/{namespace}/{groupName}", h, p, "/prometheus/config/v1/rules/{namespace}/{groupName}")
+	registerMimirTenantConfig(mux, "POST "+mount+"/config/v1/rules/{namespace}", h, p, "/prometheus/config/v1/rules/{namespace}")
+	registerMimirTenantConfig(mux, "DELETE "+mount+"/config/v1/rules/{namespace}/{groupName}", h, p, "/prometheus/config/v1/rules/{namespace}/{groupName}")
+	registerMimirTenantConfig(mux, "DELETE "+mount+"/config/v1/rules/{namespace}", h, p, "/prometheus/config/v1/rules/{namespace}")
 }
 
 func forwardMimirPush(w http.ResponseWriter, r *http.Request, h *config.ConfigHolder, p *proxy.Proxy, m *metrics.Metrics, upstreamPath string, rewriteLabels bool) {
@@ -159,6 +114,7 @@ func expandMimirPath(path string, r *http.Request) string {
 	path = strings.ReplaceAll(path, "{name}", escapedPathValue(r, "name"))
 	path = strings.ReplaceAll(path, "{namespace}", escapedPathValue(r, "namespace"))
 	path = strings.ReplaceAll(path, "{groupName}", escapedPathValue(r, "groupName"))
+	path = strings.ReplaceAll(path, "{silenceID}", escapedPathValue(r, "silenceID"))
 	return path
 }
 

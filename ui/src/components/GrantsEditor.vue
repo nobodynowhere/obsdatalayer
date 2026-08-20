@@ -22,13 +22,21 @@ const dataActions = [
   { label: 'write', value: 'write' },
 ]
 
-const mimirActions = [
-  ...dataActions,
-  { label: 'rules read', value: 'rules:read' },
-  { label: 'rules write', value: 'rules:write' },
-  { label: 'alerts read', value: 'alerts:read' },
-  { label: 'alerts write', value: 'alerts:write' },
-]
+const controlActionLabels = {
+  'rules:read': { label: 'rules read', value: 'rules:read' },
+  'rules:write': { label: 'rules write', value: 'rules:write' },
+  'alerts:read': { label: 'alerts read', value: 'alerts:read' },
+  'alerts:write': { label: 'alerts write', value: 'alerts:write' },
+}
+
+// Which control actions each backend actually exposes. Mirrors
+// controlActionBackends in internal/auth: Mimir runs a ruler and an
+// alertmanager, Loki runs a ruler only and forwards alerts to an external
+// Alertmanager, so it has no alert configuration to write. Tempo has neither.
+const controlActionsByBackend = {
+  mimir: ['rules:read', 'rules:write', 'alerts:read', 'alerts:write'],
+  loki: ['rules:read', 'rules:write', 'alerts:read'],
+}
 
 const tenantOptions = computed(() =>
   props.tenants.map((t) => ({ label: `${t.name} — ${t.id.slice(0, 8)}…`, value: t.id })),
@@ -42,7 +50,7 @@ function normalizeGrant(grant) {
   if (next.action === 'access') {
     next.action = 'read'
   }
-  if (next.backend !== 'mimir' && isMimirControlAction(next)) {
+  if (isControlAction(next.action) && !controlActionAllowed(next.backend, next.action)) {
     next.action = 'read'
   }
   if (usesSingleTenant(next)) {
@@ -103,12 +111,17 @@ function usesSingleTenant(grant) {
   return ['write', '*', 'rules:write', 'alerts:write'].includes(grant.action)
 }
 
-function isMimirControlAction(grant) {
-  return ['rules:read', 'rules:write', 'alerts:read', 'alerts:write'].includes(grant.action)
+function isControlAction(action) {
+  return Object.prototype.hasOwnProperty.call(controlActionLabels, action)
+}
+
+function controlActionAllowed(backend, action) {
+  return (controlActionsByBackend[backend] ?? []).includes(action)
 }
 
 function actionOptions(grant) {
-  return grant.backend === 'mimir' ? mimirActions : dataActions
+  const control = controlActionsByBackend[grant.backend] ?? []
+  return control.length ? [...dataActions, ...control.map((a) => controlActionLabels[a])] : dataActions
 }
 
 function add() {

@@ -502,14 +502,44 @@ func adminHandler(gormDB *gorm.DB, holder *config.ConfigHolder, authSvc *auth.Se
 // dataHandler builds the data listener's handler.
 func dataHandler(holder *config.ConfigHolder, authSvc *auth.Service, p *proxy.Proxy, m *metrics.Metrics) http.Handler {
 	mux := http.NewServeMux()
+	// Liveness: the process is up and serving.
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
-	fanout.RegisterLoki(mux, holder, p, m)
-	fanout.RegisterMimir(mux, holder, p, m)
-	fanout.RegisterTempo(mux, holder, p)
+	// Readiness: the gateway can serve traffic. This answers for the gateway
+	// itself and is deliberately not proxied to a backend -- a probe asking
+	// whether the gateway is ready must not be answered by Mimir, or the
+	// gateway would report unready whenever a backend was down and ready
+	// whenever it was up, which is the opposite of what a probe needs.
+	//
+	// Zero configured instances is reported as ready: that is the legitimate
+	// state of a fresh install before anything has been configured through the
+	// admin UI. The instance count is included so the distinction is visible.
+	mux.HandleFunc("GET /ready", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		cfg := holder.Get()
+		if cfg == nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"status":"not ready","reason":"no configuration loaded"}`))
+			return
+		}
+		body, _ := json.Marshal(map[string]any{
+			"status":    "ready",
+			"instances": len(cfg.Instances),
+		})
+		_, _ = w.Write(body)
+	})
+
+	// Five bundles: one for ingestion across every backend, and one per Grafana
+	// data source. Each bundle's doc comment records the base URL it answers
+	// and the gaps it knowingly leaves. See internal/fanout/doc.go.
+	fanout.IngestRoutes(mux, holder, p, m)
+	fanout.MimirDSRoutes(mux, "/prometheus", holder, p)
+	fanout.LokiDSRoutes(mux, "/loki", holder, p)
+	fanout.TempoDSRoutes(mux, "/tempo", holder, p)
+	fanout.AlertmanagerDSRoutes(mux, "/alertmanager", holder, p)
 
 	// Order matters: BasicAuth consumes Authorization, then SanitizeHeaders
 	// drops it along with everything else outside the forwarding allowlist.

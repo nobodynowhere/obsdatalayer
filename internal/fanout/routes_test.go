@@ -23,13 +23,18 @@ type captureTransport struct {
 	path     string
 	rawQuery string
 	body     string
+	header   http.Header
 }
+
+// orgID reports the tenant header the gateway actually put on the wire.
+func (t *captureTransport) orgID() string { return t.header.Get("X-Scope-OrgID") }
 
 func (t *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	t.method = req.Method
 	t.host = req.URL.Host
 	t.path = req.URL.Path
 	t.rawQuery = req.URL.RawQuery
+	t.header = req.Header.Clone()
 	if req.Body != nil {
 		body, _ := io.ReadAll(req.Body)
 		t.body = string(body)
@@ -47,10 +52,11 @@ func newRouteOnlyMux(cfg *config.Config, transport http.RoundTripper) http.Handl
 	client := &http.Client{Timeout: 5 * time.Second, Transport: transport}
 	p := proxy.New(client, client)
 	mux := http.NewServeMux()
-	m := newTestMetrics()
-	fanout.RegisterLoki(mux, h, p, m)
-	fanout.RegisterMimir(mux, h, p, m)
-	fanout.RegisterTempo(mux, h, p)
+	fanout.IngestRoutes(mux, h, p, newTestMetrics())
+	fanout.LokiDSRoutes(mux, "/loki", h, p)
+	fanout.MimirDSRoutes(mux, "/prometheus", h, p)
+	fanout.TempoDSRoutes(mux, "/tempo", h, p)
+	fanout.AlertmanagerDSRoutes(mux, "/alertmanager", h, p)
 	return middleware.BasicAuth(testAuth, mux)
 }
 
@@ -69,7 +75,7 @@ func TestMimirRuleWriteForwardsToPrometheusConfigAPI(t *testing.T) {
 	cfg := newTestConfig([]*config.InstanceConfig{mimirInst("mimir-prod", "http://mimir.local")})
 	h := newRouteOnlyMux(cfg, capture)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/mimir/prometheus/config/v1/rules/team-a", strings.NewReader("name: group-a"))
+	req := httptest.NewRequest(http.MethodPost, "/prometheus/config/v1/rules/team-a", strings.NewReader("name: group-a"))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/yaml")
 	rec := httptest.NewRecorder()
@@ -93,7 +99,7 @@ func TestMimirAlertmanagerConfigWriteForwards(t *testing.T) {
 	cfg := newTestConfig([]*config.InstanceConfig{mimirInst("mimir-prod", "http://mimir.local")})
 	h := newRouteOnlyMux(cfg, capture)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/mimir/alertmanager/api/v1/alerts", strings.NewReader("route: {}"))
+	req := httptest.NewRequest(http.MethodPost, "/alertmanager/api/v1/alerts", strings.NewReader("route: {}"))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/yaml")
 	rec := httptest.NewRecorder()
@@ -133,34 +139,6 @@ func TestMimirRootPrometheusBuildInfoForwards(t *testing.T) {
 	}
 	if capture.method != http.MethodGet || capture.host != "first.local" || capture.path != "/prometheus/api/v1/status/buildinfo" {
 		t.Fatalf("expected GET first.local/prometheus/api/v1/status/buildinfo, got %s %s%s", capture.method, capture.host, capture.path)
-	}
-}
-
-func TestMimirRootReadyForwards(t *testing.T) {
-	withAuthTenants(t, "tenant-a")
-	capture := &captureTransport{}
-	cfg := newTestConfig([]*config.InstanceConfig{{
-		Name:    "mimir-prod",
-		Backend: "mimir",
-		URL:     "http://query.local",
-		PushURLs: []config.PushTarget{
-			{URL: "http://first.local"},
-			{URL: "http://second.local"},
-		},
-	}})
-	h := newRouteOnlyMux(cfg, capture)
-
-	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
-	req.Header.Set("Authorization", authHeader())
-	rec := httptest.NewRecorder()
-
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("expected 202, got %d", rec.Code)
-	}
-	if capture.method != http.MethodGet || capture.host != "first.local" || capture.path != "/ready" {
-		t.Fatalf("expected GET first.local/ready, got %s %s%s", capture.method, capture.host, capture.path)
 	}
 }
 
@@ -214,7 +192,7 @@ func TestMimirTenantConfigReadAllowsMultiTenant(t *testing.T) {
 	cfg := newTestConfig([]*config.InstanceConfig{mimirInst("mimir-prod", "http://mimir.local")})
 	h := newRouteOnlyMux(cfg, capture)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/mimir/config/v1/rules", nil)
+	req := httptest.NewRequest(http.MethodGet, "/prometheus/config/v1/rules", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -234,7 +212,7 @@ func TestLokiRuleWriteForwardsToRulerAPI(t *testing.T) {
 	cfg := newTestConfig([]*config.InstanceConfig{lokiInst("loki-prod", "http://loki.local")})
 	h := newRouteOnlyMux(cfg, capture)
 
-	req := httptest.NewRequest(http.MethodDelete, "/api/loki/rules/team-a/group-a", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/loki/loki/api/v1/rules/team-a/group-a", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -254,7 +232,7 @@ func TestTempoMetricsQueryForwards(t *testing.T) {
 	cfg := newTestConfig([]*config.InstanceConfig{tempoInst("tempo-prod", "http://tempo.local")})
 	h := newRouteOnlyMux(cfg, capture)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/tempo/metrics/query_range?q={}", nil)
+	req := httptest.NewRequest(http.MethodGet, "/tempo/api/metrics/query_range?q={}", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -286,11 +264,12 @@ func TestLokiPushRecordsPayloadCounters(t *testing.T) {
 	client := &http.Client{Timeout: 5 * time.Second, Transport: capture}
 	p := proxy.New(client, client)
 	mux := http.NewServeMux()
-	fanout.RegisterLoki(mux, h, p, m)
+	fanout.IngestRoutes(mux, h, p, m)
+	fanout.LokiDSRoutes(mux, "/loki", h, p)
 	handler := middleware.BasicAuth(testAuth, mux)
 
 	body := `{"streams":[{"stream":{"app":"api","env":"dev"},"values":[["1","a"]]},{"stream":{"app":"worker"},"values":[["2","b"]]}]}`
-	req := httptest.NewRequest(http.MethodPost, "/api/loki/push", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/loki/api/v1/push", strings.NewReader(body))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"obsdatalayer/internal/auth"
+	"obsdatalayer/internal/fanout"
 	"obsdatalayer/internal/ui"
 )
 
@@ -19,10 +20,13 @@ import (
 // GEM-compatible /prometheus/... surface, which is routed to Mimir. GET requests
 // are reads, and POST requests to known query endpoints are also reads because
 // the Prometheus-compatible APIs allow form-encoded query requests.
-// /healthz bypasses auth so container probes work without credentials.
+// /healthz and /ready bypass auth so container probes work without
+// credentials; both are answered by the gateway and never forwarded.
 func BasicAuth(a auth.Authorizer, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" {
+		// Container probes carry no credentials. Both are terminated by the
+		// gateway and never forwarded, so nothing tenant-scoped is exposed.
+		if r.URL.Path == "/healthz" || r.URL.Path == "/ready" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -102,10 +106,29 @@ func AdminAuth(a auth.Authorizer, next http.Handler) http.Handler {
 
 // extractBackend parses the backend segment from /api/{backend}/...
 func extractBackend(path string) string {
-	if path == "/ready" {
-		return "mimir"
+	// Ingestion routes carry each upstream project's own path and so have no
+	// /api/{backend}/ segment to read a backend from. The mapping is explicit.
+	if backend, ok := fanout.IngestBackend(path); ok {
+		return backend
 	}
 	if strings.HasPrefix(path, "/prometheus/") {
+		return "mimir"
+	}
+	// Loki's native layout, served at the gateway root so a Grafana Loki data
+	// source can address the gateway directly. /api/prom/ is Loki's legacy
+	// spelling of the ruler API and has to be matched before the generic
+	// /api/{backend}/ parse below, which would otherwise read "prom" as a
+	// backend name. Claiming it for Loki means it is not available as Mimir's
+	// Cortex-compatibility prefix.
+	if strings.HasPrefix(path, "/loki/") {
+		return "loki"
+	}
+	if strings.HasPrefix(path, "/tempo/") {
+		return "tempo"
+	}
+	// The Alertmanager data source mount. Mimir owns it -- Loki has no
+	// Alertmanager.
+	if strings.HasPrefix(path, "/alertmanager/") {
 		return "mimir"
 	}
 	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
@@ -117,7 +140,7 @@ func extractBackend(path string) string {
 }
 
 func actionForRequest(r *http.Request) string {
-	if action := mimirControlAction(r.Method, r.URL.Path); action != "" {
+	if action := controlAction(r.Method, r.URL.Path); action != "" {
 		return action
 	}
 	if r.Method == http.MethodGet {
@@ -129,14 +152,19 @@ func actionForRequest(r *http.Request) string {
 	return auth.ActionWrite
 }
 
-func mimirControlAction(method, path string) string {
+// controlAction maps rule and alert management endpoints onto the discrete
+// rules:*/alerts:* actions, so managing alerting rules is a separate permission
+// from reading or writing series and logs. A plain read or write grant does not
+// satisfy them: the Casbin matcher compares actions for equality, so only the
+// specific action or the "*" wildcard matches.
+func controlAction(method, path string) string {
 	switch {
-	case isMimirRulesPath(path):
+	case isMimirRulesPath(path), isLokiRulesPath(path):
 		if method == http.MethodGet {
 			return auth.ActionRulesRead
 		}
 		return auth.ActionRulesWrite
-	case isMimirAlertsPath(path):
+	case isMimirAlertsPath(path), isLokiAlertsPath(path):
 		if method == http.MethodGet {
 			return auth.ActionAlertsRead
 		}
@@ -147,51 +175,41 @@ func mimirControlAction(method, path string) string {
 }
 
 func isMimirRulesPath(path string) bool {
-	return path == "/api/mimir/prometheus/api/v1/rules" ||
-		path == "/prometheus/api/v1/rules" ||
-		strings.HasPrefix(path, "/api/mimir/config/v1/rules") ||
-		strings.HasPrefix(path, "/api/mimir/prometheus/config/v1/rules") ||
+	return path == "/prometheus/api/v1/rules" ||
 		strings.HasPrefix(path, "/prometheus/config/v1/rules")
 }
 
 func isMimirAlertsPath(path string) bool {
-	return path == "/api/mimir/prometheus/api/v1/alerts" ||
-		path == "/prometheus/api/v1/alerts" ||
-		path == "/api/mimir/api/v1/alerts" ||
-		path == "/api/mimir/alertmanager/api/v1/alerts"
+	return path == "/prometheus/api/v1/alerts" ||
+		// Everything beneath the Alertmanager data source mount: the v2 API
+		// and the tenant configuration endpoint. GET is alerts:read, anything
+		// else is alerts:write.
+		strings.HasPrefix(path, "/alertmanager/")
+}
+
+// isLokiRulesPath covers the /loki mount a Grafana Loki data source addresses.
+// Beneath it Loki serves its ruler config at three spellings --
+// its own, the legacy /api/prom one, and the Prometheus-compatible state
+// listing -- all of which are rule management, not data reads.
+func isLokiRulesPath(path string) bool {
+	return path == "/loki/loki/api/v1/rules" ||
+		strings.HasPrefix(path, "/loki/loki/api/v1/rules/") ||
+		path == "/loki/api/prom/rules" ||
+		strings.HasPrefix(path, "/loki/api/prom/rules/") ||
+		path == "/loki/prometheus/api/v1/rules"
+}
+
+// Loki has no alertmanager, so its only alert surface is the read-only
+// Prometheus-compatible listing of currently firing alerts. A non-GET here
+// still resolves to alerts:write and is therefore refused, because no grant can
+// carry alerts:write on loki.
+func isLokiAlertsPath(path string) bool {
+	return path == "/loki/prometheus/api/v1/alerts"
 }
 
 func isQueryPost(path string) bool {
 	switch path {
-	case "/api/mimir/query",
-		"/api/mimir/query_range",
-		"/api/mimir/query_exemplars",
-		"/api/mimir/labels",
-		"/api/mimir/series",
-		"/api/mimir/search/metric_names",
-		"/api/mimir/search/label_names",
-		"/api/mimir/search/label_values",
-		"/api/mimir/metadata",
-		"/api/mimir/read",
-		"/api/mimir/cardinality/active_series",
-		"/api/mimir/cardinality/label_names",
-		"/api/mimir/cardinality/label_values",
-		"/api/mimir/format_query",
-		"/api/mimir/prometheus/api/v1/query",
-		"/api/mimir/prometheus/api/v1/query_range",
-		"/api/mimir/prometheus/api/v1/query_exemplars",
-		"/api/mimir/prometheus/api/v1/labels",
-		"/api/mimir/prometheus/api/v1/series",
-		"/api/mimir/prometheus/api/v1/search/metric_names",
-		"/api/mimir/prometheus/api/v1/search/label_names",
-		"/api/mimir/prometheus/api/v1/search/label_values",
-		"/api/mimir/prometheus/api/v1/metadata",
-		"/api/mimir/prometheus/api/v1/read",
-		"/api/mimir/prometheus/api/v1/cardinality/active_series",
-		"/api/mimir/prometheus/api/v1/cardinality/label_names",
-		"/api/mimir/prometheus/api/v1/cardinality/label_values",
-		"/api/mimir/prometheus/api/v1/format_query",
-		"/prometheus/api/v1/query",
+	case "/prometheus/api/v1/query",
 		"/prometheus/api/v1/query_range",
 		"/prometheus/api/v1/query_exemplars",
 		"/prometheus/api/v1/labels",
@@ -205,21 +223,13 @@ func isQueryPost(path string) bool {
 		"/prometheus/api/v1/cardinality/label_names",
 		"/prometheus/api/v1/cardinality/label_values",
 		"/prometheus/api/v1/format_query",
-		"/api/loki/query",
-		"/api/loki/query_range",
-		"/api/loki/labels",
-		"/api/loki/series",
-		"/api/loki/index/stats",
-		"/api/loki/index/volume",
-		"/api/loki/index/volume_range",
-		"/api/loki/patterns",
-		"/api/loki/format_query":
+		"/loki/loki/api/v1/series",
+		"/loki/loki/api/v1/detected_fields",
+		"/loki/loki/api/v1/format_query":
 		return true
 	default:
-		return strings.HasPrefix(path, "/api/mimir/label/") && strings.HasSuffix(path, "/values") ||
-			strings.HasPrefix(path, "/api/mimir/prometheus/api/v1/label/") && strings.HasSuffix(path, "/values") ||
-			strings.HasPrefix(path, "/prometheus/api/v1/label/") && strings.HasSuffix(path, "/values") ||
-			strings.HasPrefix(path, "/api/loki/label/") && strings.HasSuffix(path, "/values")
+		return strings.HasPrefix(path, "/prometheus/api/v1/label/") && strings.HasSuffix(path, "/values") ||
+			strings.HasPrefix(path, "/loki/loki/api/v1/detected_field/") && strings.HasSuffix(path, "/values")
 	}
 }
 

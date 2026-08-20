@@ -26,6 +26,66 @@ tenant_federation:
   enabled: true
 ```
 
+## Ingestion Routes
+
+Ingestion and serving a Grafana data source are separate concerns with separate
+URL namespaces. They must not be conflated:
+
+- A **data source** is configured with a *base* URL. Grafana appends paths of its
+  own choosing to it, so the gateway controls only the base.
+- An **ingestion client** is configured with a *complete* URL, typed once into an
+  Alloy, Promtail, Prometheus or OTLP exporter config. The gateway controls the
+  whole path.
+
+Because the whole path is ours, every ingestion route mirrors its upstream
+project exactly. The gateway is addressable as if it were Mimir, Loki or Tempo
+itself, so an existing shipper config works by changing only the host and port.
+
+| Signal | Client | Gateway URL | Upstream |
+| --- | --- | --- | --- |
+| Metrics | Prometheus / Alloy `remote_write` | `POST /api/v1/push` | Mimir `/api/v1/push` |
+| Metrics | Influx line protocol | `POST /api/v1/push/influx/write` | Mimir `/api/v1/push/influx/write` |
+| Metrics | OTLP HTTP | `POST /otlp/v1/metrics` | Mimir `/otlp/v1/metrics` |
+| Logs | Promtail / Alloy `loki.write` | `POST /loki/api/v1/push` | Loki `/loki/api/v1/push` |
+| Logs | OTLP HTTP | `POST /otlp/v1/logs` | Loki `/otlp/v1/logs` |
+| Traces | OTLP HTTP | `POST /v1/traces` | Tempo `/v1/traces` |
+| Traces | Jaeger Thrift HTTP | `POST /api/traces` | Tempo `/api/traces` |
+| Traces | Zipkin | `POST /api/v2/spans` | Tempo `/api/v2/spans` |
+
+These paths do not collide with one another. The one upstream path both Loki and
+Mimir serve, the deprecated Cortex-compatibility `POST /api/prom/push`, is
+deliberately not exposed; use `/loki/api/v1/push` or `/api/v1/push` instead.
+
+All ingestion routes are registered together in `RegisterIngest`
+(`internal/fanout/ingest.go`), and the path-to-backend mapping is explicit rather
+than parsed from the path, so a new route cannot silently acquire a backend.
+
+### Authentication and tenancy
+
+Every route requires HTTP Basic credentials for a gateway user holding a `write`
+grant on the matching backend. A `read` grant does not authorize ingestion. The
+gateway sets `X-Scope-OrgID` from that user's grant; any tenant header supplied
+by the client is discarded.
+
+### OTLP exporters
+
+Mimir and Loki namespace their OTLP endpoints under `/otlp`, while Tempo serves
+a bare OTel receiver at `/v1/traces`. A single `OTEL_EXPORTER_OTLP_ENDPOINT`
+therefore cannot reach all three, because the exporter appends `/v1/<signal>` to
+it. Set the per-signal variables instead, which the OTLP specification treats as
+complete URLs:
+
+```bash
+OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=https://gateway:8080/otlp/v1/metrics
+OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=https://gateway:8080/otlp/v1/logs
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://gateway:8080/v1/traces
+```
+
+Note that Tempo serves OTLP on a dedicated receiver port (4318 by default),
+separate from its query API port. The gateway currently reaches an instance
+through a single configured URL, so a Tempo instance fronted for both ingestion
+and querying needs those two ports reconciled upstream.
+
 ## Building
 
 ### Using PowerShell (Windows)

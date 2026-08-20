@@ -704,8 +704,18 @@ func TestGrantValidation(t *testing.T) {
 		{"valid admin", auth.Grant{Backend: "admin", Action: "access"}, false},
 		{"unknown backend", grant("kafka", "read", uuidA), true},
 		{"unknown action", grant("loki", "delete", uuidA), true},
-		{"rules action on loki", grant("loki", "rules:read", uuidA), true},
+		{"valid loki rules read", grant("loki", "rules:read", uuidA), false},
+		{"valid loki rules write", grant("loki", "rules:write", uuidA), false},
+		{"valid loki alerts read", grant("loki", "alerts:read", uuidA), false},
+		// Loki has a ruler but no alertmanager, so there is no alert config to write.
+		{"alerts write on loki", grant("loki", "alerts:write", uuidA), true},
 		{"alerts action on tempo", grant("tempo", "alerts:write", uuidA), true},
+		{"rules action on tempo", grant("tempo", "rules:read", uuidA), true},
+		// A control action must name a concrete backend; the wildcard does not
+		// implicitly confer rule or alert management.
+		{"rules action on wildcard backend", grant("*", "rules:read", uuidA), true},
+		{"loki rules write with multiple tenants", grant("loki", "rules:write", uuidA, "56f1bd96-55a2-4f34-9451-99eeccdd40d8"), true},
+		{"loki rules read with multiple tenants", grant("loki", "rules:read", uuidA, "56f1bd96-55a2-4f34-9451-99eeccdd40d8"), false},
 		{"rules read with multiple tenants", grant("mimir", "rules:read", uuidA, "56f1bd96-55a2-4f34-9451-99eeccdd40d8"), false},
 		{"alerts read with multiple tenants", grant("mimir", "alerts:read", uuidA, "56f1bd96-55a2-4f34-9451-99eeccdd40d8"), false},
 		{"rules write with multiple tenants", grant("mimir", "rules:write", uuidA, "56f1bd96-55a2-4f34-9451-99eeccdd40d8"), true},

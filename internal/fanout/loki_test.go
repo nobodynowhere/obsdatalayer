@@ -12,6 +12,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"obsdatalayer/internal/auth"
 	"obsdatalayer/internal/auth/authtest"
 	"obsdatalayer/internal/config"
 	"obsdatalayer/internal/fanout"
@@ -44,9 +45,10 @@ func newTestConfig(instances []*config.InstanceConfig) *config.Config {
 func newTestMux(cfg *config.Config, p *proxy.Proxy, m *metrics.Metrics) http.Handler {
 	h := config.NewHolder(cfg, "")
 	mux := http.NewServeMux()
-	fanout.RegisterLoki(mux, h, p, m)
-	fanout.RegisterMimir(mux, h, p, m)
-	fanout.RegisterTempo(mux, h, p)
+	fanout.IngestRoutes(mux, h, p, newTestMetrics())
+	fanout.LokiDSRoutes(mux, "/loki", h, p)
+	fanout.MimirDSRoutes(mux, "/prometheus", h, p)
+	fanout.TempoDSRoutes(mux, "/tempo", h, p)
 	return middleware.BasicAuth(testAuth, mux)
 }
 
@@ -78,7 +80,7 @@ func TestLokiPushSuccess(t *testing.T) {
 	h := newTestMux(cfg, p, m)
 
 	body := `{"streams":[{"stream":{"app":"foo"},"values":[["1","log"]]}]}`
-	req := httptest.NewRequest(http.MethodPost, "/api/loki/push", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/loki/api/v1/push", strings.NewReader(body))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -117,7 +119,7 @@ func TestLokiPushWithLabelsRewrite(t *testing.T) {
 	h := newTestMux(cfg, p, m)
 
 	body := `{"streams":[{"stream":{"app":"foo","env":"staging"},"values":[["1","log"]]}]}`
-	req := httptest.NewRequest(http.MethodPost, "/api/loki/push", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/loki/api/v1/push", strings.NewReader(body))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -143,7 +145,7 @@ func TestLokiPushNoMatchingInstance(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newTestMux(cfg, p, m)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/loki/push", strings.NewReader("{}"))
+	req := httptest.NewRequest(http.MethodPost, "/loki/api/v1/push", strings.NewReader("{}"))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -178,7 +180,7 @@ func TestLokiQueryRange(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newTestMux(cfg, p, m)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki/query_range?query=xxx&start=1&end=2&step=1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/loki/loki/api/v1/query_range?query=xxx&start=1&end=2&step=1", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -209,7 +211,7 @@ func TestLokiInstantQuery(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newTestMux(cfg, p, m)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki/query?query=xxx", nil)
+	req := httptest.NewRequest(http.MethodGet, "/loki/loki/api/v1/query?query=xxx", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -237,7 +239,7 @@ func TestLokiLabels(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newTestMux(cfg, p, m)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki/labels", nil)
+	req := httptest.NewRequest(http.MethodGet, "/loki/loki/api/v1/labels", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -265,7 +267,7 @@ func TestLokiLabelValues(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newTestMux(cfg, p, m)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki/label/app/values", nil)
+	req := httptest.NewRequest(http.MethodGet, "/loki/loki/api/v1/label/app/values", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -293,7 +295,7 @@ func TestLokiSeries(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newTestMux(cfg, p, m)
 
-	req := httptest.NewRequest(http.MethodGet, `/api/loki/series?match[]=xxx`, nil)
+	req := httptest.NewRequest(http.MethodGet, `/loki/loki/api/v1/series?match[]=xxx`, nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -319,7 +321,7 @@ func TestLokiMissingAuth(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newTestMux(cfg, p, m)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/loki/labels", nil)
+	req := httptest.NewRequest(http.MethodGet, "/loki/loki/api/v1/labels", nil)
 	// No Authorization header
 	rec := httptest.NewRecorder()
 
@@ -361,7 +363,7 @@ func TestLokiPushFanoutMultipleTargets(t *testing.T) {
 	h := newTestMux(cfg, p, m)
 
 	body := `{"streams":[{"stream":{"app":"foo"},"values":[["1","log"]]}]}`
-	req := httptest.NewRequest(http.MethodPost, "/api/loki/push", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/loki/api/v1/push", strings.NewReader(body))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -376,5 +378,63 @@ func TestLokiPushFanoutMultipleTargets(t *testing.T) {
 	}
 	if count2.Load() != 1 {
 		t.Errorf("expected upstream2 to receive 1 request, got %d", count2.Load())
+	}
+}
+
+// TestLokiRulerListingsRefuseMultiTenant pins Loki's own rule: only query
+// endpoints honour a pipe-joined X-Scope-OrgID. The Prometheus-compatible
+// listings are ruler endpoints, so a grant spanning several tenants must be
+// refused here rather than forwarded as a header Loki will not honour.
+func TestLokiRulerListingsRefuseMultiTenant(t *testing.T) {
+	for _, path := range []string{
+		"/loki/prometheus/api/v1/rules",
+		"/loki/prometheus/api/v1/alerts",
+	} {
+		t.Run(path, func(t *testing.T) {
+			capture := &captureTransport{}
+			cfg := newTestConfig([]*config.InstanceConfig{{
+				Name: "loki-prod", Backend: "loki", URL: "http://loki.local",
+			}})
+			h := config.NewHolder(cfg, "")
+			client := &http.Client{Timeout: 5 * time.Second, Transport: capture}
+			p := proxy.New(client, client)
+			mux := http.NewServeMux()
+			fanout.IngestRoutes(mux, h, p, newTestMetrics())
+			fanout.LokiDSRoutes(mux, "/loki", h, p)
+
+			// Two tenants resolved: ambiguous for a ruler endpoint.
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req = req.WithContext(auth.WithRequestAuth(req.Context(), &auth.RequestAuth{
+				Username:  "alice",
+				TenantIDs: []string{"tenant-a", "tenant-b"},
+				IsRead:    true,
+			}))
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("expected 403 for a multi-tenant ruler read, got %d", rec.Code)
+			}
+			if capture.path != "" {
+				t.Fatalf("nothing should have been forwarded upstream, got %q", capture.path)
+			}
+
+			// One tenant resolved: forwarded normally.
+			req2 := httptest.NewRequest(http.MethodGet, path, nil)
+			req2 = req2.WithContext(auth.WithRequestAuth(req2.Context(), &auth.RequestAuth{
+				Username:  "alice",
+				TenantIDs: []string{"tenant-a"},
+				IsRead:    true,
+			}))
+			rec2 := httptest.NewRecorder()
+			mux.ServeHTTP(rec2, req2)
+
+			if rec2.Code == http.StatusForbidden {
+				t.Fatal("a single-tenant ruler read must be allowed")
+			}
+			if got := capture.orgID(); got != "tenant-a" {
+				t.Fatalf("expected X-Scope-OrgID tenant-a, got %q", got)
+			}
+		})
 	}
 }

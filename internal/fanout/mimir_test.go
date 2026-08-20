@@ -26,10 +26,10 @@ func mimirInst(name string, url string) *config.InstanceConfig {
 func newMimirTestMux(cfg *config.Config, p *proxy.Proxy) http.Handler {
 	h := config.NewHolder(cfg, "")
 	mux := http.NewServeMux()
-	m := newTestMetrics()
-	fanout.RegisterLoki(mux, h, p, m)
-	fanout.RegisterMimir(mux, h, p, m)
-	fanout.RegisterTempo(mux, h, p)
+	fanout.IngestRoutes(mux, h, p, newTestMetrics())
+	fanout.LokiDSRoutes(mux, "/loki", h, p)
+	fanout.MimirDSRoutes(mux, "/prometheus", h, p)
+	fanout.TempoDSRoutes(mux, "/tempo", h, p)
 	return middleware.BasicAuth(testAuth, mux)
 }
 
@@ -55,7 +55,7 @@ func TestMimirPushSuccess(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/mimir/push", strings.NewReader("body"))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/push", strings.NewReader("body"))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/x-protobuf")
 	rec := httptest.NewRecorder()
@@ -92,7 +92,7 @@ func TestMimirPushInjectsConfiguredTenantWhenGranted(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/mimir/push", strings.NewReader("body"))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/push", strings.NewReader("body"))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/x-protobuf")
 	rec := httptest.NewRecorder()
@@ -129,7 +129,7 @@ func TestMimirPushRejectsConfiguredTenantWithoutGrant(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/mimir/push", strings.NewReader("body"))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/push", strings.NewReader("body"))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/x-protobuf")
 	rec := httptest.NewRecorder()
@@ -159,7 +159,7 @@ func TestMimirPushInjectsSingleGrantedTenantWhenInstanceIsUnscoped(t *testing.T)
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/mimir/push", strings.NewReader("body"))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/push", strings.NewReader("body"))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/x-protobuf")
 	rec := httptest.NewRecorder()
@@ -197,7 +197,7 @@ func TestMimirPushPrefersTenantDedicatedInstance(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/mimir/push", strings.NewReader("body"))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/push", strings.NewReader("body"))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/x-protobuf")
 	rec := httptest.NewRecorder()
@@ -235,7 +235,7 @@ func TestMimirPushFallsBackToSharedInstance(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/mimir/push", strings.NewReader("body"))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/push", strings.NewReader("body"))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/x-protobuf")
 	rec := httptest.NewRecorder()
@@ -265,7 +265,7 @@ func TestMimirPushRejectsAmbiguousUnscopedWrite(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/mimir/push", strings.NewReader("body"))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/push", strings.NewReader("body"))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/x-protobuf")
 	rec := httptest.NewRecorder()
@@ -297,7 +297,7 @@ func TestMimirQueryRange(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/mimir/query_range?query=up&start=1&end=2&step=1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/prometheus/api/v1/query_range?query=up&start=1&end=2&step=1", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -324,7 +324,7 @@ func TestMimirInstantQuery(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/mimir/query?query=up", nil)
+	req := httptest.NewRequest(http.MethodGet, "/prometheus/api/v1/query?query=up", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -351,7 +351,7 @@ func TestMimirPrometheusInstantQuery(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/mimir/prometheus/api/v1/query?query=up", nil)
+	req := httptest.NewRequest(http.MethodGet, "/prometheus/api/v1/query?query=up", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -378,7 +378,7 @@ func TestMimirLabels(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/mimir/labels", nil)
+	req := httptest.NewRequest(http.MethodGet, "/prometheus/api/v1/labels", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -405,7 +405,7 @@ func TestMimirLabelValues(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/mimir/label/job/values", nil)
+	req := httptest.NewRequest(http.MethodGet, "/prometheus/api/v1/label/job/values", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -432,7 +432,7 @@ func TestMimirSeries(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/mimir/series", nil)
+	req := httptest.NewRequest(http.MethodGet, "/prometheus/api/v1/series", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -459,7 +459,7 @@ func TestMimirMetadata(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/mimir/metadata", nil)
+	req := httptest.NewRequest(http.MethodGet, "/prometheus/api/v1/metadata", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -498,7 +498,7 @@ func TestMimirPushPartialFailureHeader(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/mimir/push", strings.NewReader("body"))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/push", strings.NewReader("body"))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/x-protobuf")
 	rec := httptest.NewRecorder()
@@ -523,7 +523,7 @@ func TestMimirPushNoMatchingInstance(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newMimirTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/mimir/push", strings.NewReader("body"))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/push", strings.NewReader("body"))
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 

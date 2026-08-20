@@ -1,12 +1,19 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"obsdatalayer/internal/config"
 	"obsdatalayer/internal/db"
+	"obsdatalayer/internal/metrics"
+	"obsdatalayer/internal/proxy"
 )
 
 func TestSelfSignedFilesUsesExplicitDirectory(t *testing.T) {
@@ -92,5 +99,59 @@ func TestGenerateSelfSignedCertificateCanUpdateBootstrapConfig(t *testing.T) {
 	}
 	if updated.Gateway.TLS.KeyFile != filepath.Join(certDir, "obsgateway.key") {
 		t.Errorf("unexpected key path %q", updated.Gateway.TLS.KeyFile)
+	}
+}
+
+// TestReadyIsAnsweredByTheGateway pins that readiness reports on the gateway
+// itself rather than being proxied to Mimir. A probe answered by a backend
+// would report the gateway unready whenever that backend was down, and ready
+// whenever it was up -- the opposite of what a readiness probe is for.
+func TestReadyIsAnsweredByTheGateway(t *testing.T) {
+	cfg, err := config.New(&config.Config{Instances: []*config.InstanceConfig{}})
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	holder := config.NewHolder(cfg, "")
+
+	// No upstream client at all: a proxied /ready could not succeed here.
+	handler := dataHandler(holder, nil, proxy.New(nil, nil), metrics.New(prometheus.NewRegistry()))
+
+	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["status"] != "ready" {
+		t.Errorf("expected status ready, got %v", body["status"])
+	}
+	// A fresh install with nothing configured is still ready, and says so.
+	if body["instances"] != float64(0) {
+		t.Errorf("expected instances 0, got %v", body["instances"])
+	}
+}
+
+// TestReadyNeedsNoCredentials keeps container probes working; both /ready and
+// /healthz are terminated by the gateway and never forwarded.
+func TestReadyNeedsNoCredentials(t *testing.T) {
+	cfg, err := config.New(&config.Config{Instances: []*config.InstanceConfig{}})
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	handler := dataHandler(config.NewHolder(cfg, ""), nil, proxy.New(nil, nil), metrics.New(prometheus.NewRegistry()))
+
+	for _, path := range []string{"/ready", "/healthz"} {
+		t.Run(path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200 without credentials, got %d", rec.Code)
+			}
+		})
 	}
 }

@@ -26,10 +26,10 @@ func tempoInst(name, url string) *config.InstanceConfig {
 func newTempoTestMux(cfg *config.Config, p *proxy.Proxy) http.Handler {
 	h := config.NewHolder(cfg, "")
 	mux := http.NewServeMux()
-	m := newTestMetrics()
-	fanout.RegisterLoki(mux, h, p, m)
-	fanout.RegisterMimir(mux, h, p, m)
-	fanout.RegisterTempo(mux, h, p)
+	fanout.IngestRoutes(mux, h, p, newTestMetrics())
+	fanout.LokiDSRoutes(mux, "/loki", h, p)
+	fanout.MimirDSRoutes(mux, "/prometheus", h, p)
+	fanout.TempoDSRoutes(mux, "/tempo", h, p)
 	return middleware.BasicAuth(testAuth, mux)
 }
 
@@ -46,7 +46,7 @@ func TestTempoOTLPPush(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newTempoTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/tempo/otlp/v1/traces", strings.NewReader("trace data"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/traces", strings.NewReader("trace data"))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/x-protobuf")
 	rec := httptest.NewRecorder()
@@ -56,8 +56,10 @@ func TestTempoOTLPPush(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", rec.Code)
 	}
-	if receivedPath != "/otlp/v1/traces" {
-		t.Errorf("expected upstream path /otlp/v1/traces, got %q", receivedPath)
+	// Tempo's OTLP HTTP receiver is a bare OTel receiver at /v1/traces; it does
+	// not namespace OTLP under /otlp the way Mimir and Loki do.
+	if receivedPath != "/v1/traces" {
+		t.Errorf("expected upstream path /v1/traces, got %q", receivedPath)
 	}
 }
 
@@ -74,7 +76,7 @@ func TestTempoJaegerPush(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newTempoTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/tempo/jaeger/v1/traces", strings.NewReader("trace data"))
+	req := httptest.NewRequest(http.MethodPost, "/api/traces", strings.NewReader("trace data"))
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -102,7 +104,7 @@ func TestTempoSearch(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newTempoTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/tempo/search?q=xxx", nil)
+	req := httptest.NewRequest(http.MethodGet, "/tempo/api/search?q=xxx", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -132,7 +134,7 @@ func TestTempoGetTrace(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newTempoTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/tempo/traces/abc123", nil)
+	req := httptest.NewRequest(http.MethodGet, "/tempo/api/traces/abc123", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -159,7 +161,7 @@ func TestTempoSearchTagsV2(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newTempoTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/tempo/v2/search/tags", nil)
+	req := httptest.NewRequest(http.MethodGet, "/tempo/api/v2/search/tags", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -186,7 +188,7 @@ func TestTempoSearchTagValuesV2(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newTempoTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/tempo/v2/search/tag/service.name/values", nil)
+	req := httptest.NewRequest(http.MethodGet, "/tempo/api/v2/search/tag/service.name/values", nil)
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -206,7 +208,7 @@ func TestTempoNoMatchingInstance(t *testing.T) {
 	p := proxy.New(client, client)
 	h := newTempoTestMux(cfg, p)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/tempo/otlp/v1/traces", strings.NewReader("data"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/traces", strings.NewReader("data"))
 	req.Header.Set("Authorization", authHeader())
 	rec := httptest.NewRecorder()
 
@@ -239,7 +241,7 @@ func TestTempoPushBodyStreamedVerbatim(t *testing.T) {
 	h := newTempoTestMux(cfg, p)
 
 	sendBody := "binary trace data \x00\x01\x02"
-	req := httptest.NewRequest(http.MethodPost, "/api/tempo/otlp/v1/traces", strings.NewReader(sendBody))
+	req := httptest.NewRequest(http.MethodPost, "/v1/traces", strings.NewReader(sendBody))
 	req.Header.Set("Authorization", authHeader())
 	req.Header.Set("Content-Type", "application/x-protobuf")
 	rec := httptest.NewRecorder()

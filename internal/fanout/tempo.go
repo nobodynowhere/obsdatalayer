@@ -2,91 +2,61 @@ package fanout
 
 import (
 	"net/http"
+	"strings"
 
 	"obsdatalayer/internal/config"
 	"obsdatalayer/internal/proxy"
 )
 
-// RegisterTempo registers all Tempo routes on mux.
-func RegisterTempo(mux *http.ServeMux, h *config.ConfigHolder, p *proxy.Proxy) {
-	mux.HandleFunc("POST /api/tempo/otlp/v1/traces", func(w http.ResponseWriter, r *http.Request) {
-		if inst := getInstance(h, r, w, "tempo"); inst != nil {
-			p.ForwardPush(w, r, inst, "/otlp/v1/traces", h.Get().Gateway.MaxBodyBytes)
-		}
-	})
-	mux.HandleFunc("POST /api/tempo/jaeger/v1/traces", func(w http.ResponseWriter, r *http.Request) {
-		if inst := getInstance(h, r, w, "tempo"); inst != nil {
-			p.ForwardPush(w, r, inst, "/api/traces", h.Get().Gateway.MaxBodyBytes)
-		}
-	})
-	mux.HandleFunc("GET /api/tempo/search", func(w http.ResponseWriter, r *http.Request) {
-		if inst := getInstance(h, r, w, "tempo"); inst != nil {
-			p.ForwardQuery(w, r, inst, "/api/search")
-		}
-	})
-	mux.HandleFunc("GET /api/tempo/search/tags", func(w http.ResponseWriter, r *http.Request) {
-		if inst := getInstance(h, r, w, "tempo"); inst != nil {
-			p.ForwardQuery(w, r, inst, "/api/search/tags")
-		}
-	})
-	mux.HandleFunc("GET /api/tempo/search/tag/{name}/values", func(w http.ResponseWriter, r *http.Request) {
-		if inst := getInstance(h, r, w, "tempo"); inst != nil {
-			p.ForwardQuery(w, r, inst, "/api/search/tag/"+r.PathValue("name")+"/values")
-		}
-	})
-	mux.HandleFunc("GET /api/tempo/traces/{traceID}", func(w http.ResponseWriter, r *http.Request) {
-		if inst := getInstance(h, r, w, "tempo"); inst != nil {
-			p.ForwardQuery(w, r, inst, "/api/traces/"+r.PathValue("traceID"))
-		}
-	})
-	mux.HandleFunc("GET /api/tempo/v2/traces/{traceID}", func(w http.ResponseWriter, r *http.Request) {
-		if inst := getInstance(h, r, w, "tempo"); inst != nil {
-			p.ForwardQuery(w, r, inst, "/api/v2/traces/"+r.PathValue("traceID"))
-		}
-	})
-	mux.HandleFunc("GET /api/tempo/v2/search/tags", func(w http.ResponseWriter, r *http.Request) {
-		if inst := getInstance(h, r, w, "tempo"); inst != nil {
-			p.ForwardQuery(w, r, inst, "/api/v2/search/tags")
-		}
-	})
-	mux.HandleFunc("GET /api/tempo/v2/search/tag/{name}/values", func(w http.ResponseWriter, r *http.Request) {
-		if inst := getInstance(h, r, w, "tempo"); inst != nil {
-			p.ForwardQuery(w, r, inst, "/api/v2/search/tag/"+r.PathValue("name")+"/values")
-		}
-	})
-	mux.HandleFunc("GET /api/tempo/metrics/query_range", func(w http.ResponseWriter, r *http.Request) {
-		if inst := getInstance(h, r, w, "tempo"); inst != nil {
-			p.ForwardQuery(w, r, inst, "/api/metrics/query_range")
-		}
-	})
-	mux.HandleFunc("GET /api/tempo/metrics/query", func(w http.ResponseWriter, r *http.Request) {
-		if inst := getInstance(h, r, w, "tempo"); inst != nil {
-			p.ForwardQuery(w, r, inst, "/api/metrics/query")
-		}
-	})
-	mux.HandleFunc("GET /api/tempo/echo", func(w http.ResponseWriter, r *http.Request) {
-		if inst := getInstance(h, r, w, "tempo"); inst != nil {
-			p.ForwardQuery(w, r, inst, "/api/echo")
-		}
-	})
-	mux.HandleFunc("GET /api/tempo/overrides", func(w http.ResponseWriter, r *http.Request) {
-		if inst := getInstance(h, r, w, "tempo"); inst != nil {
-			p.ForwardQuery(w, r, inst, "/api/overrides")
-		}
-	})
-	mux.HandleFunc("POST /api/tempo/overrides", func(w http.ResponseWriter, r *http.Request) {
-		if inst := getInstance(h, r, w, "tempo"); inst != nil {
-			p.ForwardPush(w, r, inst, "/api/overrides", h.Get().Gateway.MaxBodyBytes)
-		}
-	})
-	mux.HandleFunc("PATCH /api/tempo/overrides", func(w http.ResponseWriter, r *http.Request) {
-		if inst := getInstance(h, r, w, "tempo"); inst != nil {
-			p.ForwardPush(w, r, inst, "/api/overrides", h.Get().Gateway.MaxBodyBytes)
-		}
-	})
-	mux.HandleFunc("DELETE /api/tempo/overrides", func(w http.ResponseWriter, r *http.Request) {
-		if inst := getInstance(h, r, w, "tempo"); inst != nil {
-			p.ForwardPush(w, r, inst, "/api/overrides", h.Get().Gateway.MaxBodyBytes)
-		}
-	})
+// TempoDSRoutes registers the routes a Grafana Tempo data source addresses.
+//
+// Data source URL: gateway:port/tempo
+//
+// Grafana joins its own path onto the base URL's path, so the gateway serves
+// the mount plus Tempo's exact query API. Tempo's API already lives under
+// /api, so the mount simply prefixes it.
+//
+// Covered: trace lookup by ID (v1, v2), search, search tags (v1, v2), tag
+// values (v1, v2), TraceQL metrics (range and instant), echo, build info, and
+// the per-tenant overrides API.
+//
+// Not implemented:
+//
+//   - Nothing outstanding. Tempo's query surface is covered in full.
+//
+// Ingestion is a separate bundle; see IngestRoutes.
+func TempoDSRoutes(mux *http.ServeMux, mount string, h *config.ConfigHolder, p *proxy.Proxy) {
+	read := func(upstream string) {
+		mux.HandleFunc("GET "+mount+upstream, func(w http.ResponseWriter, r *http.Request) {
+			if inst := getInstance(h, r, w, "tempo"); inst != nil {
+				p.ForwardQuery(w, r, inst, expandTempoPath(upstream, r))
+			}
+		})
+	}
+	read("/api/traces/{traceID}")
+	read("/api/v2/traces/{traceID}")
+	read("/api/search")
+	read("/api/search/tags")
+	read("/api/v2/search/tags")
+	read("/api/search/tag/{name}/values")
+	read("/api/v2/search/tag/{name}/values")
+	read("/api/metrics/query_range")
+	read("/api/metrics/query")
+	read("/api/echo")
+	read("/api/status/buildinfo")
+
+	// Per-tenant overrides. Tempo serves all four methods on one path.
+	for _, method := range []string{"GET", "POST", "PATCH", "DELETE"} {
+		mux.HandleFunc(method+" "+mount+"/api/overrides", func(w http.ResponseWriter, r *http.Request) {
+			if inst := getInstance(h, r, w, "tempo"); inst != nil && requireSingleTenant(w, r) {
+				forwardByMethod(w, r, inst, "/api/overrides", h.Get().Gateway.MaxBodyBytes, p)
+			}
+		})
+	}
+}
+
+func expandTempoPath(path string, r *http.Request) string {
+	path = strings.ReplaceAll(path, "{traceID}", escapedLokiPathValue(r, "traceID"))
+	path = strings.ReplaceAll(path, "{name}", escapedLokiPathValue(r, "name"))
+	return path
 }

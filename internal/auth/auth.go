@@ -95,8 +95,14 @@ func (g Grant) Validate() error {
 	if !validActions[g.Action] {
 		return fmt.Errorf("unknown action %q (must be read, write, rules:read, rules:write, alerts:read, alerts:write or *)", g.Action)
 	}
-	if IsMimirControlAction(g.Action) && g.Backend != "mimir" {
-		return fmt.Errorf("action %q is only supported on the mimir backend", g.Action)
+	if IsControlAction(g.Action) {
+		supported, ok := controlActionBackends[g.Backend]
+		if !ok {
+			return fmt.Errorf("action %q is only supported on the mimir and loki backends, got %q", g.Action, g.Backend)
+		}
+		if !supported[g.Action] {
+			return fmt.Errorf("action %q is not supported on the %s backend: %s", g.Action, g.Backend, controlActionGaps[g.Backend])
+		}
 	}
 	if len(g.TenantIDs) == 0 {
 		return fmt.Errorf("grant on backend %q action %q has no tenant_ids", g.Backend, g.Action)
@@ -215,11 +221,42 @@ func ActionRequiresSingleTenant(action string) bool {
 		action == ActionAny
 }
 
-func IsMimirControlAction(action string) bool {
+// IsControlAction reports whether action governs rule or alert management
+// rather than ordinary data read/write.
+func IsControlAction(action string) bool {
 	return action == ActionRulesRead ||
 		action == ActionRulesWrite ||
 		action == ActionAlertsRead ||
 		action == ActionAlertsWrite
+}
+
+// controlActionBackends records which control actions each backend actually
+// exposes, so a grant can never authorize an API that does not exist.
+//
+// Mimir runs both a ruler and an alertmanager, so all four actions map to a
+// real endpoint. Loki runs a ruler but has no alertmanager: it serves the rule
+// configuration API and a read-only Prometheus-compatible alerts listing, and
+// forwards firing alerts to an external Alertmanager, so there is nothing for
+// alerts:write to address. Tempo has neither and is absent entirely.
+var controlActionBackends = map[string]map[string]bool{
+	"mimir": {
+		ActionRulesRead:   true,
+		ActionRulesWrite:  true,
+		ActionAlertsRead:  true,
+		ActionAlertsWrite: true,
+	},
+	"loki": {
+		ActionRulesRead:  true,
+		ActionRulesWrite: true,
+		ActionAlertsRead: true,
+	},
+}
+
+// controlActionGaps explains why a backend that supports some control actions
+// does not support the one being requested, so the API error says more than
+// "not supported".
+var controlActionGaps = map[string]string{
+	"loki": "Loki has a ruler but no alertmanager, so it exposes no alert configuration to write",
 }
 
 // mergeTenants returns the sorted, deduplicated union of ids.
