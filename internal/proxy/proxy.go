@@ -258,6 +258,16 @@ func (p *Proxy) ForwardUpgrade(w http.ResponseWriter, r *http.Request, inst *con
 		ctx = WithSkipTLSVerify(ctx)
 	}
 	ra := auth.FromContext(ctx)
+	var username string
+	if ra != nil {
+		username = ra.Username
+	}
+
+	// Written by the Director, read by ModifyResponse. Needs no
+	// synchronisation: this ReverseProxy is built for one request and serves
+	// that one request, so the write happens-before the read on the same
+	// goroutine.
+	var upstreamOrgID string
 
 	rp := &httputil.ReverseProxy{
 		Transport: p.QueryClient().Transport,
@@ -295,9 +305,32 @@ func (p *Proxy) ForwardUpgrade(w http.ResponseWriter, r *http.Request, inst *con
 				// reaching here; see requireSingleTenant.
 				req.Header.Set("X-Scope-OrgID", ra.TenantIDs[0])
 			}
+			upstreamOrgID = req.Header.Get("X-Scope-OrgID")
 			slog.Debug("forwarding upgrade upstream",
 				"instance", inst.Name, "url", req.URL.String(),
-				"org_id", req.Header.Get("X-Scope-OrgID"))
+				"org_id", upstreamOrgID)
+		},
+		// ModifyResponse runs before ReverseProxy switches the connection over,
+		// so a 101 seen here is the handshake the upstream actually accepted,
+		// not merely the one the client asked for. Anything else falls through
+		// to the ordinary response path and is not a tail.
+		//
+		// This is at info because the access log cannot serve the same purpose:
+		// Logging wraps ServeHTTP, so its line for a tail is not written until
+		// the stream ends, and its duration is the lifetime of the stream. A
+		// tail that is still running has, until now, produced nothing at the
+		// default level. The debug tracing on either side of this is left as it
+		// was -- this is an addition to it, not a promotion of it.
+		ModifyResponse: func(res *http.Response) error {
+			if res.StatusCode != http.StatusSwitchingProtocols {
+				return nil
+			}
+			slog.Info("loki tail upgraded to websocket",
+				"instance", inst.Name,
+				"user", username,
+				"org_id", upstreamOrgID,
+				"path", r.URL.Path)
+			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			slog.Debug("upgrade request failed", "instance", inst.Name, "error", err)
