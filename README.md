@@ -67,6 +67,26 @@ ruler:
     enabled: true
 ```
 
+### TEMPO
+
+Tempo needs to be configured to enable multitenancy. This is done by setting `multitenancy_enabled` to true.
+
+```yaml
+multitenancy_enabled: true
+query_frontend:
+  multi_tenant_queries_enabled: true
+```
+
+In the helm chart values:
+
+```yaml
+tempo:
+  config:
+    multitenancy_enabled: true
+    query_frontend:
+      multi_tenant_queries_enabled: true
+```
+
 ## Ingestion Routes
 
 Ingestion and serving a Grafana data source are separate concerns with separate
