@@ -68,7 +68,7 @@ Set both fields on the same instance.
 ### 1.7 Tempo with `push_urls`
 
 Add `push_urls:` to a tempo instance.
-✅ Expect: startup error mentioning tempo cannot have push_urls.
+✅ Expect: startup succeeds and Tempo ingestion fans out to each target.
 
 ### 1.8 Tempo with `labels` config
 
@@ -490,7 +490,7 @@ Query Loki directly and verify injected labels are present on the stored streams
 | 1.4 | Duplicate instance name | Startup error |
 | 1.5 | `url` + `push_urls` both set | Startup error |
 | 1.6 | `auth_passthrough` + `basic_auth` | Startup error |
-| 1.7 | Tempo + `push_urls` | Startup error |
+| 1.7 | Tempo + `push_urls` | Valid fan-out |
 | 1.8 | Tempo + `labels` | Startup error |
 | 2.1 | No token | 401 |
 | 2.2 | Wrong token | 401 |

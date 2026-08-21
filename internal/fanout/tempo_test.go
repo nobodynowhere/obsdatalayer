@@ -226,7 +226,7 @@ func TestTempoNoMatchingInstance(t *testing.T) {
 	}
 }
 
-func TestTempoPushBodyStreamedVerbatim(t *testing.T) {
+func TestTempoPushBodyForwardedVerbatim(t *testing.T) {
 	var receivedBody string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
@@ -252,6 +252,58 @@ func TestTempoPushBodyStreamedVerbatim(t *testing.T) {
 		t.Errorf("expected 200, got %d", rec.Code)
 	}
 	if receivedBody != sendBody {
-		t.Errorf("expected body to be streamed verbatim, got %q", receivedBody)
+		t.Errorf("expected body to be forwarded verbatim, got %q", receivedBody)
+	}
+}
+
+func TestTempoPushFansOutToAllTargets(t *testing.T) {
+	received := make(chan string, 2)
+	newUpstream := func(name string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			b, _ := io.ReadAll(r.Body)
+			received <- name + ":" + string(b)
+			w.WriteHeader(http.StatusOK)
+		}))
+	}
+	a := newUpstream("a")
+	b := newUpstream("b")
+	t.Cleanup(a.Close)
+	t.Cleanup(b.Close)
+
+	cfg := newTestConfig([]*config.InstanceConfig{{
+		Name:       "tempo-prod",
+		Backend:    "tempo",
+		FanOutMode: "all",
+		PushURLs: []config.PushTarget{
+			{URL: a.URL},
+			{URL: b.URL},
+		},
+	}})
+	client := &http.Client{Timeout: 5 * time.Second}
+	p := proxy.New(client, client)
+	h := newTempoTestMux(cfg, p)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/traces", strings.NewReader("trace data"))
+	req.Header.Set("Authorization", authHeader())
+	req.Header.Set("Content-Type", "application/x-protobuf")
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	got := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		select {
+		case value := <-received:
+			got[value] = true
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for Tempo fan-out target %d", i+1)
+		}
+	}
+	if !got["a:trace data"] || !got["b:trace data"] {
+		t.Errorf("expected both Tempo targets to receive the trace body, got %v", got)
 	}
 }

@@ -134,10 +134,10 @@ func TestInstanceValidation(t *testing.T) {
 			"both",
 		},
 		{
-			"push_urls on tempo",
+			"tempo push_urls valid",
 			&config.InstanceConfig{Name: "t", Backend: "tempo",
 				PushURLs: []config.PushTarget{{URL: "http://t.local"}}},
-			"tempo",
+			"",
 		},
 		{
 			"labels on tempo",

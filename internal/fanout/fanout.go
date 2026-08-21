@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +42,13 @@ var mimirSuppressPatterns = []string{
 	"duplicate sample",
 	"timestamp too old",
 }
+
+const upstreamPushErrorDetailBytes = 4096
+
+var (
+	lineTooLongPattern = regexp.MustCompile(`(?is)max entry size ([0-9]+) bytes exceeded.*while adding an entry with length ([0-9]+) bytes`)
+	bodyTooLargeLimit  = regexp.MustCompile(`(?i)limit: ([0-9]+) bytes`)
+)
 
 // FormatPartialFailureHeader formats failures as the X-Gateway-Partial-Failure header value.
 func FormatPartialFailureHeader(failures []PartialFailure) string {
@@ -427,18 +435,16 @@ func doAnyMode(inst *config.InstanceConfig, results []TargetResult) (int, []byte
 	if suppressedCount > 0 && len(partialFailures) == 0 {
 		return http.StatusNoContent, nil, nil, nil
 	}
-	body, _ := json.Marshal(map[string]string{"error": "all push targets failed", "instance": inst.Name})
-	return http.StatusBadGateway, body, http.Header{"Content-Type": []string{"application/json"}}, nil
+	status, body, headers := failedPushResponse(inst, results, "all push targets failed", true)
+	return status, body, headers, nil
 }
 
 func doAllMode(inst *config.InstanceConfig, results []TargetResult) (int, []byte, http.Header, []PartialFailure) {
 	for i := range results {
 		r := &results[i]
 		if r.Err != nil || r.StatusCode < 200 || r.StatusCode >= 300 {
-			body, _ := json.Marshal(map[string]string{
-				"error": "push target failed", "instance": inst.Name,
-			})
-			return http.StatusBadGateway, body, http.Header{"Content-Type": []string{"application/json"}}, nil
+			status, body, headers := failedPushResponse(inst, []TargetResult{*r}, "push target failed", false)
+			return status, body, headers, nil
 		}
 	}
 	if len(results) > 0 {
@@ -446,6 +452,110 @@ func doAllMode(inst *config.InstanceConfig, results []TargetResult) (int, []byte
 		return r.StatusCode, r.Body, r.Headers, nil
 	}
 	return http.StatusNoContent, nil, nil, nil
+}
+
+func failedPushResponse(inst *config.InstanceConfig, results []TargetResult, message string, skipSuppressed bool) (int, []byte, http.Header) {
+	status := failedPushStatus(results, skipSuppressed)
+	body := map[string]string{"error": message, "instance": inst.Name}
+	for k, v := range upstreamPushFailureDetails(status, results, skipSuppressed) {
+		body[k] = v
+	}
+	data, _ := json.Marshal(body)
+
+	headers := http.Header{"Content-Type": []string{"application/json"}}
+	if status == http.StatusTooManyRequests {
+		if retryAfter := firstFailedHeader(results, status, "Retry-After"); retryAfter != "" {
+			headers.Set("Retry-After", retryAfter)
+		}
+	}
+	return status, data, headers
+}
+
+func failedPushStatus(results []TargetResult, skipSuppressed bool) int {
+	status := 0
+	for i := range results {
+		r := &results[i]
+		if skipSuppressed && r.Suppressed {
+			continue
+		}
+		if r.Err != nil || r.StatusCode == 0 {
+			return http.StatusBadGateway
+		}
+		if r.StatusCode >= 200 && r.StatusCode < 300 {
+			continue
+		}
+		if status == 0 {
+			status = r.StatusCode
+			continue
+		}
+		if status != r.StatusCode {
+			return http.StatusBadGateway
+		}
+	}
+	if status == 0 {
+		return http.StatusBadGateway
+	}
+	return status
+}
+
+func upstreamPushFailureDetails(status int, results []TargetResult, skipSuppressed bool) map[string]string {
+	if status == http.StatusBadGateway {
+		return nil
+	}
+	for i := range results {
+		r := &results[i]
+		if skipSuppressed && r.Suppressed {
+			continue
+		}
+		if r.Err != nil || r.StatusCode != status || len(r.Body) == 0 {
+			continue
+		}
+		if details := classifyUpstreamPushFailure(status, r.Body); len(details) > 0 {
+			return details
+		}
+	}
+	return nil
+}
+
+func classifyUpstreamPushFailure(status int, body []byte) map[string]string {
+	preview := pushErrorPreview(body)
+	lower := strings.ToLower(preview)
+	switch {
+	case status == http.StatusBadRequest && strings.Contains(lower, "max entry size") && strings.Contains(lower, "while adding an entry with length"):
+		out := map[string]string{"reason": "line_too_long", "detail": preview}
+		if m := lineTooLongPattern.FindStringSubmatch(preview); len(m) == 3 {
+			out["max_entry_size_bytes"] = m[1]
+			out["entry_size_bytes"] = m[2]
+		}
+		return out
+	case status == http.StatusRequestEntityTooLarge && strings.Contains(lower, "request body too large"):
+		out := map[string]string{"reason": "request_body_too_large", "detail": preview}
+		if m := bodyTooLargeLimit.FindStringSubmatch(preview); len(m) == 2 {
+			out["max_body_size_bytes"] = m[1]
+		}
+		return out
+	case status == http.StatusTooManyRequests && strings.Contains(lower, "rate limit"):
+		return map[string]string{"reason": "rate_limited", "detail": preview}
+	default:
+		return nil
+	}
+}
+
+func pushErrorPreview(body []byte) string {
+	if len(body) > upstreamPushErrorDetailBytes {
+		body = body[:upstreamPushErrorDetailBytes]
+	}
+	return strings.TrimSpace(strings.ToValidUTF8(string(body), "\uFFFD"))
+}
+
+func firstFailedHeader(results []TargetResult, status int, name string) string {
+	for i := range results {
+		r := &results[i]
+		if r.Err == nil && r.StatusCode == status {
+			return r.Headers.Get(name)
+		}
+	}
+	return ""
 }
 
 func doSingleTarget(

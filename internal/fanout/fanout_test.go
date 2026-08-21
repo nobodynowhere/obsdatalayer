@@ -2,6 +2,7 @@ package fanout_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -173,6 +174,103 @@ func TestDoAnyAllTargetsFail(t *testing.T) {
 	}
 }
 
+func TestDoAnyAllTargetsSameHTTPStatusPreserved(t *testing.T) {
+	upstream1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(upstream1.Close)
+
+	upstream2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(upstream2.Close)
+
+	inst := newInstance("loki-prod", "loki", "any")
+	targets := []config.PushTarget{makeTarget(upstream1.URL), makeTarget(upstream2.URL)}
+	m := newMetrics()
+
+	statusCode, respBody, _, _ := fanout.Do(
+		context.Background(), inst, targets, []byte("body"),
+		http.Header{"Content-Type": []string{"application/json"}},
+		"/loki/api/v1/push", http.DefaultClient, m,
+	)
+	if statusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", statusCode)
+	}
+	if !strings.Contains(string(respBody), "all push targets failed") {
+		t.Errorf("expected body to mention 'all push targets failed', got %s", respBody)
+	}
+}
+
+func TestDoAnyKnownLokiLineTooLongDetailReturned(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `max entry size 262144 bytes exceeded for stream {filename="/var/log/MCAFEE_AGENT_UNISTNALL.log"} while adding an entry with length 394962 bytes`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	inst := newInstance("loki-prod", "loki", "any")
+	targets := []config.PushTarget{makeTarget(upstream.URL)}
+	m := newMetrics()
+
+	statusCode, respBody, _, _ := fanout.Do(
+		context.Background(), inst, targets, []byte("body"),
+		http.Header{"Content-Type": []string{"application/json"}},
+		"/loki/api/v1/push", http.DefaultClient, m,
+	)
+	if statusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", statusCode)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(respBody, &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["error"] != "all push targets failed" {
+		t.Errorf("expected generic error, got %q", body["error"])
+	}
+	if body["reason"] != "line_too_long" {
+		t.Errorf("expected line_too_long reason, got %q", body["reason"])
+	}
+	if body["max_entry_size_bytes"] != "262144" || body["entry_size_bytes"] != "394962" {
+		t.Errorf("expected parsed sizes, got max=%q entry=%q", body["max_entry_size_bytes"], body["entry_size_bytes"])
+	}
+	if !strings.Contains(body["detail"], "MCAFEE_AGENT_UNISTNALL.log") {
+		t.Errorf("expected bounded upstream detail, got %q", body["detail"])
+	}
+}
+
+func TestDoAnyRateLimitPreservesRetryAfter(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "15")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, "ingestion rate limit exceeded")
+	}))
+	t.Cleanup(upstream.Close)
+
+	inst := newInstance("loki-prod", "loki", "any")
+	targets := []config.PushTarget{makeTarget(upstream.URL)}
+	m := newMetrics()
+
+	statusCode, respBody, headers, _ := fanout.Do(
+		context.Background(), inst, targets, []byte("body"),
+		http.Header{"Content-Type": []string{"application/json"}},
+		"/loki/api/v1/push", http.DefaultClient, m,
+	)
+	if statusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", statusCode)
+	}
+	if headers.Get("Retry-After") != "15" {
+		t.Errorf("expected Retry-After to be preserved, got %q", headers.Get("Retry-After"))
+	}
+	var body map[string]string
+	if err := json.Unmarshal(respBody, &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["reason"] != "rate_limited" {
+		t.Errorf("expected rate_limited reason, got %q", body["reason"])
+	}
+}
+
 func TestDoAnyConnectionError(t *testing.T) {
 	// Start then immediately close to get a connection error
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
@@ -243,8 +341,8 @@ func TestDoAllOneTargetFails(t *testing.T) {
 		http.Header{"Content-Type": []string{"application/json"}},
 		"/loki/api/v1/push", http.DefaultClient, m,
 	)
-	if statusCode != http.StatusBadGateway {
-		t.Errorf("expected 502, got %d", statusCode)
+	if statusCode != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", statusCode)
 	}
 	if !strings.Contains(string(respBody), "push target failed") {
 		t.Errorf("expected body to mention 'push target failed', got %s", respBody)
@@ -334,8 +432,8 @@ func TestMimirUnmatchedBodyNotSuppressed(t *testing.T) {
 		http.Header{},
 		"/api/v1/push", http.DefaultClient, m,
 	)
-	if statusCode != http.StatusBadGateway {
-		t.Errorf("expected 502 for unmatched 400, got %d", statusCode)
+	if statusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 for unmatched 400, got %d", statusCode)
 	}
 	if len(partialFailures) != 0 {
 		// In all-failed scenario, partialFailures is nil (all failed)
@@ -406,9 +504,9 @@ func TestMimir409NotSuppressed(t *testing.T) {
 		http.Header{},
 		"/api/v1/push", http.DefaultClient, m,
 	)
-	// 409 is not suppressed, so all targets failed -> 502
-	if statusCode != http.StatusBadGateway {
-		t.Errorf("expected 502 (409 not suppressed), got %d", statusCode)
+	// 409 is not suppressed, so all targets failed with the upstream status.
+	if statusCode != http.StatusConflict {
+		t.Errorf("expected 409 (409 not suppressed), got %d", statusCode)
 	}
 }
 
@@ -426,8 +524,8 @@ func TestMimirAllModeSuppressionNotApplied(t *testing.T) {
 		http.Header{},
 		"/api/v1/push", http.DefaultClient, m,
 	)
-	if statusCode != http.StatusBadGateway {
-		t.Errorf("expected 502 in all mode (suppression not applied), got %d", statusCode)
+	if statusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 in all mode (suppression not applied), got %d", statusCode)
 	}
 	if !strings.Contains(string(respBody), "push target failed") {
 		t.Errorf("expected 'push target failed', got %s", respBody)

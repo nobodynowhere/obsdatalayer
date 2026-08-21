@@ -341,11 +341,6 @@ func validate(cfg *Config) error {
 			return fmt.Errorf("config: instance %q has neither url nor push_urls set", inst.Name)
 		}
 
-		// 8. push_urls on Tempo instance
-		if inst.Backend == "tempo" && len(inst.PushURLs) > 0 {
-			return fmt.Errorf("config: instance %q is tempo backend and cannot have push_urls", inst.Name)
-		}
-
 		// 9. fan_out_mode declared without push_urls
 		if inst.FanOutMode != "" && len(inst.PushURLs) == 0 {
 			return fmt.Errorf("config: instance %q has fan_out_mode but no push_urls", inst.Name)

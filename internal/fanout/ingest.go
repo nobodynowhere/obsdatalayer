@@ -74,19 +74,13 @@ func IngestRoutes(mux *http.ServeMux, h *config.ConfigHolder, p *proxy.Proxy, m 
 	// Tempo's OTLP HTTP receiver is a bare OTel receiver at /v1/traces, not
 	// under an /otlp prefix as in Mimir and Loki.
 	mux.HandleFunc("POST /v1/traces", func(w http.ResponseWriter, r *http.Request) {
-		if inst := getInstance(h, r, w, "tempo"); inst != nil {
-			p.ForwardPush(w, r, inst, "/v1/traces", h.Get().Gateway.MaxBodyBytes)
-		}
+		forwardTempoPush(w, r, h, p, m, "/v1/traces")
 	})
 	mux.HandleFunc("POST /api/traces", func(w http.ResponseWriter, r *http.Request) {
-		if inst := getInstance(h, r, w, "tempo"); inst != nil {
-			p.ForwardPush(w, r, inst, "/api/traces", h.Get().Gateway.MaxBodyBytes)
-		}
+		forwardTempoPush(w, r, h, p, m, "/api/traces")
 	})
 	mux.HandleFunc("POST /api/v2/spans", func(w http.ResponseWriter, r *http.Request) {
-		if inst := getInstance(h, r, w, "tempo"); inst != nil {
-			p.ForwardPush(w, r, inst, "/api/v2/spans", h.Get().Gateway.MaxBodyBytes)
-		}
+		forwardTempoPush(w, r, h, p, m, "/api/v2/spans")
 	})
 }
 
@@ -114,4 +108,12 @@ var ingestBackends = map[string]string{
 	"/v1/traces":    "tempo",
 	"/api/traces":   "tempo",
 	"/api/v2/spans": "tempo",
+}
+
+func forwardTempoPush(w http.ResponseWriter, r *http.Request, h *config.ConfigHolder, p *proxy.Proxy, m *metrics.Metrics, upstreamPath string) {
+	inst := getInstance(h, r, w, "tempo")
+	if inst == nil {
+		return
+	}
+	handlePush(w, r, inst, upstreamPath, nil, h.Get().Gateway.MaxBodyBytes, p, m)
 }
