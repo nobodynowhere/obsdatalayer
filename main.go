@@ -417,6 +417,11 @@ func resetUserPassword(svc *auth.Service, name string) error {
 
 	// Not logged through slog: the operator ran this to be told what happened.
 	fmt.Printf("Password updated for %s.\n", name)
+	// The reset runs in its own process, so the change reaches a running
+	// gateway only through its next reload of the users table. Without saying
+	// so, an operator who resets and retries straight away is told the old
+	// password still works and concludes the reset failed.
+	fmt.Println("A running gateway keeps accepting the previous password until its next reload (gateway.reload_interval).")
 	if !info.Admin {
 		fmt.Printf("Note: %s holds no admin grant, so this account still cannot sign in to the admin UI.\n", name)
 	}
