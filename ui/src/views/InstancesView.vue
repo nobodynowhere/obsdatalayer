@@ -52,7 +52,7 @@ const message = (e) => e?.response?.data?.error || e.message || 'Unexpected erro
 const tenantName = (id) => tenants.value.find((t) => t.id === id)?.name ?? id
 const tenantOptions = computed(() => tenants.value.map((t) => ({ label: t.name, value: t.id })))
 
-// Tempo has no fan-out and no label policy, so the form hides both.
+// Tempo has no label policy, so the form hides those controls.
 const isTempo = computed(() => form.value.backend === 'tempo')
 
 async function load() {
@@ -108,7 +108,7 @@ function toPayload() {
     tenant_id: f.tenant_id || undefined,
     skip_tls_verify: f.skip_tls_verify || undefined,
   }
-  if (isTempo.value || f.mode === 'single') {
+  if (f.mode === 'single') {
     doc.url = f.url
   } else {
     doc.push_urls = f.push_urls.map((t) => ({
@@ -282,7 +282,7 @@ onMounted(load)
         <PrimeSelect v-model="form.backend" :options="backends" option-label="label" option-value="value" />
       </div>
 
-      <div class="form-field" v-if="!isTempo">
+      <div class="form-field">
         <label>Targets</label>
         <PrimeSelect
           v-model="form.mode"
@@ -295,9 +295,9 @@ onMounted(load)
         />
       </div>
 
-      <div class="form-field" v-if="isTempo || form.mode === 'single'">
+      <div class="form-field" v-if="form.mode === 'single'">
         <label for="i-url">URL</label>
-        <PrimeInputText id="i-url" v-model="form.url" placeholder="http://loki.local:3100" class="mono" />
+        <PrimeInputText id="i-url" v-model="form.url" :placeholder="`http://${form.backend}.local:3100`" class="mono" />
         <small>Must include an http:// or https:// scheme and a host.</small>
       </div>
 
