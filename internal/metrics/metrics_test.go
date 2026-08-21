@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -136,7 +137,13 @@ gateway_auth_rejected_total{reason="throttled"} 0
 # HELP gateway_auth_failures_total Credential checks that ran and were rejected.
 # TYPE gateway_auth_failures_total counter
 gateway_auth_failures_total 0
+# HELP gateway_config_reload_failures_total Config reloads that failed, from any trigger: the ticker, SIGHUP, the admin API, or a mutation applying itself. The live config is retained on failure.
+# TYPE gateway_config_reload_failures_total counter
+gateway_config_reload_failures_total 0
 `
+	// gateway_config_last_successful_reload_seconds is deliberately not here:
+	// no reload has succeeded in this test, and the gauge is absent until one
+	// has. See TestConfigReloadGaugeAbsentUntilFirstSuccess.
 	if err := testutil.CollectAndCompare(m, strings.NewReader(expected)); err != nil {
 		t.Fatal(err)
 	}
@@ -449,5 +456,161 @@ func TestReadCountersArePrunedWithInstances(t *testing.T) {
 	}
 	if !reflect.DeepEqual(s.Instances[0].ReadTargets[0].RecentResults, []string{"success"}) {
 		t.Errorf("surviving recent results = %+v", s.Instances[0].ReadTargets[0].RecentResults)
+	}
+}
+
+// ---- config reload freshness ------------------------------------------------
+
+// Before any reload has succeeded the gauge is absent rather than zero. A zero
+// age reads as "reloaded just now", which would make a gateway that has never
+// loaded its config look like the freshest one on the dashboard.
+func TestConfigReloadGaugeAbsentUntilFirstSuccess(t *testing.T) {
+	m := metrics.New(prometheus.NewRegistry())
+
+	if n := testutil.CollectAndCount(m, "gateway_config_last_successful_reload_seconds"); n != 0 {
+		t.Errorf("expected no age series before the first reload, got %d", n)
+	}
+	if _, ok := m.ConfigReloadedAt(); ok {
+		t.Error("ConfigReloadedAt reported a time before any reload had succeeded")
+	}
+	// The failure counter, in contrast, is exported from the start so an alert
+	// on its rate has a series to attach to.
+	if n := testutil.CollectAndCount(m, "gateway_config_reload_failures_total"); n != 1 {
+		t.Errorf("expected the failure counter to be exported from process start, got %d series", n)
+	}
+}
+
+func TestConfigReloadGaugeTracksLastSuccess(t *testing.T) {
+	m := metrics.New(prometheus.NewRegistry())
+
+	first := time.Unix(1_700_000_000, 0)
+	m.RecordConfigReload(first)
+	if got, ok := m.ConfigReloadedAt(); !ok || !got.Equal(first) {
+		t.Fatalf("ConfigReloadedAt = %v (ok=%v), want %v", got, ok, first)
+	}
+
+	second := first.Add(30 * time.Second)
+	m.RecordConfigReload(second)
+	if got, _ := m.ConfigReloadedAt(); !got.Equal(second) {
+		t.Errorf("ConfigReloadedAt = %v, want %v", got, second)
+	}
+}
+
+// The whole point of the gauge: a failing reload must leave the last-success
+// instant alone, so the age keeps climbing while the database is unreachable.
+func TestConfigReloadFailureDoesNotAdvanceTimestamp(t *testing.T) {
+	m := metrics.New(prometheus.NewRegistry())
+
+	good := time.Unix(1_700_000_000, 0)
+	m.RecordConfigReload(good)
+	for i := 0; i < 3; i++ {
+		m.RecordConfigReloadFailure()
+	}
+
+	if got, _ := m.ConfigReloadedAt(); !got.Equal(good) {
+		t.Errorf("a failed reload moved the timestamp to %v, want it left at %v", got, good)
+	}
+	if n := m.ConfigReloadFailures(); n != 3 {
+		t.Errorf("failure count = %d, want 3", n)
+	}
+
+	expected := `
+# HELP gateway_config_reload_failures_total Config reloads that failed, from any trigger: the ticker, SIGHUP, the admin API, or a mutation applying itself. The live config is retained on failure.
+# TYPE gateway_config_reload_failures_total counter
+gateway_config_reload_failures_total 3
+`
+	if err := testutil.CollectAndCompare(m, strings.NewReader(expected),
+		"gateway_config_reload_failures_total"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The exported gauge is an age resolved at scrape time, not the stored instant,
+// so it climbs on its own between scrapes while reloads keep failing.
+func TestConfigReloadAgeIsMeasuredAtScrapeTime(t *testing.T) {
+	m := metrics.New(prometheus.NewRegistry())
+	m.RecordConfigReload(time.Now().Add(-2 * time.Minute))
+
+	age := gaugeValue(t, m, "gateway_config_last_successful_reload_seconds")
+	if age < 119 || age > 125 {
+		t.Fatalf("age = %v, want about 120", age)
+	}
+
+	// A failed reload must not reset it.
+	m.RecordConfigReloadFailure()
+	if after := gaugeValue(t, m, "gateway_config_last_successful_reload_seconds"); after < age {
+		t.Errorf("a failed reload pulled the age back from %v to %v", age, after)
+	}
+
+	// A successful one must.
+	m.RecordConfigReload(time.Now())
+	if after := gaugeValue(t, m, "gateway_config_last_successful_reload_seconds"); after > 2 {
+		t.Errorf("age after a successful reload = %v, want about 0", after)
+	}
+}
+
+// gaugeValue scrapes one unlabelled gauge out of the collector.
+func gaugeValue(t *testing.T, c prometheus.Collector, name string) float64 {
+	t.Helper()
+	reg := prometheus.NewPedanticRegistry()
+	if err := reg.Register(c); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, mf := range families {
+		if mf.GetName() != name {
+			continue
+		}
+		if len(mf.GetMetric()) != 1 {
+			t.Fatalf("%s: got %d series, want 1", name, len(mf.GetMetric()))
+		}
+		return mf.GetMetric()[0].GetGauge().GetValue()
+	}
+	t.Fatalf("%s not exported", name)
+	return 0
+}
+
+// The reload counters carry no instance label and must survive the pruning that
+// drops series for deleted instances.
+func TestConfigReloadMetricsSurviveRetainInstances(t *testing.T) {
+	m := metrics.New(prometheus.NewRegistry())
+	m.RecordConfigReload(time.Unix(1_700_000_000, 0))
+	m.RecordConfigReloadFailure()
+
+	m.RetainInstances(nil)
+
+	if _, ok := m.ConfigReloadedAt(); !ok {
+		t.Error("RetainInstances dropped the reload timestamp")
+	}
+	if n := m.ConfigReloadFailures(); n != 1 {
+		t.Errorf("RetainInstances dropped the failure count: got %d, want 1", n)
+	}
+}
+
+// The Summary the admin UI reads carries the same figures, with the age
+// resolved against the gateway's clock rather than the browser's.
+func TestSummaryReportsConfigAge(t *testing.T) {
+	m := metrics.New(prometheus.NewRegistry())
+
+	if s := m.Summary(); s.ConfigReloadedAt != nil || s.ConfigAgeSeconds != nil {
+		t.Error("summary reported a config age before any reload had succeeded")
+	}
+
+	at := time.Now().Add(-90 * time.Second)
+	m.RecordConfigReload(at)
+	m.RecordConfigReloadFailure()
+
+	s := m.Summary()
+	if s.ConfigReloadedAt == nil || *s.ConfigReloadedAt != at.Unix() {
+		t.Fatalf("ConfigReloadedAt = %v, want %d", s.ConfigReloadedAt, at.Unix())
+	}
+	if s.ConfigAgeSeconds == nil || *s.ConfigAgeSeconds < 89 || *s.ConfigAgeSeconds > 95 {
+		t.Errorf("ConfigAgeSeconds = %v, want about 90", s.ConfigAgeSeconds)
+	}
+	if s.ConfigReloadFailures != 1 {
+		t.Errorf("ConfigReloadFailures = %d, want 1", s.ConfigReloadFailures)
 	}
 }

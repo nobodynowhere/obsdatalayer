@@ -1,20 +1,37 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
-import { TenantService, UserService, RoleService, InstanceService, MetricsService } from '@/services'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
+import {
+  TenantService,
+  UserService,
+  RoleService,
+  InstanceService,
+  MetricsService,
+  SettingsService,
+} from '@/services'
 
 const tenants = ref([])
 const users = ref([])
 const roles = ref([])
 const instances = ref([])
 const traffic = ref(null)
+const settings = ref(null)
 const loading = ref(true)
 const error = ref('')
+
+// Config age is reported by the gateway, measured against its own clock, and
+// then advanced locally so a page left open does not keep showing the age at
+// the moment it was fetched. fetchedAt is the browser clock at that moment, so
+// only the elapsed time since the fetch is ever taken from this machine.
+const fetchedAt = ref(Date.now())
+const now = ref(Date.now())
+let ticker = null
 
 const tenantSvc = new TenantService()
 const userSvc = new UserService()
 const roleSvc = new RoleService()
 const instanceSvc = new InstanceService()
 const metricsSvc = new MetricsService()
+const settingsSvc = new SettingsService()
 
 const instanceCount = computed(() => instances.value.length)
 
@@ -98,6 +115,65 @@ const readTargets = computed(() => {
 function fmt(n) {
   return Number(n ?? 0).toLocaleString()
 }
+
+// Go renders durations as "30s", "1m0s", "1h30m0s". Parsed rather than assumed
+// so the staleness threshold below tracks whatever the operator configured.
+function parseGoDuration(text) {
+  if (typeof text !== 'string') return null
+  let total = 0
+  let matched = false
+  const units = { h: 3600, m: 60, s: 1, ms: 0.001, us: 1e-6, ns: 1e-9 }
+  for (const [, value, unit] of text.matchAll(/([\d.]+)(ms|us|ns|h|m|s)/g)) {
+    const scale = units[unit]
+    if (scale === undefined) return null
+    total += Number(value) * scale
+    matched = true
+  }
+  return matched ? total : null
+}
+
+function humanizeAge(seconds) {
+  const s = Math.max(0, Math.floor(seconds))
+  if (s < 60) return `${s}s`
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`
+  if (s < 86400) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`
+  return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`
+}
+
+const reloadIntervalSeconds = computed(() => parseGoDuration(settings.value?.reload_interval) ?? 30)
+
+// Three intervals: two consecutive missed reloads. One is a tick that has not
+// landed yet, which is normal and would make this flag flicker on every page
+// load.
+const staleAfterSeconds = computed(() => reloadIntervalSeconds.value * 3)
+
+// The config the gateway is actually serving, and how old it is. Absent means
+// no reload has succeeded since the process started, which for a running
+// gateway means the very first tick has not landed yet.
+const configFreshness = computed(() => {
+  const t = traffic.value
+  if (!t) return null
+
+  const failures = t.config_reload_failures ?? 0
+  if (t.config_age_seconds === null || t.config_age_seconds === undefined) {
+    return { unknown: true, failures }
+  }
+
+  const elapsed = Math.max(0, (now.value - fetchedAt.value) / 1000)
+  const age = t.config_age_seconds + elapsed
+  const stale = age > staleAfterSeconds.value
+
+  let hint
+  if (stale) {
+    hint = `Reloads are failing; expected every ${settings.value?.reload_interval ?? '30s'}`
+  } else if (failures > 0) {
+    hint = `Current. ${fmt(failures)} reload failure(s) since start`
+  } else {
+    hint = `Re-read from the database every ${settings.value?.reload_interval ?? '30s'}`
+  }
+
+  return { unknown: false, age, stale, failures, hint, text: humanizeAge(age) }
+})
 const unmappedTenants = computed(() => {
   const referenced = new Set()
   for (const r of roles.value) for (const g of r.grants ?? []) for (const t of g.tenant_ids ?? []) referenced.add(t)
@@ -109,7 +185,7 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [t, u, r, i, mx] = await Promise.all([
+    const [t, u, r, i, mx, st] = await Promise.all([
       tenantSvc.list(),
       userSvc.list(),
       roleSvc.list(),
@@ -117,12 +193,18 @@ async function load() {
       // Counters are a nice-to-have on this page: a gateway that cannot report
       // them should still render its configuration.
       metricsSvc.get().catch(() => null),
+      // Only for the reload interval, which sets the staleness threshold. A
+      // failure here falls back to the 30s default rather than hiding the card.
+      settingsSvc.get().catch(() => null),
     ])
     tenants.value = t
     users.value = u
     roles.value = r
     instances.value = i
     traffic.value = mx
+    settings.value = st
+    fetchedAt.value = Date.now()
+    now.value = fetchedAt.value
   } catch (e) {
     error.value = e?.response?.data?.error || 'Failed to load gateway state.'
   } finally {
@@ -130,7 +212,19 @@ async function load() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  // Advances the displayed config age between refreshes, so a dashboard left
+  // open on a wall keeps counting up while reloads are failing rather than
+  // freezing at whatever it read on load.
+  ticker = window.setInterval(() => {
+    now.value = Date.now()
+  }, 1000)
+})
+
+onUnmounted(() => {
+  if (ticker) window.clearInterval(ticker)
+})
 </script>
 
 <template>
@@ -168,7 +262,38 @@ onMounted(load)
         <div class="stat-card__value">{{ roles.length }}</div>
         <div class="stat-card__hint">Grant bundles</div>
       </div>
+      <div v-if="configFreshness" class="stat-card">
+        <div class="stat-card__label">Config age</div>
+        <div class="stat-card__value">
+          <template v-if="configFreshness.unknown">&mdash;</template>
+          <template v-else>{{ configFreshness.text }}</template>
+          <PrimeTag
+            v-if="configFreshness.stale"
+            severity="danger"
+            value="STALE"
+            class="stat-card__flag"
+          />
+        </div>
+        <div class="stat-card__hint">
+          <template v-if="configFreshness.unknown">No reload has completed yet</template>
+          <template v-else>{{ configFreshness.hint }}</template>
+        </div>
+      </div>
     </div>
+
+    <PrimeMessage
+      v-if="configFreshness && configFreshness.stale"
+      severity="error"
+      :closable="false"
+      class="mb-3"
+    >
+      The gateway has not reloaded its configuration for
+      {{ configFreshness.text }} and is still serving the last copy it read
+      successfully. Traffic is unaffected, but nothing changed here &mdash; in the admin UI or in
+      the database &mdash; is taking effect. The usual cause is the configuration database being
+      unreachable; check the gateway log for
+      <span class="mono">auto reload failed</span>.
+    </PrimeMessage>
 
     <div class="section-label">
       Traffic

@@ -208,6 +208,167 @@ The build process:
 
 The runtime source of truth is the configured database (SQLite or PostgreSQL). The file passed to `-config` is a minimal *bootstrap* file that opens the DB, sets listener ports, and may contain an optional `seed` block to populate a fresh database on first startup.
 
+### Reload failures
+
+The config, the tenant registry and the auth snapshot are re-read from the
+database on a ticker (`gateway.reload_interval`, default 30s), on `SIGHUP`, on
+`POST /api/config/reload`, and after any mutation through the admin API. Every
+one of those goes through the same code path, so they fail the same way.
+
+**A failed reload does not take the gateway down.** The reload is staged and
+validated before it is published: `ConfigHolder.Stage()` builds a candidate
+config from the database and returns it without touching the live one, and only
+a candidate that loads, maps and validates cleanly is installed by `Publish()`.
+When the database is unavailable the staging query fails, the reload returns an
+error, and the process keeps serving the last configuration it successfully
+loaded. Traffic is unaffected: the proxy, the routing table, the label policies
+and the user and grant snapshots are all in-memory and are read without touching
+the database.
+
+That means an outage of the config database is not an outage of the gateway. It
+is a **freeze**: the gateway keeps doing exactly what it was last told to do,
+indefinitely, and stops noticing changes. Nothing edited in the admin UI or
+written directly to the database takes effect while the database is unreachable.
+
+What you see when it happens (see *Seeing that the config is stale* below for
+the metric and the Overview card):
+
+- The ticker logs at **error** level, once per interval, and keeps ticking. It
+  never gives up and never backs off, so it recovers on its own the moment the
+  database comes back.
+
+  ```
+  level=ERROR msg="auto reload failed" error="reload config: load instances: ..."
+  ```
+
+- `SIGHUP` logs `reload on SIGHUP failed` at error level, same behaviour.
+- `POST /api/config/reload` answers **400** with the error text in
+  `{"error":"..."}`. In the admin UI (**Configuration → Reload from database**)
+  this is the red *"Reload failed"* toast.
+- A successful reload logs at **debug**, not info — it runs every 30s and almost
+  always finds nothing changed. Do not use its absence as a signal; use the
+  error lines above, or the freshness gauge below.
+- `gateway_config_reload_failures_total` increments and
+  `gateway_config_last_successful_reload_seconds` climbs, which is what makes
+  the freeze alertable.
+
+The same staging behaviour covers a database that is *reachable but holding
+config the gateway will not accept* — most often a tenant referenced by an
+instance having been deleted underneath it, which fails `ValidateTenants`. The
+live config is kept and the reason is logged; see the tenant-deletion entry in
+`DEFECTS.md`.
+
+Other effects of a database outage on a running gateway:
+
+- **Authentication keeps working.** Users, API keys and Casbin policy are all
+  served from memory, and password verification is bcrypt against the cached
+  hash. Nobody is locked out by the database being down.
+- **API key `last_used_at` writes fail silently.** They are non-fatal by design
+  — losing a timestamp must never fail a shipper request — and are logged at
+  **debug** only, at most once per key per minute.
+- **Every admin API mutation fails.** Creating a user, editing an instance,
+  changing a setting: all write to the database first, so all return an error.
+- **A restart during the outage does not come back.** Startup loads the config
+  from the database and `log.Fatalf`s if it cannot. There is no on-disk cache of
+  the last good config. Avoid restarting the gateway while its database is down,
+  because a process that is up and frozen is strictly better than one that will
+  not start.
+
+Reload is applied as one unit for config and auth — both are fetched and
+validated before either is published, so a failure in one cannot leave a
+half-applied pair. Two caveats:
+
+- The **tenant registry is reloaded and published first**, before the config is
+  staged, because the config is validated against it. A database failure that
+  happens *after* the tenant reload but before the config is published leaves a
+  refreshed tenant set alongside the previous config.
+- Inside `auth.Service.Reload`, the user snapshot and the API key index are
+  installed before the Casbin policy is loaded. A failure between those steps
+  leaves refreshed users and keys with the previous grants. Casbin loads into a
+  copy of the model, so the live policy is never left empty.
+
+Both windows require the database to fail *between* queries of the same reload
+rather than being down when it starts, so in practice they need a mid-reload
+outage. The next successful reload converges everything.
+
+### Seeing that the config is stale
+
+A frozen gateway is otherwise indistinguishable from a healthy one, so the age
+of the running configuration is exported and displayed.
+
+**Metrics.** Two series on the admin port's `/metrics`:
+
+| Metric | Type | Meaning |
+| --- | --- | --- |
+| `gateway_config_last_successful_reload_seconds` | gauge | Seconds since the last **successful** reload |
+| `gateway_config_reload_failures_total` | counter | Reloads that failed, from any trigger |
+
+The gauge is the age of the configuration the gateway is actually serving. A
+failed reload does not reset it, so it climbs for as long as the database is
+unreachable, and it is alertable on its own:
+
+```
+- alert: ObsGatewayConfigStale
+  expr: gateway_config_last_successful_reload_seconds > 300
+  for: 5m
+  annotations:
+    summary: obsgateway has not reloaded its config for over 5 minutes
+```
+
+It is deliberately an age rather than a Unix timestamp: no `time()` in the
+expression, and no dependence on the gateway and Prometheus agreeing about what
+time it is. The value is resolved at scrape time against the gateway's own
+clock, so it keeps climbing between scrapes without anything having to update
+it. Pick the threshold from `reload_interval` — the 300s above is ten intervals
+at the 30s default; three is the tightest that will not flag a single tick that
+has not landed yet. `rate()` on the failure counter is the companion alert; it
+fires sooner but says less, because one failed reload is not yet a problem.
+
+The gauge is **absent**, not zero, until a reload has succeeded — a zero age
+would read as "reloaded just now", making a gateway that has never loaded its
+config look like the freshest one on the dashboard. In practice it is populated
+from process start, because the startup load counts.
+
+**Admin UI.** The Overview page carries a **Config age** card next to the
+tenant, instance, user and role counts. It counts up live, and past three reload
+intervals it is flagged `STALE` and the page shows a banner explaining that the
+gateway is still serving its last good config and that nothing being edited is
+taking effect. The age is measured on the gateway's clock, not the browser's.
+
+**Still not covered:** `GET /healthz` on the admin port returns
+`{"status":"ok"}` unconditionally. It does not touch the database and does not
+consider reload state, so it is a liveness check only — a gateway frozen on a
+week-old config still answers `ok`. Use the metric above for staleness, or poll
+`POST /api/config/reload` and alert on a non-200 for an external check that
+exercises the real database path.
+
+### Scraping metrics without a credential
+
+`/metrics` lives on the admin port and normally requires an admin credential
+like everything else there, because the exported series name every configured
+instance and every upstream target URL.
+
+Where the scraper cannot hold a credential, **Settings → Metrics endpoint** (or
+`metrics_unauthenticated` in the gateway settings) drops the requirement:
+
+```bash
+curl -u admin:PASSWORD -X PUT https://gateway:9091/api/settings \
+  -H 'Content-Type: application/json' -d '{"metrics_unauthenticated":true}'
+```
+
+- **Off by default**, and a database upgraded from a version without the column
+  reads as off. Turning it on is always a deliberate act.
+- **`/metrics` only.** Every other admin route, `/healthz` and the whole
+  `/api/` surface included, still requires credentials plus an admin grant. The
+  exemption is an exact path match, so `/metrics/anything` is not covered.
+- **Hot-reloads** on the next `reload_interval`, like any other setting. The
+  exemption is evaluated per request rather than captured at startup.
+- **It is audited**, like any other settings change.
+- The admin listener still binds loopback by default. Unauthenticated metrics on
+  a loopback listener is a local decision; on a listener reachable from the
+  network it hands out a map of the backends, so check that the port is
+  firewalled before turning this on.
+
 ### Resetting a password
 
 On first start the gateway creates an `admin` account and writes the generated

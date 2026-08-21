@@ -102,6 +102,14 @@ type GatewayConfig struct {
 	// DefaultTargetTimeout bounds one attempt against a target that does not
 	// set its own timeout. It is the fallback for PushTarget.TimeoutSeconds.
 	DefaultTargetTimeout Duration `yaml:"default_target_timeout"`
+
+	// MetricsUnauthenticated drops the admin credential requirement from
+	// GET /metrics on the admin port, so a Prometheus that cannot hold a
+	// credential can still scrape it. Off by default, and deliberately so:
+	// the exported series carry instance names and upstream target URLs.
+	// Only /metrics is exempted -- every other admin route, /healthz
+	// included, still requires an admin grant.
+	MetricsUnauthenticated bool `yaml:"metrics_unauthenticated"`
 }
 
 // AuthLimitConfig bounds the cost an unauthenticated caller can impose.

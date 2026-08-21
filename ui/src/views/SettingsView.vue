@@ -21,6 +21,7 @@ const form = ref({
   auth_max_concurrent_hashes: 0,
   auth_hash_wait: '250ms',
   auth_hash_concurrency_effective: 0,
+  metrics_unauthenticated: false,
 })
 const loading = ref(true)
 const saving = ref(false)
@@ -34,6 +35,14 @@ const mib = (bytes) => (bytes / (1024 * 1024)).toFixed(1)
 const boolOptions = [
   { label: 'Enabled', value: true },
   { label: 'Disabled', value: false },
+]
+
+// Phrased as what the endpoint requires rather than as the field name: an
+// "Enabled/Disabled" pair against metrics_unauthenticated reads as a double
+// negative, and getting it backwards here exposes the backend URLs.
+const metricsAuthOptions = [
+  { label: 'Require authentication', value: false },
+  { label: 'Allow unauthenticated scrapes', value: true },
 ]
 
 async function load() {
@@ -120,6 +129,31 @@ onMounted(load)
           <label for="s-reload">Reload interval</label>
           <PrimeInputText id="s-reload" v-model="form.reload_interval" class="mono" />
           <small>How often the gateway re-reads configuration from the database.</small>
+        </div>
+
+        <div class="form-field">
+          <label>Metrics endpoint</label>
+          <PrimeSelect
+            v-model="form.metrics_unauthenticated"
+            :options="metricsAuthOptions"
+            option-label="label"
+            option-value="value"
+          />
+          <small>
+            Whether <span class="mono">GET /metrics</span> on the admin port requires an admin
+            credential. Turn it off only for a Prometheus that cannot hold one.
+          </small>
+          <PrimeMessage
+            v-if="form.metrics_unauthenticated"
+            severity="warn"
+            :closable="false"
+            class="mt-2"
+          >
+            Anyone who can reach the admin port can now read the metrics, which name every
+            configured instance and every upstream target URL. Make sure that port is on loopback
+            or firewalled. Nothing else is exposed &mdash; the rest of the admin API, health check
+            included, still requires an admin grant.
+          </PrimeMessage>
         </div>
 
       </div>

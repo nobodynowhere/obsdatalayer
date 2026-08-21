@@ -11,6 +11,7 @@ import (
 
 	"obsdatalayer/internal/auth"
 	"obsdatalayer/internal/authlimit"
+	"obsdatalayer/internal/config"
 	"obsdatalayer/internal/fanout"
 	"obsdatalayer/internal/metrics"
 	"obsdatalayer/internal/ui"
@@ -189,13 +190,25 @@ func BasicAuth(a auth.Authorizer, guard *AuthGuard, next http.Handler) http.Hand
 // document load, so the SPA shell is served anonymously and then authenticates
 // against these same endpoints for every piece of data it displays.
 //
+// The metrics_unauthenticated setting adds one more, for a Prometheus that
+// cannot hold a credential: it exempts GET /metrics and nothing else. cfg is
+// read per request, so the setting takes effect on reload rather than on
+// restart. A nil holder, which is what tests pass, keeps /metrics protected.
+//
 // Unlike the data plane, a 401 from here never carries WWW-Authenticate. The
 // only client is the SPA, which manages the credential itself; issuing a
 // challenge would hand authentication to the browser instead. See
 // writeUnauthorizedSilent.
-func AdminAuth(a auth.Authorizer, guard *AuthGuard, next http.Handler) http.Handler {
+func AdminAuth(a auth.Authorizer, guard *AuthGuard, cfg *config.ConfigHolder, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if ui.IsUIPath(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// An exact path match, never a prefix: this bypasses the credential
+		// check, the admin-grant check and the failure throttle together, and
+		// the handler runs with no RequestAuth in its context.
+		if r.URL.Path == "/metrics" && metricsUnauthenticated(cfg) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -230,6 +243,16 @@ func AdminAuth(a auth.Authorizer, guard *AuthGuard, next http.Handler) http.Hand
 		ra := &auth.RequestAuth{Username: username}
 		next.ServeHTTP(w, r.WithContext(auth.WithRequestAuth(r.Context(), ra)))
 	})
+}
+
+// metricsUnauthenticated reports whether the operator has asked for /metrics to
+// be served without credentials.
+func metricsUnauthenticated(cfg *config.ConfigHolder) bool {
+	if cfg == nil {
+		return false
+	}
+	c := cfg.Get()
+	return c != nil && c.Gateway.MetricsUnauthenticated
 }
 
 // extractBackend parses the backend segment from /api/{backend}/...

@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -173,6 +174,9 @@ type Metrics struct {
 	authRejectedDesc  *prometheus.Desc
 	authFailuresDesc  *prometheus.Desc
 
+	configReloadAgeDesc  *prometheus.Desc
+	configReloadFailDesc *prometheus.Desc
+
 	fanout        *counterSet[fanoutKey]
 	suppressed    *counterSet[suppressedKey]
 	partial       *counterSet[partialKey]
@@ -199,6 +203,19 @@ type Metrics struct {
 	authThrottled atomic.Uint64
 	authSaturated atomic.Uint64
 	authFailures  atomic.Uint64
+
+	// Config reload freshness. Plain atomics for the same reason as the auth
+	// counters above: they carry no instance label and must survive
+	// RetainInstances.
+	//
+	// configReloadedAt is Unix seconds of the last *successful* reload. It is
+	// stored as an instant and exported as an age, so the age is always
+	// current at scrape time rather than at reload time. A failed reload
+	// deliberately does not touch it -- the gateway is still serving whatever
+	// it loaded then, so the age keeps climbing for as long as the database is
+	// unreachable, which is exactly what an alert needs to see.
+	configReloadedAt   atomic.Int64
+	configReloadFailed atomic.Uint64
 }
 
 var _ prometheus.Collector = (*Metrics)(nil)
@@ -275,6 +292,23 @@ func New(reg prometheus.Registerer) *Metrics {
 			nil, nil,
 		),
 
+		configReloadAgeDesc: prometheus.NewDesc(
+			"gateway_config_last_successful_reload_seconds",
+			"Seconds since the last successful config reload, i.e. the age of the "+
+				"configuration the gateway is actually serving. A failed reload does not "+
+				"reset it, so it climbs for as long as the database is unreachable. Alert "+
+				"on it directly (> 300, say): a gateway that cannot reach its database "+
+				"keeps serving its last good config indefinitely and is otherwise "+
+				"indistinguishable from a healthy one.",
+			nil, nil,
+		),
+		configReloadFailDesc: prometheus.NewDesc(
+			"gateway_config_reload_failures_total",
+			"Config reloads that failed, from any trigger: the ticker, SIGHUP, the admin "+
+				"API, or a mutation applying itself. The live config is retained on failure.",
+			nil, nil,
+		),
+
 		fanout:          newCounterSet[fanoutKey](),
 		suppressed:      newCounterSet[suppressedKey](),
 		partial:         newCounterSet[partialKey](),
@@ -304,6 +338,8 @@ func (m *Metrics) Describe(ch chan<- *prometheus.Desc) {
 	ch <- m.readClientGone
 	ch <- m.authRejectedDesc
 	ch <- m.authFailuresDesc
+	ch <- m.configReloadAgeDesc
+	ch <- m.configReloadFailDesc
 }
 
 func (m *Metrics) Collect(ch chan<- prometheus.Metric) {
@@ -326,6 +362,20 @@ func (m *Metrics) Collect(ch chan<- prometheus.Metric) {
 		float64(m.authSaturated.Load()), "saturated")
 	ch <- prometheus.MustNewConstMetric(m.authFailuresDesc, prometheus.CounterValue,
 		float64(m.authFailures.Load()))
+
+	ch <- prometheus.MustNewConstMetric(m.configReloadFailDesc, prometheus.CounterValue,
+		float64(m.configReloadFailed.Load()))
+	// Resolved at scrape time, and against the gateway's own clock: an age is
+	// alertable on its own (> 300) without needing time(), and it does not go
+	// wrong when the gateway and Prometheus disagree about what time it is.
+	//
+	// Only emitted once a reload has actually succeeded. A zero here would read
+	// as "reloaded just now" and would mean a gateway that has never managed to
+	// load its config looks the healthiest of all.
+	if at, ok := m.ConfigReloadedAt(); ok {
+		ch <- prometheus.MustNewConstMetric(m.configReloadAgeDesc, prometheus.GaugeValue,
+			time.Since(at).Seconds())
+	}
 }
 
 // ---- recording --------------------------------------------------------------
@@ -383,6 +433,33 @@ func (m *Metrics) ReadValue(instance, target, result string) uint64 {
 // ReadFailoverValue returns how many reads for an instance failed over.
 func (m *Metrics) ReadFailoverValue(instance string) uint64 {
 	return m.readFailovers.value(partialKey{instance})
+}
+
+// RecordConfigReload marks a successful config reload as having happened at t.
+// Called only on the path that publishes a new config, so the timestamp always
+// describes configuration the gateway is genuinely serving.
+func (m *Metrics) RecordConfigReload(t time.Time) {
+	m.configReloadedAt.Store(t.Unix())
+}
+
+// RecordConfigReloadFailure counts a reload that did not publish.
+func (m *Metrics) RecordConfigReloadFailure() {
+	m.configReloadFailed.Add(1)
+}
+
+// ConfigReloadedAt returns the last successful reload time, and false if no
+// reload has succeeded yet.
+func (m *Metrics) ConfigReloadedAt() (time.Time, bool) {
+	at := m.configReloadedAt.Load()
+	if at == 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(at, 0), true
+}
+
+// ConfigReloadFailures returns how many reloads have failed.
+func (m *Metrics) ConfigReloadFailures() uint64 {
+	return m.configReloadFailed.Load()
 }
 
 // RecordAuthRejected counts a request refused before any credential check.
@@ -521,6 +598,13 @@ type Summary struct {
 	ReadTruncated    uint64            `json:"read_truncated"`
 	ReadDisconnects  uint64            `json:"read_client_disconnects"`
 	Instances        []InstanceSummary `json:"instances"`
+
+	// Config freshness, for the Overview page. ConfigAgeSeconds is resolved
+	// here rather than in the browser so the age is measured against the
+	// gateway's clock, not the operator's laptop's.
+	ConfigReloadedAt     *int64 `json:"config_reloaded_at,omitempty"`
+	ConfigAgeSeconds     *int64 `json:"config_age_seconds,omitempty"`
+	ConfigReloadFailures uint64 `json:"config_reload_failures"`
 }
 
 // InstanceSummary is the same figures for one instance.
@@ -566,6 +650,17 @@ func (m *Metrics) Summary() Summary {
 	}
 
 	var out Summary
+	out.ConfigReloadFailures = m.configReloadFailed.Load()
+	if at, ok := m.ConfigReloadedAt(); ok {
+		unix := at.Unix()
+		age := int64(time.Since(at).Seconds())
+		if age < 0 {
+			age = 0
+		}
+		out.ConfigReloadedAt = &unix
+		out.ConfigAgeSeconds = &age
+	}
+
 	for k, v := range m.fanout.snapshot() {
 		s := at(k.instance)
 		s.FanoutRequests += v

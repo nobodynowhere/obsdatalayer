@@ -240,6 +240,9 @@ type settingsDoc struct {
 	// own timeout_seconds.
 	DefaultTargetTimeout string `json:"default_target_timeout"`
 
+	// MetricsUnauthenticated serves GET /metrics without credentials.
+	MetricsUnauthenticated bool `json:"metrics_unauthenticated"`
+
 	AuthLimitEnabled        *bool  `json:"auth_limit_enabled"`
 	AuthFailureThreshold    int    `json:"auth_failure_threshold"`
 	AuthFailureWindow       string `json:"auth_failure_window"`
@@ -265,6 +268,8 @@ func (h *handler) getSettings(w http.ResponseWriter, r *http.Request) {
 		ReloadInterval:       g.ReloadInterval.Duration().String(),
 		DefaultTargetTimeout: g.DefaultTargetTimeout.Duration().String(),
 
+		MetricsUnauthenticated: g.MetricsUnauthenticated,
+
 		AuthLimitEnabled:        &enabled,
 		AuthFailureThreshold:    g.AuthLimit.FailureThreshold,
 		AuthFailureWindow:       g.AuthLimit.FailureWindow.Duration().String(),
@@ -283,7 +288,11 @@ func (h *handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	g := config.GatewayConfig{MaxBodyBytes: doc.MaxBodyBytes, LogLevel: doc.LogLevel}
+	g := config.GatewayConfig{
+		MaxBodyBytes:           doc.MaxBodyBytes,
+		LogLevel:               doc.LogLevel,
+		MetricsUnauthenticated: doc.MetricsUnauthenticated,
+	}
 	g.AuthLimit = config.AuthLimitConfig{
 		Enabled:             doc.AuthLimitEnabled,
 		FailureThreshold:    doc.AuthFailureThreshold,

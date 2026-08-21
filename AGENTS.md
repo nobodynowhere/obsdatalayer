@@ -28,6 +28,49 @@
 - The config and auth snapshots are reloaded automatically on a ticker and can
   also be triggered via `POST /config/reload` on the admin port.
 
+## Config Reload Observability
+
+- `reloader.run` is the single funnel for every reload trigger and records the
+  outcome in a deferred block on its named return, so a new early return inside
+  it is accounted for automatically.
+- `gateway_config_last_successful_reload_seconds` is exported as an **age**, not
+  a Unix timestamp: it is alertable without `time()` and does not depend on the
+  gateway and Prometheus agreeing about the time. The stored value is the
+  instant (`configReloadedAt`); Collect turns it into an age at scrape time.
+- Only a reload that actually published may move that instant. The gauge's
+  entire value is that it *keeps climbing* when the database goes away; anything
+  that touches it on the failure path makes a frozen gateway look healthy.
+- The gauge is absent until the first success and is seeded at startup from the
+  `NewDBHolder` load. Without that seed every restart trips the staleness alert
+  for one reload interval. Absent rather than zero, because a zero age reads as
+  "reloaded just now".
+- These counters are plain atomics, like the auth counters, so `RetainInstances`
+  cannot prune them. They carry no instance label.
+- The Overview card reads `config_age_seconds` from `metrics.Summary`, resolved
+  on the gateway's clock, and advances it locally between refreshes. Its stale
+  threshold is three `reload_interval`s, parsed from the settings endpoint.
+
+## Unauthenticated Metrics
+
+- `gateway settings.metrics_unauthenticated` exempts `GET /metrics` on the admin
+  port from `middleware.AdminAuth`, which takes the `*config.ConfigHolder` and
+  reads the setting itself. This is the *only* exemption besides the UI bundle;
+  keep it that way rather than reintroducing a general predicate mechanism.
+- The holder is read per request, which is what makes the setting
+  hot-reloadable. Do not hoist it into a captured bool. A nil holder means
+  protected, which is what tests pass.
+- It is an exact path match on `/metrics`. Never widen it to a prefix: the
+  exemption bypasses the credential check, the admin-grant check and the failure
+  throttle together, and no handler reached that way has a `RequestAuth` in its
+  context.
+- The column is a plain `bool`, not `*bool` like `AuthLimitEnabled`. Here the
+  NULL-reads-as-false default is the safe one (authentication required), so the
+  pointer indirection would buy nothing. `TestMetricsUnauthenticatedDefaultsOnPreUpgradeRow`
+  pins that.
+- `SaveSettings` writes it through a map-valued `Updates` so turning it back off
+  persists; a struct-valued update would skip the zero value and leave `/metrics`
+  open after the operator had closed it.
+
 ## Snyk
 
 - `snyk` CLI is installed at `C:\WINDOWS\system32\snyk.exe`, but running

@@ -33,6 +33,12 @@ type GatewaySetting struct {
 	AuthMaxBlockDuration    string
 	AuthMaxConcurrentHashes int
 	AuthHashWait            string
+
+	// MetricsUnauthenticated serves /metrics on the admin port without
+	// credentials. A plain bool, not a pointer: unlike AuthLimitEnabled the
+	// safe reading of a pre-migration NULL is false, which is the existing
+	// behaviour of requiring authentication.
+	MetricsUnauthenticated bool
 }
 
 // Instance is a configured backend tenant.

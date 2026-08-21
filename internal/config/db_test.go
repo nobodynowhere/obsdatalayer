@@ -583,3 +583,66 @@ func TestNegativeTargetTimeoutIsRejected(t *testing.T) {
 		t.Error("expected a negative per-target timeout to be rejected")
 	}
 }
+
+// Off is the default, and an explicit on survives a round trip. The gauge that
+// exposes backend URLs to unauthenticated callers must never arrive switched on
+// by accident.
+func TestMetricsUnauthenticatedDefaultsOffAndRoundTrips(t *testing.T) {
+	gormDB := openTestConfigDB(t)
+
+	cfg, err := config.LoadFromDB(gormDB, nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Gateway.MetricsUnauthenticated {
+		t.Fatal("a fresh database served /metrics without authentication")
+	}
+
+	g := cfg.Gateway
+	g.MetricsUnauthenticated = true
+	if err := config.SaveSettings(gormDB, g); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	cfg, err = config.LoadFromDB(gormDB, nil)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if !cfg.Gateway.MetricsUnauthenticated {
+		t.Error("metrics_unauthenticated did not survive the round trip")
+	}
+
+	// And back off again. This is the direction a struct-valued Updates would
+	// silently drop, leaving /metrics open after the operator had closed it.
+	g = cfg.Gateway
+	g.MetricsUnauthenticated = false
+	if err := config.SaveSettings(gormDB, g); err != nil {
+		t.Fatalf("save off: %v", err)
+	}
+	cfg, err = config.LoadFromDB(gormDB, nil)
+	if err != nil {
+		t.Fatalf("reload off: %v", err)
+	}
+	if cfg.Gateway.MetricsUnauthenticated {
+		t.Error("turning metrics_unauthenticated back off did not persist")
+	}
+}
+
+// A row written before the column existed reads as NULL. It must load as false
+// -- authentication required -- rather than failing the load or, worse,
+// upgrading a gateway straight into serving /metrics anonymously.
+func TestMetricsUnauthenticatedDefaultsOnPreUpgradeRow(t *testing.T) {
+	gormDB := openTestConfigDB(t)
+
+	if err := gormDB.Table("gateway_settings").Where("1 = 1").
+		Updates(map[string]any{"metrics_unauthenticated": nil}).Error; err != nil {
+		t.Fatalf("simulate pre-upgrade row: %v", err)
+	}
+
+	cfg, err := config.LoadFromDB(gormDB, nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Gateway.MetricsUnauthenticated {
+		t.Error("an upgraded gateway came up serving /metrics without authentication")
+	}
+}

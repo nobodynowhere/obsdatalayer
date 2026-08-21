@@ -16,6 +16,7 @@ import (
 	"obsdatalayer/internal/auth"
 	"obsdatalayer/internal/auth/authtest"
 	"obsdatalayer/internal/authlimit"
+	"obsdatalayer/internal/config"
 	"obsdatalayer/internal/metrics"
 	"obsdatalayer/internal/middleware"
 )
@@ -427,7 +428,7 @@ func TestBasicAuthUnauthorizedHeaders(t *testing.T) {
 func TestAdminAuthAllowsAdmin(t *testing.T) {
 	inner, called := newHandlerCalledFlag()
 	stub := authtest.NewAdmin()
-	h := middleware.AdminAuth(stub, nil, inner)
+	h := middleware.AdminAuth(stub, nil, nil, inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
 	req.Header.Set("Authorization", stub.Header())
@@ -445,7 +446,7 @@ func TestAdminAuthAllowsAdmin(t *testing.T) {
 func TestAdminAuthRejectsNonAdmin(t *testing.T) {
 	inner, called := newHandlerCalledFlag()
 	stub := authtest.New() // valid credentials, no admin grant
-	h := middleware.AdminAuth(stub, nil, inner)
+	h := middleware.AdminAuth(stub, nil, nil, inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
 	req.Header.Set("Authorization", stub.Header())
@@ -466,7 +467,7 @@ func TestAdminAuthProtectsMetricsAndHealthz(t *testing.T) {
 	for _, path := range []string{"/metrics", "/healthz"} {
 		t.Run(path, func(t *testing.T) {
 			inner, called := newHandlerCalledFlag()
-			h := middleware.AdminAuth(authtest.NewAdmin(), nil, inner)
+			h := middleware.AdminAuth(authtest.NewAdmin(), nil, nil, inner)
 
 			req := httptest.NewRequest(http.MethodGet, path, nil)
 			rec := httptest.NewRecorder()
@@ -484,7 +485,7 @@ func TestAdminAuthProtectsMetricsAndHealthz(t *testing.T) {
 
 func TestAdminAuthRejectsBadPassword(t *testing.T) {
 	inner, _ := newHandlerCalledFlag()
-	h := middleware.AdminAuth(authtest.NewAdmin(), nil, inner)
+	h := middleware.AdminAuth(authtest.NewAdmin(), nil, nil, inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
 	req.Header.Set("Authorization", authtest.BasicHeader("testuser", "wrong"))
@@ -505,7 +506,7 @@ func TestAdminAuthServesUIWithoutCredentials(t *testing.T) {
 	for _, path := range []string{"/", "/ui/", "/ui/assets/index-abc123.js", "/ui/tenants"} {
 		t.Run(path, func(t *testing.T) {
 			inner, called := newHandlerCalledFlag()
-			h := middleware.AdminAuth(authtest.NewAdmin(), nil, inner)
+			h := middleware.AdminAuth(authtest.NewAdmin(), nil, nil, inner)
 
 			req := httptest.NewRequest(http.MethodGet, path, nil)
 			rec := httptest.NewRecorder()
@@ -526,7 +527,7 @@ func TestAdminAuthExemptionDoesNotLeakToAPI(t *testing.T) {
 	for _, path := range []string{"/api/tenants", "/api/users", "/api/roles", "/api/config", "/api/whoami", "/uiconfig"} {
 		t.Run(path, func(t *testing.T) {
 			inner, called := newHandlerCalledFlag()
-			h := middleware.AdminAuth(authtest.NewAdmin(), nil, inner)
+			h := middleware.AdminAuth(authtest.NewAdmin(), nil, nil, inner)
 
 			req := httptest.NewRequest(http.MethodGet, path, nil)
 			rec := httptest.NewRecorder()
@@ -1187,7 +1188,7 @@ func TestThrottleIsPerPlane(t *testing.T) {
 	stub := authtest.NewAdmin()
 
 	data := middleware.BasicAuth(stub, dataGuard, dataInner)
-	admin := middleware.AdminAuth(stub, adminGuard, adminInner)
+	admin := middleware.AdminAuth(stub, adminGuard, nil, adminInner)
 
 	// Flood the data plane until it blocks.
 	badRequest(data, "10.0.0.1")
@@ -1213,7 +1214,7 @@ func TestThrottleIsPerPlane(t *testing.T) {
 func TestAdminPlaneThrottlesIndependently(t *testing.T) {
 	adminGuard, _ := newGuard(2)
 	adminInner, _ := newHandlerCalledFlag()
-	admin := middleware.AdminAuth(authtest.NewAdmin(), adminGuard, adminInner)
+	admin := middleware.AdminAuth(authtest.NewAdmin(), adminGuard, nil, adminInner)
 
 	badAdmin := func() int {
 		req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
@@ -1328,7 +1329,7 @@ func TestBearerKeyIsRejectedOnAdminPlane(t *testing.T) {
 	inner, called := newHandlerCalledFlag()
 	stub := authtest.NewAdmin()
 	stub.APIKey = "obsgw_abc123_the-secret"
-	h := middleware.AdminAuth(stub, nil, inner)
+	h := middleware.AdminAuth(stub, nil, nil, inner)
 
 	rec := bearerRequest(h, "/api/config", stub.APIKey)
 	if rec.Code != http.StatusUnauthorized {
@@ -1395,7 +1396,7 @@ func TestAdminAuthNeverChallenges(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			inner, _ := newHandlerCalledFlag()
-			h := middleware.AdminAuth(tc.stub, nil, inner)
+			h := middleware.AdminAuth(tc.stub, nil, nil, inner)
 
 			req := httptest.NewRequest(http.MethodGet, "/api/whoami", nil)
 			if tc.creds[0] != "" {
@@ -1414,5 +1415,102 @@ func TestAdminAuthNeverChallenges(t *testing.T) {
 				t.Errorf("expected Content-Type application/json, got %q", ct)
 			}
 		})
+	}
+}
+
+// ---- metrics_unauthenticated ------------------------------------------------
+
+func metricsHolder(t *testing.T, unauthenticated bool) *config.ConfigHolder {
+	t.Helper()
+	return config.NewHolder(&config.Config{
+		Gateway: config.GatewayConfig{MetricsUnauthenticated: unauthenticated},
+	}, "test")
+}
+
+// The setting exempts exactly one path. Everything else on the admin plane
+// keeps its credential and admin-grant checks.
+func TestAdminAuthMetricsUnauthenticatedExemptsOnlyMetrics(t *testing.T) {
+	for _, tc := range []struct {
+		path      string
+		wantCode  int
+		wantInner bool
+	}{
+		{"/metrics", http.StatusOK, true},
+		{"/healthz", http.StatusUnauthorized, false},
+		{"/api/config", http.StatusUnauthorized, false},
+		// Not a prefix match: a path merely starting with /metrics is a
+		// different endpoint and must not inherit the exemption.
+		{"/metrics/secret", http.StatusUnauthorized, false},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			inner, called := newHandlerCalledFlag()
+			h := middleware.AdminAuth(authtest.NewAdmin(), nil, metricsHolder(t, true), inner)
+
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.path, nil))
+
+			if rec.Code != tc.wantCode {
+				t.Errorf("anonymous GET %s = %d, want %d", tc.path, rec.Code, tc.wantCode)
+			}
+			if *called != tc.wantInner {
+				t.Errorf("inner handler called = %v, want %v", *called, tc.wantInner)
+			}
+		})
+	}
+}
+
+// Off, and a nil holder, both keep /metrics behind an admin credential. The
+// default has to be the safe one.
+func TestAdminAuthProtectsMetricsWhenSettingOff(t *testing.T) {
+	for name, holder := range map[string]*config.ConfigHolder{
+		"setting off": metricsHolder(t, false),
+		"no holder":   nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			inner, called := newHandlerCalledFlag()
+			h := middleware.AdminAuth(authtest.NewAdmin(), nil, holder, inner)
+
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Errorf("expected 401, got %d", rec.Code)
+			}
+			if *called {
+				t.Error("expected inner handler NOT to be called")
+			}
+		})
+	}
+}
+
+// The holder is read per request, so the setting takes effect on reload rather
+// than on restart.
+func TestAdminAuthMetricsSettingIsReadPerRequest(t *testing.T) {
+	holder := metricsHolder(t, false)
+	inner, called := newHandlerCalledFlag()
+	h := middleware.AdminAuth(authtest.NewAdmin(), nil, holder, inner)
+
+	get := func() int {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		return rec.Code
+	}
+
+	if code := get(); code != http.StatusUnauthorized {
+		t.Fatalf("before reload: got %d, want 401", code)
+	}
+	if *called {
+		t.Fatal("before reload: inner handler was reached")
+	}
+
+	holder.Publish(&config.Config{
+		Gateway: config.GatewayConfig{MetricsUnauthenticated: true},
+	})
+
+	if code := get(); code != http.StatusOK {
+		t.Errorf("after reload: got %d, want 200", code)
+	}
+	if !*called {
+		t.Error("after reload: inner handler was not reached")
 	}
 }

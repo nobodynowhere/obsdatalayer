@@ -173,6 +173,13 @@ func main() {
 	p.SetMetrics(m)
 	p.SetDefaultTargetTimeout(cfg.Gateway.DefaultTargetTimeout.Duration())
 
+	// Seed the freshness gauge from the startup load. NewDBHolder above has
+	// already read this config out of the database successfully, so it is a
+	// genuine reload timestamp -- and without it the config would read as
+	// having never loaded until the first tick, which is a staleness alert
+	// firing on every restart.
+	m.RecordConfigReload(time.Now())
+
 	// Each plane throttles on its own counter. Sharing one was tried and is
 	// wrong: a flood against the data listener then blocks the operator out of
 	// the admin API, taking away the only means of turning the throttle off or
@@ -646,9 +653,20 @@ func newReloader(h *config.ConfigHolder, a *auth.Service, t *tenant.Store, p *pr
 	return &reloader{holder: h, auth: a, tenants: t, proxy: p, metrics: m, logLevel: lvl, timeouts: current, guards: guards}
 }
 
-func (r *reloader) run() error {
+func (r *reloader) run() (err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Recorded once here rather than at each return below, so every trigger --
+	// the ticker, SIGHUP, the admin API, a mutation applying itself -- lands on
+	// the same counters.
+	defer func() {
+		if err != nil {
+			r.metrics.RecordConfigReloadFailure()
+			return
+		}
+		r.metrics.RecordConfigReload(time.Now())
+	}()
 
 	// Tenants first: both the config and the policy set are validated against
 	// the tenant registry, so it has to be current before either is checked.
@@ -763,8 +781,10 @@ func adminHandler(gormDB *gorm.DB, holder *config.ConfigHolder, authSvc *auth.Se
 	})
 
 	// Every admin route requires credentials plus an admin grant, including
-	// /metrics and /healthz: the metrics carry upstream backend URLs.
-	return middleware.Logging(middleware.AdminAuth(authSvc, guard, mux))
+	// /metrics and /healthz: the metrics carry upstream backend URLs. The one
+	// opt-out is the metrics_unauthenticated setting, which AdminAuth reads
+	// from the holder per request.
+	return middleware.Logging(middleware.AdminAuth(authSvc, guard, holder, mux))
 }
 
 // dataHandler builds the data listener's handler.

@@ -119,6 +119,10 @@ func SaveSettings(db *gorm.DB, g GatewayConfig) error {
 		"auth_hash_wait":             durationString(cfg.Gateway.AuthLimit.HashWait),
 
 		"default_target_timeout": durationString(cfg.Gateway.DefaultTargetTimeout),
+
+		// A map-valued Updates writes zero values, so turning this back off
+		// persists. A struct-valued one would silently skip the false.
+		"metrics_unauthenticated": cfg.Gateway.MetricsUnauthenticated,
 	}
 	if err := db.Model(&dbstore.GatewaySetting{}).Where("id = ?", setting.ID).Updates(updates).Error; err != nil {
 		return fmt.Errorf("update gateway settings: %w", err)
@@ -317,8 +321,9 @@ func mapConfig(setting *dbstore.GatewaySetting, instances []dbstore.Instance, c 
 				Query: queryDur,
 				Push:  pushDur,
 			},
-			AuthLimit:            authLimit,
-			DefaultTargetTimeout: defaultTargetTimeout,
+			AuthLimit:              authLimit,
+			DefaultTargetTimeout:   defaultTargetTimeout,
+			MetricsUnauthenticated: setting.MetricsUnauthenticated,
 		},
 		Instances: make([]*InstanceConfig, 0, len(instances)),
 	}
