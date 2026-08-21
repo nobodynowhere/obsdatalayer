@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -20,6 +21,7 @@ import (
 	"github.com/goccy/go-yaml"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"golang.org/x/term"
 	"gorm.io/gorm"
 
 	"obsdatalayer/internal/adminapi"
@@ -52,6 +54,7 @@ func main() {
 	updateConfig := flag.Bool("update-config", false, "update gateway.tls in the bootstrap config when using --generate-self-signed")
 	generateEncryptionKey := flag.Bool("generate-encryption-key", false, "generate a credential encryption key and exit")
 	encryptionKeyOut := flag.String("encryption-key-file", "", "write the key to this file with --generate-encryption-key (default: print to stdout)")
+	resetPassword := flag.String("resetpwd", "", "reset the password for this user, prompting for the new one, and exit")
 	flag.Parse()
 
 	if *showVersion {
@@ -114,6 +117,21 @@ func main() {
 	authSvc, err := auth.NewService(gormDB, tenants)
 	if err != nil {
 		log.Fatalf("auth: %v", err)
+	}
+
+	// A password reset is an offline maintenance action: it needs the database
+	// and nothing else, so it runs before the bootstrap check and never reaches
+	// the listeners. Doing it here rather than after EnsureBootstrapAdmin also
+	// means resetting an account cannot race a bootstrap that would rotate it.
+	if name := strings.TrimSpace(*resetPassword); name != "" {
+		if err := resetUserPassword(authSvc, name); err != nil {
+			// Not log.Fatalf: slog is installed by this point, and it would
+			// file an operator-facing error such as a password mismatch under
+			// level=INFO with a timestamp. This is console output, not a log.
+			fmt.Fprintf(os.Stderr, "reset password: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	res, err := authSvc.EnsureBootstrapAdmin()
@@ -374,6 +392,96 @@ func generateEncryptionKeyFile(path string) error {
 	fmt.Printf("Set gateway.encryption_key_file: %s in the bootstrap config, or pass the key via %s.\n", path, secret.EnvKey)
 	fmt.Println("Back this key up. Without it the stored upstream credentials cannot be recovered.")
 	return nil
+}
+
+// resetUserPassword sets a new password for an existing account and reports
+// what it did. It is the way back in when the admin password is lost: it needs
+// only the database, so it works with the gateway stopped, and unlike deleting
+// the role bindings to force a re-bootstrap it leaves every grant in place.
+func resetUserPassword(svc *auth.Service, name string) error {
+	info, err := svc.GetUser(name)
+	if err != nil {
+		if errors.Is(err, auth.ErrNotFound) {
+			return fmt.Errorf("no such user %q", name)
+		}
+		return err
+	}
+
+	password, err := promptNewPassword(name)
+	if err != nil {
+		return err
+	}
+	if err := svc.SetPassword(name, password); err != nil {
+		return err
+	}
+
+	// Not logged through slog: the operator ran this to be told what happened.
+	fmt.Printf("Password updated for %s.\n", name)
+	if !info.Admin {
+		fmt.Printf("Note: %s holds no admin grant, so this account still cannot sign in to the admin UI.\n", name)
+	}
+	return nil
+}
+
+// promptNewPassword reads the new password twice and returns it only when both
+// entries agree. A typo during a lockout recovery would lock the operator out a
+// second time, with the same reset as the only remedy.
+func promptNewPassword(name string) (string, error) {
+	first, second, err := readPasswordTwice(name)
+	if err != nil {
+		return "", err
+	}
+	if first != second {
+		return "", errors.New("passwords do not match")
+	}
+	// Length is not checked here. SetPassword rejects anything under the
+	// minimum, and duplicating the rule is how the two drift apart.
+	return first, nil
+}
+
+// readPasswordTwice collects both entries. On a terminal it turns echo off, so
+// the password is never left on screen; that is also why there is no flag to
+// pass it inline, where it would land in the shell history and the process
+// list. Off a terminal it takes the two entries as two lines on stdin, so a
+// provisioning script can drive the reset without losing the confirmation.
+func readPasswordTwice(name string) (string, string, error) {
+	fd := int(os.Stdin.Fd())
+	if !term.IsTerminal(fd) {
+		sc := bufio.NewScanner(os.Stdin)
+		lines := make([]string, 0, 2)
+		for len(lines) < 2 && sc.Scan() {
+			lines = append(lines, sc.Text())
+		}
+		if err := sc.Err(); err != nil {
+			return "", "", fmt.Errorf("read password from stdin: %w", err)
+		}
+		if len(lines) < 2 {
+			return "", "", errors.New("expected the new password twice on stdin, one per line")
+		}
+		return lines[0], lines[1], nil
+	}
+
+	first, err := readHidden(fd, fmt.Sprintf("New password for %s: ", name))
+	if err != nil {
+		return "", "", err
+	}
+	second, err := readHidden(fd, "Retype new password: ")
+	if err != nil {
+		return "", "", err
+	}
+	return first, second, nil
+}
+
+// readHidden writes a prompt and reads one line with echo disabled. The newline
+// is ours to print: the terminal did not echo the one the operator typed.
+func readHidden(fd int, prompt string) (string, error) {
+	fmt.Print(prompt)
+	entered, err := term.ReadPassword(fd)
+	fmt.Println()
+	if err != nil {
+		return "", fmt.Errorf("read password: %w", err)
+	}
+	return string(entered), nil
 }
 
 func selfSignedFiles(dir string) (string, string, error) {
