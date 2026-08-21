@@ -300,6 +300,98 @@ func TestLokiTailAccessResolvesGrantLabelSelector(t *testing.T) {
 	}
 }
 
+// A tail grant pins the tenant; it does not widen what may be seen inside it.
+// Without this, an operator who restricts loki:read to a selector and then adds
+// loki:tail so the user can pick one tenant would hand back, live, exactly the
+// log lines the read policy excludes.
+func TestLokiTailInheritsTheReadPolicyWhenItHasNone(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustUser(t, svc, "alice")
+	if err := svc.SetUserGrants("alice", []auth.Grant{
+		{Backend: "loki", Action: auth.ActionRead, TenantIDs: []string{env.a}, ReadLabelSelector: `{cluster="prod"}`},
+		grant("loki", auth.ActionTail, env.a),
+	}); err != nil {
+		t.Fatalf("set grants: %v", err)
+	}
+
+	access, ok := svc.AccessFor("alice", "loki", auth.ActionTail)
+	if !ok {
+		t.Fatal("expected loki:tail to be allowed")
+	}
+	if len(access.LabelSelectors) != 1 || access.LabelSelectors[0] != `{cluster="prod"}` {
+		t.Fatalf("tail must inherit the read policy, got %v", access.LabelSelectors)
+	}
+}
+
+// The read policy only reaches the tenant the tail names. A restricted read on
+// another tenant is not the tail tenant's business.
+func TestLokiTailIgnoresReadPolicyOnAnotherTenant(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustUser(t, svc, "alice")
+	if err := svc.SetUserGrants("alice", []auth.Grant{
+		{Backend: "loki", Action: auth.ActionRead, TenantIDs: []string{env.b}, ReadLabelSelector: `{cluster="prod"}`},
+		grant("loki", auth.ActionTail, env.a),
+	}); err != nil {
+		t.Fatalf("set grants: %v", err)
+	}
+
+	access, ok := svc.AccessFor("alice", "loki", auth.ActionTail)
+	if !ok {
+		t.Fatal("expected loki:tail to be allowed")
+	}
+	if len(access.LabelSelectors) != 0 {
+		t.Fatalf("expected no selector, got %v", access.LabelSelectors)
+	}
+}
+
+// Only one selector can be sent upstream, so a tail policy that disagrees with
+// the read policy has no answer that honours both. It is refused rather than
+// resolved in either direction: taking the tail's would widen past the read
+// policy, and taking the read's would silently ignore what the operator typed.
+func TestLokiTailPolicyThatDisagreesWithReadIsDenied(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustUser(t, svc, "alice")
+	if err := svc.SetUserGrants("alice", []auth.Grant{
+		{Backend: "loki", Action: auth.ActionRead, TenantIDs: []string{env.a}, ReadLabelSelector: `{cluster="prod"}`},
+		{Backend: "loki", Action: auth.ActionTail, TenantIDs: []string{env.a}, ReadLabelSelector: `{cluster="dev"}`},
+	}); err != nil {
+		t.Fatalf("set grants: %v", err)
+	}
+
+	decision := svc.AccessDecision("alice", "loki", auth.ActionTail)
+	if decision.Allowed {
+		t.Fatalf("expected a conflicting tail policy to be denied, got %v", decision.Access.LabelSelectors)
+	}
+	if decision.DenyReason != auth.AccessDenyReadPolicy {
+		t.Fatalf("expected read_policy denial, got %q", decision.DenyReason)
+	}
+}
+
+// A tail policy matching the read policy is the supported way to carry one, and
+// resolves to that single selector rather than to a conflict.
+func TestLokiTailPolicyMatchingReadIsAllowed(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustUser(t, svc, "alice")
+	if err := svc.SetUserGrants("alice", []auth.Grant{
+		{Backend: "loki", Action: auth.ActionRead, TenantIDs: []string{env.a}, ReadLabelSelector: `{cluster="prod"}`},
+		{Backend: "loki", Action: auth.ActionTail, TenantIDs: []string{env.a}, ReadLabelSelector: `{cluster="prod"}`},
+	}); err != nil {
+		t.Fatalf("set grants: %v", err)
+	}
+
+	access, ok := svc.AccessFor("alice", "loki", auth.ActionTail)
+	if !ok {
+		t.Fatal("expected loki:tail to be allowed")
+	}
+	if len(access.LabelSelectors) != 1 || access.LabelSelectors[0] != `{cluster="prod"}` {
+		t.Fatalf("expected the shared selector, got %v", access.LabelSelectors)
+	}
+}
+
 func TestMimirReadAccessRejectsMixedTenantLabelSelectors(t *testing.T) {
 	env := newTestEnv(t)
 	svc := env.svc
@@ -791,7 +883,10 @@ func TestGrantValidation(t *testing.T) {
 		{"alerts read with multiple tenants", grant("mimir", "alerts:read", uuidA, "56f1bd96-55a2-4f34-9451-99eeccdd40d8"), false},
 		{"rules write with multiple tenants", grant("mimir", "rules:write", uuidA, "56f1bd96-55a2-4f34-9451-99eeccdd40d8"), true},
 		{"alerts write with multiple tenants", grant("mimir", "alerts:write", uuidA, "56f1bd96-55a2-4f34-9451-99eeccdd40d8"), true},
+		// Every data-plane grant names its tenants: read and tail alike are
+		// refused without one, so a grant can never resolve to "any tenant".
 		{"no tenants", grant("loki", "read"), true},
+		{"no tenants on tail", grant("loki", "tail"), true},
 		{"empty tenant", grant("loki", "read", ""), true},
 		{"tenant is not a uuid", grant("loki", "read", "tenant-a"), true},
 		{"tenant with separator", grant("loki", "read", "a|b"), true},

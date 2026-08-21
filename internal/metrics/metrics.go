@@ -41,7 +41,9 @@ type rewriteLabelsKey struct{ backend, instance, operation string }
 type readKey struct{ instance, target, result string }
 
 // truncatedKey labels a read whose response body was cut short on its way to
-// the client. target is the upstream that was serving it.
+// the client. target is the upstream that was serving it. Shared by the
+// truncation and client-disconnect counters, which carry the same labels and
+// differ only in which side of the gateway gave up.
 type truncatedKey struct{ instance, target string }
 
 // labelKey is the contract every key type satisfies so counterSet can stay
@@ -164,6 +166,7 @@ type Metrics struct {
 	readDesc          *prometheus.Desc
 	readFailoverDesc  *prometheus.Desc
 	readTruncatedDesc *prometheus.Desc
+	readClientGone    *prometheus.Desc
 	authRejectedDesc  *prometheus.Desc
 	authFailuresDesc  *prometheus.Desc
 
@@ -175,6 +178,12 @@ type Metrics struct {
 	reads         *counterSet[readKey]
 	readFailovers *counterSet[partialKey]
 	readTruncated *counterSet[truncatedKey]
+
+	// readDisconnects is deliberately not folded into readTruncated. A caller
+	// hanging up mid-body is routine -- a dashboard panel closed, a query
+	// cancelled -- while a truncation means the gateway lost data it had
+	// promised. One series that mixed them would make the second unalertable.
+	readDisconnects *counterSet[truncatedKey]
 
 	// Authentication counters are plain atomics rather than a counterSet.
 	// They carry no instance label, so they must not be reachable by
@@ -239,6 +248,15 @@ func New(reg prometheus.Registerer) *Metrics {
 			[]string{"instance", "target"}, nil,
 		),
 
+		readClientGone: prometheus.NewDesc(
+			"gateway_read_client_disconnects_total",
+			"Reads whose body copy stopped because the client went away, labeled by "+
+				"instance and the upstream target that was serving it. Routine: it means "+
+				"the caller cancelled or closed the connection before the answer was "+
+				"fully delivered, and neither the gateway nor the upstream lost data.",
+			[]string{"instance", "target"}, nil,
+		),
+
 		authRejectedDesc: prometheus.NewDesc(
 			"gateway_auth_rejected_total",
 			"Requests rejected before their credentials were checked, labeled by reason: "+
@@ -251,14 +269,15 @@ func New(reg prometheus.Registerer) *Metrics {
 			nil, nil,
 		),
 
-		fanout:        newCounterSet[fanoutKey](),
-		suppressed:    newCounterSet[suppressedKey](),
-		partial:       newCounterSet[partialKey](),
-		writeItems:    newCounterSet[writeItemsKey](),
-		rewriteLabels: newCounterSet[rewriteLabelsKey](),
-		reads:         newCounterSet[readKey](),
-		readFailovers: newCounterSet[partialKey](),
-		readTruncated: newCounterSet[truncatedKey](),
+		fanout:          newCounterSet[fanoutKey](),
+		suppressed:      newCounterSet[suppressedKey](),
+		partial:         newCounterSet[partialKey](),
+		writeItems:      newCounterSet[writeItemsKey](),
+		rewriteLabels:   newCounterSet[rewriteLabelsKey](),
+		reads:           newCounterSet[readKey](),
+		readFailovers:   newCounterSet[partialKey](),
+		readTruncated:   newCounterSet[truncatedKey](),
+		readDisconnects: newCounterSet[truncatedKey](),
 	}
 	reg.MustRegister(m)
 	return m
@@ -275,6 +294,7 @@ func (m *Metrics) Describe(ch chan<- *prometheus.Desc) {
 	ch <- m.readDesc
 	ch <- m.readFailoverDesc
 	ch <- m.readTruncatedDesc
+	ch <- m.readClientGone
 	ch <- m.authRejectedDesc
 	ch <- m.authFailuresDesc
 }
@@ -288,6 +308,7 @@ func (m *Metrics) Collect(ch chan<- prometheus.Metric) {
 	m.reads.collect(ch, m.readDesc)
 	m.readFailovers.collect(ch, m.readFailoverDesc)
 	m.readTruncated.collect(ch, m.readTruncatedDesc)
+	m.readDisconnects.collect(ch, m.readClientGone)
 
 	// Emitted unconditionally, zeros included, so an alert on the rate of these
 	// has a series to attach to from process start rather than only once the
@@ -331,6 +352,19 @@ func (m *Metrics) RecordReadTruncated(instance, target string) {
 // short mid-body.
 func (m *Metrics) ReadTruncatedValue(instance, target string) uint64 {
 	return m.readTruncated.value(truncatedKey{instance, target})
+}
+
+// RecordReadClientDisconnect counts a read whose body copy stopped because the
+// caller went away. Like RecordReadTruncated it does not touch the read result:
+// the upstream answered, and the client leaving says nothing about its health.
+func (m *Metrics) RecordReadClientDisconnect(instance, target string) {
+	m.readDisconnects.add(truncatedKey{instance, target}, 1)
+}
+
+// ReadClientDisconnectValue returns how many reads for an instance and target
+// ended with the client gone.
+func (m *Metrics) ReadClientDisconnectValue(instance, target string) uint64 {
+	return m.readDisconnects.value(truncatedKey{instance, target})
 }
 
 // ReadValue returns the count for one instance, target and result.
@@ -446,7 +480,8 @@ func (m *Metrics) RetainInstances(names []string) {
 		m.rewriteLabels.retain(live) +
 		m.reads.retain(live) +
 		m.readFailovers.retain(live) +
-		m.readTruncated.retain(live)
+		m.readTruncated.retain(live) +
+		m.readDisconnects.retain(live)
 	if dropped > 0 {
 		slog.Debug("dropped metric series for removed instances",
 			"series", dropped, "live_instances", len(live))
@@ -468,6 +503,7 @@ type Summary struct {
 	ReadFailures     uint64            `json:"read_failures"`
 	ReadFailovers    uint64            `json:"read_failovers"`
 	ReadTruncated    uint64            `json:"read_truncated"`
+	ReadDisconnects  uint64            `json:"read_client_disconnects"`
 	Instances        []InstanceSummary `json:"instances"`
 }
 
@@ -484,6 +520,7 @@ type InstanceSummary struct {
 	ReadFailures     uint64 `json:"read_failures"`
 	ReadFailovers    uint64 `json:"read_failovers"`
 	ReadTruncated    uint64 `json:"read_truncated"`
+	ReadDisconnects  uint64 `json:"read_client_disconnects"`
 	// ReadTargets breaks the read counts down by upstream, so a dashboard can
 	// show which replica is failing rather than only that something is.
 	ReadTargets []ReadTargetSummary `json:"read_targets,omitempty"`
@@ -566,6 +603,10 @@ func (m *Metrics) Summary() Summary {
 	for k, v := range m.readTruncated.snapshot() {
 		at(k.instance).ReadTruncated += v
 		out.ReadTruncated += v
+	}
+	for k, v := range m.readDisconnects.snapshot() {
+		at(k.instance).ReadDisconnects += v
+		out.ReadDisconnects += v
 	}
 	for instance, byTarget := range readTargets {
 		s := at(instance)

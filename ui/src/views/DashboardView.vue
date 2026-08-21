@@ -48,6 +48,14 @@ const trafficCards = computed(() => {
       hint: 'Answered 200, body cut short',
       alert: t.read_truncated > 0,
     },
+    // No alert: a caller closing a panel or cancelling a query lands here, and
+    // a non-zero count is normal traffic rather than a fault.
+    {
+      key: 'reads-disconnected',
+      label: 'Client disconnects',
+      value: t.read_client_disconnects,
+      hint: 'Caller left before the body finished',
+    },
   ]
 })
 

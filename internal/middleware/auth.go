@@ -150,18 +150,19 @@ func BasicAuth(a auth.Authorizer, guard *AuthGuard, next http.Handler) http.Hand
 		backend := extractBackend(r.URL.Path)
 		action := actionForRequest(r)
 
-		access, allowed, denyReason, tenantCount := accessForRequest(a, username, backend, action)
-		if !allowed {
+		decision := a.AccessDecision(username, backend, action)
+		access := decision.Access
+		if !decision.Allowed {
 			// The single most common support question is "why did this 403?".
 			slog.Info("data plane request denied",
 				"status", http.StatusForbidden,
 				"phase", "authorization",
-				"reason", denyReason,
+				"reason", decision.DenyReason,
 				"user", username,
 				"backend", backend,
 				"action", action,
 				"path", r.URL.Path,
-				"tenant_count", tenantCount)
+				"tenant_count", decision.TenantCount)
 			writeForbidden(w)
 			return
 		}
@@ -177,23 +178,6 @@ func BasicAuth(a auth.Authorizer, guard *AuthGuard, next http.Handler) http.Hand
 		}
 		next.ServeHTTP(w, r.WithContext(auth.WithRequestAuth(r.Context(), ra)))
 	})
-}
-
-type accessDecider interface {
-	AccessDecision(name, backend, action string) auth.AccessDecision
-}
-
-func accessForRequest(a auth.Authorizer, username, backend, action string) (auth.Access, bool, string, int) {
-	if decider, ok := a.(accessDecider); ok {
-		decision := decider.AccessDecision(username, backend, action)
-		reason := string(decision.DenyReason)
-		if reason == "" {
-			reason = string(auth.AccessDenyNoMatchingGrant)
-		}
-		return decision.Access, decision.Allowed, reason, decision.TenantCount
-	}
-	access, allowed := a.AccessFor(username, backend, action)
-	return access, allowed, string(auth.AccessDenyNoMatchingGrant), len(access.TenantIDs)
 }
 
 // AdminAuth guards the admin plane. Every API endpoint requires HTTP Basic

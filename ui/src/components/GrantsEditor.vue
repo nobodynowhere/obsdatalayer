@@ -33,7 +33,7 @@ const controlActionLabels = {
 
 // Which control actions each backend actually exposes. Mirrors
 // controlActionBackends in internal/auth: Mimir runs a ruler and an
-// alertmanager, Loki runs a ruler, live tail, and log deletion. Tempo has neither.
+// alertmanager, Loki runs a ruler, live tail, and log deletion. Tempo has none of them.
 const controlActionsByBackend = {
   mimir: ['rules:read', 'rules:write', 'alerts:read', 'alerts:write'],
   loki: ['rules:read', 'rules:write', 'alerts:read', 'tail', 'delete'],

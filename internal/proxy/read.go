@@ -333,13 +333,31 @@ func (a *readAttempt) commit(p *Proxy, w http.ResponseWriter, r *http.Request, i
 	//     Recording a target failure here would park a working replica in the
 	//     read cool-off over a request it served correctly.
 	//
-	// What must not happen is the client being left with a well-formed short
-	// body. The upstream framing decides how bad that is, and the quiet case is
-	// the common one: when the upstream answered chunked, this response is
-	// chunked too, and returning normally would have Go write the terminating
-	// chunk -- so the caller reads a complete-looking reply that is simply
-	// missing data. For a JSON API like the Prometheus query endpoints that
-	// surfaces as an inexplicable parse error, with the gateway reporting 200.
+	// Which side gave up decides how it is reported. The whole read is bound to
+	// the request context, which net/http cancels when the caller disconnects,
+	// so a cancelled query -- a dashboard panel closed, a browser tab shut --
+	// arrives here as a copy error like any other. That is routine and nobody's
+	// fault: counting it as a truncation would bury the case below in a stream
+	// of ordinary client behaviour and make an alert on it useless.
+	if clientGone(r, err) {
+		slog.Debug("read abandoned; the client disconnected before the body finished",
+			"instance", inst.Name, "target", a.target, "method", r.Method, "url", a.url,
+			"status", a.resp.StatusCode, "bytes_written", written, "error", err)
+		p.recordReadClientDisconnect(inst.Name, a.target)
+		// Nothing is listening for a terminator, so there is no framing left to
+		// get right. Abort anyway rather than return: it releases the
+		// connection immediately instead of writing a trailer to a dead socket.
+		panic(http.ErrAbortHandler)
+	}
+
+	// The client is still there, so what it must not be left with is a
+	// well-formed short body. The upstream framing decides how bad that is, and
+	// the quiet case is the common one: when the upstream answered chunked,
+	// this response is chunked too, and returning normally would have Go write
+	// the terminating chunk -- so the caller reads a complete-looking reply
+	// that is simply missing data. For a JSON API like the Prometheus query
+	// endpoints that surfaces as an inexplicable parse error, with the gateway
+	// reporting 200.
 	//
 	// Aborting the handler drops the connection without a terminator instead,
 	// which every HTTP client reports as a failed read. The caller learns the
@@ -354,6 +372,18 @@ func (a *readAttempt) commit(p *Proxy, w http.ResponseWriter, r *http.Request, i
 	// Recovered by net/http, which closes the connection and logs nothing
 	// further. The deferred release above still runs.
 	panic(http.ErrAbortHandler)
+}
+
+// clientGone reports whether a body copy stopped because the caller went away
+// rather than because the upstream cut the answer short.
+//
+// The request context is the reliable signal: net/http cancels it when the
+// client disconnects, and the upstream request was made under it, so both the
+// read from the upstream and the write to the client fail with that
+// cancellation. A context that is still live means the client is still waiting,
+// and the short body is the upstream's doing.
+func clientGone(r *http.Request, err error) bool {
+	return r.Context().Err() != nil || errors.Is(err, context.Canceled)
 }
 
 // writeTransportError maps a failure to reach an upstream onto a client status.

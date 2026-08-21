@@ -83,6 +83,9 @@ type Authorizer interface {
 	// AuthenticateAPIKey resolves a bearer token to its owning user.
 	AuthenticateAPIKey(token string) (*User, error)
 	AccessFor(name, backend, action string) (Access, bool)
+	// AccessDecision is AccessFor with the reason for a refusal, so a 403 can
+	// be logged with something more useful than "denied".
+	AccessDecision(name, backend, action string) AccessDecision
 	CanAdmin(name string) bool
 }
 
@@ -92,13 +95,25 @@ type Access struct {
 	LabelSelectors []string
 }
 
+// AccessDenyReason names why authorization refused a request. It is written to
+// the denial log line, so the values are stable strings an operator can grep
+// and alert on rather than free text.
 type AccessDenyReason string
 
 const (
-	AccessDenyNoMatchingGrant  AccessDenyReason = "no_matching_grant"
-	AccessDenyNoLiveTenants    AccessDenyReason = "no_live_tenants"
-	AccessDenyAmbiguousTenant  AccessDenyReason = "ambiguous_tenant"
-	AccessDenyReadPolicy       AccessDenyReason = "read_policy"
+	// No grant matched the backend and action at all.
+	AccessDenyNoMatchingGrant AccessDenyReason = "no_matching_grant"
+	// A grant matched, but every tenant it names has since been deleted.
+	AccessDenyNoLiveTenants AccessDenyReason = "no_live_tenants"
+	// The action needs exactly one tenant -- write, tail, delete -- and the
+	// grants resolved to several, with nothing in the request to choose between
+	// them.
+	AccessDenyAmbiguousTenant AccessDenyReason = "ambiguous_tenant"
+	// The resolved read label policies disagree, so there is no single
+	// selector that satisfies all of them.
+	AccessDenyReadPolicy AccessDenyReason = "read_policy"
+	// The read label policy could not be read from the database. Fails closed:
+	// an unreadable policy is not an absent one.
 	AccessDenyReadPolicyLookup AccessDenyReason = "read_policy_lookup"
 )
 
@@ -341,45 +356,14 @@ func (s *Service) AccessDecision(name, backend, action string) AccessDecision {
 	if err != nil {
 		return AccessDecision{DenyReason: AccessDenyNoMatchingGrant}
 	}
-	var tenantSets [][]string
-	perTenantReadPolicy := make(map[string]*readPolicyState)
-	matched := false
-	for _, row := range perms {
-		if len(row) < 3 {
-			continue
-		}
-		if !objectMatches(row[1], backend) || !actionMatches(row[2], action) {
-			continue
-		}
-		matched = true
-		var tenants []string
-		if len(row) >= 4 {
-			tenants = decodeTenants(row[3])
-			tenantSets = append(tenantSets, tenants)
-		}
-		if actionSupportsReadLabelSelector(backend, action) {
-			selector, ok := s.grantReadPolicySelector(row, tenants)
-			if !ok {
-				return AccessDecision{DenyReason: AccessDenyReadPolicyLookup}
-			}
-			for _, tenantID := range tenants {
-				state := perTenantReadPolicy[tenantID]
-				if state == nil {
-					state = &readPolicyState{selectors: make(map[string]struct{})}
-					perTenantReadPolicy[tenantID] = state
-				}
-				if selector == "" {
-					state.unrestricted = true
-				} else {
-					state.selectors[selector] = struct{}{}
-				}
-			}
-		}
+	resolved, reason := s.resolveGrants(perms, backend, action)
+	if reason != "" {
+		return AccessDecision{DenyReason: reason}
 	}
-	if !matched {
+	if !resolved.matched {
 		return AccessDecision{DenyReason: AccessDenyNoMatchingGrant}
 	}
-	ids := mergeTenants(tenantSets)
+	ids := mergeTenants(resolved.tenantSets)
 
 	// Drop references whose tenant has since been deleted: sending a stale
 	// UUID upstream would scope the request to a tenant that no longer exists.
@@ -399,14 +383,112 @@ func (s *Service) AccessDecision(name, backend, action string) AccessDecision {
 	}
 
 	access := Access{TenantIDs: live}
-	if actionSupportsReadLabelSelector(backend, action) {
-		selectors, ok := effectiveReadSelectors(live, perTenantReadPolicy)
+	if SupportsReadLabelSelector(backend, action) {
+		policies := resolved.readPolicies
+		if action == ActionTail {
+			// A tail grant only pins the tenant; it does not widen what the
+			// caller may see inside it. Resolving the read policy as well and
+			// folding it in keeps a tail from streaming log lines the same
+			// caller's read policy would have filtered out. The extra policy
+			// lookups are affordable: a tail is one WebSocket handshake, not a
+			// query loop.
+			readGrants, readReason := s.resolveGrants(perms, backend, ActionRead)
+			if readReason != "" {
+				return AccessDecision{DenyReason: readReason, TenantCount: len(live)}
+			}
+			policies = narrowTailPolicies(policies, readGrants.readPolicies, live)
+		}
+		selectors, ok := effectiveReadSelectors(live, policies)
 		if !ok {
 			return AccessDecision{DenyReason: AccessDenyReadPolicy, TenantCount: len(live)}
 		}
 		access.LabelSelectors = selectors
 	}
 	return AccessDecision{Access: access, Allowed: true, TenantCount: len(live)}
+}
+
+// resolvedGrants is what one pass over a user's policy rows yields for a
+// backend and action: whether anything matched at all, the tenant sets to
+// merge, and the read label policy each tenant carries.
+type resolvedGrants struct {
+	matched      bool
+	tenantSets   [][]string
+	readPolicies map[string]*readPolicyState
+}
+
+// resolveGrants collects the rows matching backend and action. A non-empty
+// reason means the resolution failed outright and the caller must deny.
+func (s *Service) resolveGrants(perms [][]string, backend, action string) (resolvedGrants, AccessDenyReason) {
+	out := resolvedGrants{readPolicies: make(map[string]*readPolicyState)}
+	for _, row := range perms {
+		if len(row) < 3 {
+			continue
+		}
+		if !objectMatches(row[1], backend) || !actionMatches(row[2], action) {
+			continue
+		}
+		out.matched = true
+		var tenants []string
+		if len(row) >= 4 {
+			tenants = decodeTenants(row[3])
+			out.tenantSets = append(out.tenantSets, tenants)
+		}
+		if !SupportsReadLabelSelector(backend, action) {
+			continue
+		}
+		selector, ok := s.grantReadPolicySelector(row, tenants)
+		if !ok {
+			return resolvedGrants{}, AccessDenyReadPolicyLookup
+		}
+		for _, tenantID := range tenants {
+			state := out.readPolicies[tenantID]
+			if state == nil {
+				state = &readPolicyState{selectors: make(map[string]struct{})}
+				out.readPolicies[tenantID] = state
+			}
+			if selector == "" {
+				state.unrestricted = true
+			} else {
+				state.selectors[selector] = struct{}{}
+			}
+		}
+	}
+	return out, ""
+}
+
+// narrowTailPolicies folds each tenant's read policy into its tail policy.
+//
+// Within one action, a grant carrying no selector widens access: two read
+// grants for the same tenant, one restricted and one not, leave the tenant
+// unrestricted. Across these two actions that rule would be a hole -- a tail
+// grant added with no selector would hand back, live, exactly the log lines
+// the caller's read policy excludes. So here the read policy wins: a
+// restricted read makes the tail restricted too, whatever the tail grant says.
+//
+// Two different selectors are left for effectiveReadSelectors to refuse. There
+// is one selector to send upstream and no way to express "both must hold", so
+// a tail policy that disagrees with the read policy is denied rather than
+// resolved in either direction.
+func narrowTailPolicies(tail, read map[string]*readPolicyState, tenantIDs []string) map[string]*readPolicyState {
+	out := make(map[string]*readPolicyState, len(tenantIDs))
+	for _, id := range tenantIDs {
+		readState := read[id]
+		if readState == nil || readState.unrestricted {
+			out[id] = tail[id]
+			continue
+		}
+		merged := &readPolicyState{selectors: make(map[string]struct{}, len(readState.selectors)+1)}
+		for selector := range readState.selectors {
+			merged.selectors[selector] = struct{}{}
+		}
+		if tailState := tail[id]; tailState != nil {
+			for selector := range tailState.selectors {
+				merged.selectors[selector] = struct{}{}
+			}
+		}
+		out[id] = merged
+	}
+	return out
 }
 
 // TenantIDsFor returns the merged tenant IDs the user may use for the given
@@ -463,7 +545,7 @@ func effectiveReadSelectors(tenantIDs []string, policies map[string]*readPolicyS
 }
 
 func (s *Service) grantReadPolicySelector(policyRow, tenants []string) (string, bool) {
-	if len(policyRow) < 4 || !actionSupportsReadLabelSelector(policyRow[1], policyRow[2]) {
+	if len(policyRow) < 4 || !SupportsReadLabelSelector(policyRow[1], policyRow[2]) {
 		return "", true
 	}
 	var row dbstore.GrantReadPolicy

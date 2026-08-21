@@ -6,7 +6,8 @@ The obsgateway is a Go-based observability data-layer gateway. It sits in front 
 
 ### LOKI
 
-Loki needs to be configured to enable multitenancy.  This is done by setting auth_enabled to true.  The tail endpoint in loki only supports a single tenant.  This is why it is a seperate grant.
+Loki needs to be configured to enable multitenancy. This is done by setting
+`auth_enabled` to true.
 
 ```yaml
 auth_enabled: true
@@ -14,7 +15,8 @@ querier:
   multi_tenant_queries_enabled: true
 ```
 
-in values:
+In the helm chart values:
+
 ```yaml
 loki:
   config: |
@@ -22,6 +24,19 @@ loki:
     querier:
       multi_tenant_queries_enabled: true
 ```
+
+Live tail (`GET /loki/api/v1/tail`) is a separate `tail` grant rather than part
+of `read`, because Loki serves a tail for one tenant only: it answers 400 when
+`X-Scope-OrgID` names more than one. A read grant may cover several tenants and
+there is nothing in the request to pick one of them, so the choice is made in
+the grant instead. A `tail` grant carries exactly one tenant ID, and a user with
+no `tail` grant gets a 403 from the gateway rather than a 400 from Loki.
+
+A tail never sees more than the same user's `read` grant allows: when a `read`
+grant for that tenant carries a read label policy, it is applied to the tail as
+well. Set the same selector on the `tail` grant or leave the tail's blank —
+a `tail` policy that disagrees with the `read` policy is refused, because only
+one selector can be sent upstream.
 
 
 ### MIMIR

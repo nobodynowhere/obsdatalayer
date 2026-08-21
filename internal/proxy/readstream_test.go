@@ -132,6 +132,20 @@ func chunkedShortTarget(t *testing.T, send string) string {
 	})
 }
 
+// stalledTarget sends a status, a Content-Length it means to honour, and part
+// of the body, then holds the connection open. It is how a slow upstream looks
+// while the client is still waiting for the rest.
+func stalledTarget(t *testing.T, promised int, send string) string {
+	t.Helper()
+	hold := make(chan struct{})
+	t.Cleanup(func() { close(hold) })
+	return rawTarget(t, func(conn net.Conn) {
+		fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n", promised)
+		_, _ = conn.Write([]byte(send))
+		<-hold
+	})
+}
+
 func truncatingProxy(t *testing.T) (*proxy.Proxy, *metrics.Metrics) {
 	t.Helper()
 	m := metrics.New(prometheus.NewRegistry())
@@ -251,5 +265,46 @@ func TestTruncatedChunkedBodyIsNotDeliveredAsCompleteResponse(t *testing.T) {
 	if err == nil {
 		t.Fatalf("client read a clean %d-byte body and was never told it was incomplete; "+
 			"status was %d", len(body), resp.StatusCode)
+	}
+}
+
+// A caller that hangs up mid-body is routine -- a dashboard panel closed, a
+// query cancelled -- and nothing was lost: the gateway had the answer and the
+// client stopped wanting it. Counting that as a truncation would bury real data
+// loss under ordinary client behaviour, so it lands on its own counter.
+func TestClientDisconnectIsNotCountedAsTruncation(t *testing.T) {
+	full := labelValuesJSON(5000)
+	upstream := stalledTarget(t, len(full), full[:1000])
+
+	p, m := truncatingProxy(t)
+	inst := fanoutInstance("mimir-ha", upstream)
+	done := make(chan struct{})
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(done)
+		p.ForwardQuery(w, r, inst, truncPath)
+	}))
+	t.Cleanup(gw.Close)
+
+	resp, err := gw.Client().Get(gw.URL + truncPath)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	// Take some of the body, then walk away with the rest still in flight.
+	if _, err := io.ReadFull(resp.Body, make([]byte, 100)); err != nil {
+		t.Fatalf("read first bytes: %v", err)
+	}
+	resp.Body.Close()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the read handler did not finish after the client disconnected")
+	}
+
+	if got := m.ReadClientDisconnectValue("mimir-ha", upstream); got != 1 {
+		t.Errorf("gateway_read_client_disconnects_total = %d, want 1", got)
+	}
+	if got := m.ReadTruncatedValue("mimir-ha", upstream); got != 0 {
+		t.Errorf("gateway_read_truncated_total = %d, want 0: the client left, the answer was not cut short", got)
 	}
 }

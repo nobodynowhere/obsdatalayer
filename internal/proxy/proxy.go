@@ -96,6 +96,14 @@ func (p *Proxy) recordReadTruncated(instance, target string) {
 	}
 }
 
+// recordReadClientDisconnect counts a read whose body copy stopped because the
+// caller hung up.
+func (p *Proxy) recordReadClientDisconnect(instance, target string) {
+	if m := p.metrics.Load(); m != nil {
+		m.RecordReadClientDisconnect(instance, target)
+	}
+}
+
 // New creates a Proxy with separate query and push clients.
 func New(queryClient, pushClient *http.Client) *Proxy {
 	p := &Proxy{health: newTargetHealth()}

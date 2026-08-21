@@ -29,7 +29,14 @@ const (
 	ActionAlertsRead  = "alerts:read"
 	ActionAlertsWrite = "alerts:write"
 	// ActionTail covers Loki's live tail WebSocket. It is read-like, but Loki
-	// cannot serve it across multiple tenants, so it is a separate grant.
+	// answers 400 to a tail whose X-Scope-OrgID names more than one tenant, so
+	// it cannot ride on a read grant: a read grant may resolve to several
+	// tenants, and there is no way to pick one of them at request time.
+	//
+	// Splitting it out is what forces the choice. A tail grant carries exactly
+	// one tenant ID, so a user who reads two tenants must say which one they
+	// tail -- and a user with no tail grant gets 403 rather than a confusing
+	// 400 from Loki.
 	ActionTail = "tail"
 	// ActionDelete covers the whole deletion API -- listing, requesting and
 	// cancelling a deletion. It is not split into read and write: a deletion
@@ -125,8 +132,8 @@ func (g Grant) Validate() error {
 		return fmt.Errorf("grant on backend %q action %q must carry exactly one tenant_id", g.Backend, g.Action)
 	}
 	if selector := strings.TrimSpace(g.ReadLabelSelector); selector != "" {
-		if !actionSupportsReadLabelSelector(g.Backend, g.Action) {
-			return errors.New("read_label_selector is only supported on mimir/loki read grants and loki tail grants")
+		if !SupportsReadLabelSelector(g.Backend, g.Action) {
+			return ErrReadLabelSelectorUnsupported
 		}
 	}
 	for _, t := range g.TenantIDs {
@@ -143,13 +150,24 @@ func (g Grant) Validate() error {
 	return nil
 }
 
-func backendSupportsReadLabelSelector(backend string) bool {
-	return backend == "mimir" || backend == "loki"
-}
+// ErrReadLabelSelectorUnsupported is returned wherever a grant carries a read
+// label policy on a backend and action that cannot enforce one. Shared so the
+// admin API's pre-flight check and Validate cannot drift apart on the message.
+var ErrReadLabelSelectorUnsupported = errors.New(
+	"read_label_selector is only supported on mimir/loki read grants and loki tail grants")
 
-func actionSupportsReadLabelSelector(backend, action string) bool {
-	return backendSupportsReadLabelSelector(backend) && action == ActionRead ||
-		backend == "loki" && action == ActionTail
+// SupportsReadLabelSelector reports whether a grant on this backend and action
+// can carry a read label policy. Tail is included because it streams log lines:
+// a tail that ignored the policy would be a live feed around it.
+func SupportsReadLabelSelector(backend, action string) bool {
+	switch action {
+	case ActionRead:
+		return backend == "mimir" || backend == "loki"
+	case ActionTail:
+		return backend == "loki"
+	default:
+		return false
+	}
 }
 
 // ---- request context --------------------------------------------------------

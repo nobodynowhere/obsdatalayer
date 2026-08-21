@@ -73,21 +73,28 @@ func (s *Stub) AuthenticateAPIKey(token string) (*auth.User, error) {
 
 // AccessFor implements auth.Authorizer.
 func (s *Stub) AccessFor(name, backend, action string) (auth.Access, bool) {
+	decision := s.AccessDecision(name, backend, action)
+	return decision.Access, decision.Allowed
+}
+
+// AccessDecision implements auth.Authorizer. The stub has one grant set rather
+// than a policy store, so every refusal is reported as no_matching_grant; a
+// test that needs a specific reason should embed the stub and override this.
+func (s *Stub) AccessDecision(name, backend, action string) auth.AccessDecision {
 	if name != s.Username {
-		return auth.Access{}, false
+		return auth.AccessDecision{DenyReason: auth.AccessDenyNoMatchingGrant}
 	}
 	if s.Allow != nil && !s.Allow[backend+":"+action] {
-		return auth.Access{}, false
+		return auth.AccessDecision{DenyReason: auth.AccessDenyNoMatchingGrant}
 	}
 	if len(s.Tenants) == 0 {
-		return auth.Access{}, false
+		return auth.AccessDecision{DenyReason: auth.AccessDenyNoLiveTenants}
 	}
 	access := auth.Access{TenantIDs: s.Tenants}
-	if (backend == "mimir" || backend == "loki") && action == auth.ActionRead ||
-		backend == "loki" && action == auth.ActionTail {
+	if auth.SupportsReadLabelSelector(backend, action) {
 		access.LabelSelectors = s.LabelSelectors
 	}
-	return access, true
+	return auth.AccessDecision{Access: access, Allowed: true, TenantCount: len(s.Tenants)}
 }
 
 // CanAdmin implements auth.Authorizer.
