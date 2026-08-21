@@ -72,6 +72,11 @@ const readTargets = computed(() => {
       const okPct = total ? Math.round((successes / total) * 100) : 0
       const failPct = total ? 100 - okPct : 0
       const lastResult = t.last_result || (failures && !successes ? 'failure' : 'success')
+      const statusText = lastResult === 'failure' ? 'latest failure' : 'latest success'
+      const history = Array.isArray(t.recent_results) && t.recent_results.length
+        ? t.recent_results.filter((result) => result === 'success' || result === 'failure')
+        : []
+      const recentResults = history.length ? history : [lastResult]
       return {
         target: t.target,
         successes,
@@ -80,8 +85,9 @@ const readTargets = computed(() => {
         okPct,
         failPct,
         lastResult,
-        statusText: lastResult === 'failure' ? 'Latest failure' : 'Latest success',
-        hover: `${successes.toLocaleString()} served (${okPct}%), ${failures.toLocaleString()} failed (${failPct}%)`,
+        recentResults,
+        statusText,
+        hover: `${successes.toLocaleString()} served (${okPct}%), ${failures.toLocaleString()} failed (${failPct}%), ${statusText}`,
       }
     })
     if (rows.length) out.push({ instance: inst.instance, rows })
@@ -199,12 +205,17 @@ onMounted(load)
                 <span class="target-rank">{{ i + 1 }}</span>{{ row.target }}
               </div>
               <div
-                class="read-status"
-                :class="`read-status--${row.lastResult}`"
+                class="read-strip"
                 :title="row.hover"
+                :aria-label="`${row.target} read history, ${row.statusText}`"
+                :style="{ '--sample-count': row.recentResults.length }"
               >
-                <span class="read-status__dot"></span>
-                <span>{{ row.statusText }}</span>
+                <span
+                  v-for="(result, sampleIndex) in row.recentResults"
+                  :key="`${sampleIndex}-${result}`"
+                  class="read-strip__sample"
+                  :class="`read-strip__sample--${result}`"
+                ></span>
               </div>
               <div class="read-target__counts">
                 <span class="read-count read-count--ok">{{ fmt(row.successes) }}</span>
