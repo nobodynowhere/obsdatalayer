@@ -188,6 +188,11 @@ func BasicAuth(a auth.Authorizer, guard *AuthGuard, next http.Handler) http.Hand
 // tenant data, and the browser cannot supply credentials for the initial
 // document load, so the SPA shell is served anonymously and then authenticates
 // against these same endpoints for every piece of data it displays.
+//
+// Unlike the data plane, a 401 from here never carries WWW-Authenticate. The
+// only client is the SPA, which manages the credential itself; issuing a
+// challenge would hand authentication to the browser instead. See
+// writeUnauthorizedSilent.
 func AdminAuth(a auth.Authorizer, guard *AuthGuard, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if ui.IsUIPath(r.URL.Path) {
@@ -203,7 +208,7 @@ func AdminAuth(a auth.Authorizer, guard *AuthGuard, next http.Handler) http.Hand
 		username, password, ok := r.BasicAuth()
 		if !ok {
 			slog.Debug("admin request without credentials", "path", r.URL.Path, "method", r.Method)
-			writeUnauthorized(w)
+			writeUnauthorizedSilent(w)
 			return
 		}
 		if _, err := a.AuthenticateContext(r.Context(), username, password); err != nil {
@@ -213,7 +218,7 @@ func AdminAuth(a auth.Authorizer, guard *AuthGuard, next http.Handler) http.Hand
 			}
 			guard.recordFailure(source)
 			slog.Debug("admin authentication failed", "user", username, "path", r.URL.Path)
-			writeUnauthorized(w)
+			writeUnauthorizedSilent(w)
 			return
 		}
 		guard.recordSuccess(source)
@@ -378,8 +383,26 @@ func isQueryPost(path string) bool {
 }
 
 func writeUnauthorized(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("WWW-Authenticate", `Basic realm="gateway"`)
+	writeUnauthorizedBody(w)
+}
+
+// writeUnauthorizedSilent is writeUnauthorized without the challenge header.
+//
+// The admin plane must never emit WWW-Authenticate. A browser that sees one
+// answers the 401 itself: it pops the native basic-auth dialog, caches whatever
+// is typed against the origin, and from then on handles 401s on the SPA's XHRs
+// by retrying them with that cached credential instead of the one the login
+// form supplied. A stale cached credential then fails every login the user
+// attempts, with no way to clear it from inside the page. The SPA sets its own
+// Authorization header on every request, so it needs no challenge to know what
+// to send, and omitting it keeps the browser out of the loop entirely.
+func writeUnauthorizedSilent(w http.ResponseWriter) {
+	writeUnauthorizedBody(w)
+}
+
+func writeUnauthorizedBody(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
 	data, _ := json.Marshal(map[string]string{"error": "unauthorized"})
 	_, _ = w.Write(data)

@@ -1377,3 +1377,42 @@ func TestBasicAuthStillWorksAlongsideBearer(t *testing.T) {
 		t.Errorf("basic auth stopped working: %d", rec.Code)
 	}
 }
+
+// The admin plane must never challenge. A WWW-Authenticate header makes the
+// browser answer the 401 itself with the native basic-auth dialog, whose cached
+// credential then overrides what the SPA's login form sends.
+func TestAdminAuthNeverChallenges(t *testing.T) {
+	cases := []struct {
+		name  string
+		creds [2]string
+		stub  auth.Authorizer
+	}{
+		{name: "no credentials", stub: authtest.NewAdmin()},
+		{name: "bad credentials", creds: [2]string{"admin", "wrong"}, stub: authtest.NewAdmin()},
+		{name: "no admin grant", creds: [2]string{"user", "pass"}, stub: authtest.New()},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inner, _ := newHandlerCalledFlag()
+			h := middleware.AdminAuth(tc.stub, nil, inner)
+
+			req := httptest.NewRequest(http.MethodGet, "/api/whoami", nil)
+			if tc.creds[0] != "" {
+				req.SetBasicAuth(tc.creds[0], tc.creds[1])
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			if rec.Code == http.StatusOK {
+				t.Fatalf("expected the request to be refused, got 200")
+			}
+			if got := rec.Header().Get("WWW-Authenticate"); got != "" {
+				t.Errorf("admin plane sent a challenge: WWW-Authenticate: %q", got)
+			}
+			if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+				t.Errorf("expected Content-Type application/json, got %q", ct)
+			}
+		})
+	}
+}
