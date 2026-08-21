@@ -90,7 +90,7 @@ onBeforeUnmount(() => {
   <div v-else class="dds__template--productivity">
     <header class="app-header">
       <div class="app-header__brand">
-        <img src="/DellTech_Logo_mobile.svg" alt="Dell Technologies" class="app-header__logo" />
+        <img src="/header-logo.svg" alt="Observability Gateway" class="app-header__logo" />
         <span>Observability Gateway</span>
       </div>
       <div class="app-header__actions">

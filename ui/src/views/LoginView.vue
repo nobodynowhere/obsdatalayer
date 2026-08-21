@@ -28,7 +28,7 @@ async function submit() {
 <template>
   <div class="login-shell">
     <form class="login-card" @submit.prevent="submit">
-      <img src="/DellTech_Logo_mobile.svg" alt="Dell Technologies" class="login-card__logo" />
+      <img src="/header-logo.svg" alt="Observability Gateway" class="login-card__logo" />
       <h1>Observability Gateway</h1>
       <p>Sign in with a gateway account that has admin access.</p>
 
