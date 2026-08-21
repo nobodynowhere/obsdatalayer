@@ -188,6 +188,34 @@ The build process:
 
 The runtime source of truth is the configured database (SQLite or PostgreSQL). The file passed to `-config` is a minimal *bootstrap* file that opens the DB, sets listener ports, and may contain an optional `seed` block to populate a fresh database on first startup.
 
+### Resetting a password
+
+On first start the gateway creates an `admin` account and writes the generated
+password to `.obsgateway-admin-password` beside the database file. If that
+password is lost, reset it from the host:
+
+```bash
+obsgateway --config /etc/obsgateway/gateway.yml --resetpwd admin
+```
+
+The new password is prompted for twice and never echoed, so it does not reach
+the screen, the shell history, or the process list — which is why there is no
+flag to pass it inline. It must be at least 12 characters, and the two entries
+must match. The account's roles and grants are left untouched; the flag only
+sets a password, so resetting a user with no admin grant does not turn it into
+an administrator.
+
+The command needs only the database, so it works with the gateway stopped. A
+*running* gateway keeps accepting the previous password until its next reload
+of the users table (`gateway.reload_interval`, default 30s).
+
+Off a terminal — in a provisioning script — the same two entries are read as
+two lines on stdin:
+
+```bash
+printf '%s\n%s\n' "$NEW" "$NEW" | obsgateway --config /etc/obsgateway/gateway.yml --resetpwd admin
+```
+
 ### Credential encryption
 
 Upstream backend credentials (`basic_auth` on an instance or a push target) are

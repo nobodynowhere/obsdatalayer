@@ -155,3 +155,64 @@ func TestReadyNeedsNoCredentials(t *testing.T) {
 		})
 	}
 }
+
+// withStdin points os.Stdin at a pipe carrying in. A pipe is not a terminal, so
+// this also selects the non-interactive branch of readPasswordTwice.
+func withStdin(t *testing.T, in string) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	go func() {
+		defer func() { _ = w.Close() }()
+		_, _ = w.WriteString(in)
+	}()
+
+	original := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() {
+		os.Stdin = original
+		_ = r.Close()
+	})
+}
+
+func TestPromptNewPasswordAcceptsMatchingEntries(t *testing.T) {
+	withStdin(t, "correcthorsebattery\ncorrecthorsebattery\n")
+
+	got, err := promptNewPassword("admin")
+	if err != nil {
+		t.Fatalf("promptNewPassword: %v", err)
+	}
+	if got != "correcthorsebattery" {
+		t.Errorf("got %q, want %q", got, "correcthorsebattery")
+	}
+}
+
+// A typo during a lockout recovery would lock the operator out a second time,
+// so a mismatch has to fail rather than silently take the first entry.
+func TestPromptNewPasswordRejectsMismatch(t *testing.T) {
+	withStdin(t, "correcthorsebattery\ncorrecthorsebatterz\n")
+
+	if _, err := promptNewPassword("admin"); err == nil {
+		t.Fatal("expected mismatched entries to be refused")
+	}
+}
+
+func TestPromptNewPasswordNeedsBothEntries(t *testing.T) {
+	withStdin(t, "correcthorsebattery\n")
+
+	if _, err := promptNewPassword("admin"); err == nil {
+		t.Fatal("expected a single entry to be refused")
+	}
+}
+
+// The confirmation is a comparison, not a normalisation: a trailing space is
+// part of the password, and two entries that differ only there do not match.
+func TestPromptNewPasswordDoesNotTrimEntries(t *testing.T) {
+	withStdin(t, "correcthorsebattery \ncorrecthorsebattery\n")
+
+	if _, err := promptNewPassword("admin"); err == nil {
+		t.Fatal("expected entries differing by whitespace to be refused")
+	}
+}
