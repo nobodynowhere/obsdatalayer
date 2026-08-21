@@ -41,6 +41,20 @@ type readAttempt struct {
 
 	// retryable reports whether another target should be tried.
 	retryable bool
+
+	// cancel releases the attempt's per-target timeout context. It must not run
+	// until the response body has been committed or discarded: cancelling it
+	// kills the connection under an unread body, so an attempt that streams
+	// straight to the client owns its cancel for as long as the body is open.
+	cancel context.CancelFunc
+}
+
+// release drops the attempt's timeout context. Safe to call more than once.
+func (a *readAttempt) release() {
+	if a != nil && a.cancel != nil {
+		a.cancel()
+		a.cancel = nil
+	}
 }
 
 // ForwardQuery forwards a read, trying each target in turn until one answers.
@@ -175,10 +189,9 @@ func (p *Proxy) attemptRead(
 	}
 
 	attemptCtx := ctx
+	cancel := context.CancelFunc(func() {})
 	if timeout > 0 {
-		var cancel context.CancelFunc
 		attemptCtx, cancel = context.WithTimeout(attemptCtx, timeout)
-		defer cancel()
 	}
 	if target.SkipTLSVerify {
 		attemptCtx = WithSkipTLSVerify(attemptCtx)
@@ -188,6 +201,7 @@ func (p *Proxy) attemptRead(
 	if err != nil {
 		// A malformed target URL is a configuration fault, not an outage, and
 		// the next target would be built the same way. Do not retry it.
+		cancel()
 		return &readAttempt{url: upstreamURL, err: err}
 	}
 	CopyHeadersForUpstream(req, r.Header, target)
@@ -202,6 +216,7 @@ func (p *Proxy) attemptRead(
 		slog.Debug("upstream request failed",
 			"instance", inst.Name, "url", upstreamURL,
 			"duration", time.Since(started), "error", err)
+		cancel()
 		return &readAttempt{
 			url: upstreamURL, err: err, duration: time.Since(started),
 			// A target timing out is exactly the case worth retrying: it hung,
@@ -217,7 +232,7 @@ func (p *Proxy) attemptRead(
 		"instance", inst.Name, "url", upstreamURL,
 		"status", resp.StatusCode, "duration", time.Since(started))
 
-	attempt := &readAttempt{url: upstreamURL, resp: resp, duration: time.Since(started)}
+	attempt := &readAttempt{url: upstreamURL, resp: resp, duration: time.Since(started), cancel: cancel}
 	if resp.StatusCode >= 500 {
 		// Read the body now: it is needed for the log line, and holding the
 		// connection open across another attempt would pin it for nothing.
@@ -240,7 +255,11 @@ func (a *readAttempt) status() int {
 
 // discard releases an attempt that will not be sent to the client.
 func (a *readAttempt) discard() {
-	if a == nil || a.resp == nil || a.body != nil {
+	if a == nil {
+		return
+	}
+	defer a.release()
+	if a.resp == nil || a.body != nil {
 		return
 	}
 	_, _ = io.Copy(io.Discard, a.resp.Body)
@@ -250,6 +269,9 @@ func (a *readAttempt) discard() {
 // commit writes the attempt to the client. It is called exactly once per
 // request, on the attempt that decided the outcome.
 func (a *readAttempt) commit(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig) {
+	// The timeout context stays live until the body has been copied out, and
+	// is released here rather than when the attempt was made.
+	defer a.release()
 	if a.resp == nil {
 		writeTransportError(w, inst, a.err)
 		return
