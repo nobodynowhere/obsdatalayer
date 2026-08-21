@@ -62,7 +62,9 @@ func (p *Proxy) ForwardQuery(w http.ResponseWriter, r *http.Request, inst *confi
 		})
 		return
 	}
-	client := p.QueryClient()
+	// Read attempts use a client with no whole-call timeout: each attempt is
+	// bounded by its own target's allowance instead.
+	client := p.ReadClient()
 
 	body, replayable, err := readReplayableBody(r)
 	if err != nil {
@@ -79,15 +81,22 @@ func (p *Proxy) ForwardQuery(w http.ResponseWriter, r *http.Request, inst *confi
 		return
 	}
 
-	// One deadline for the whole read, not one per attempt. A client's worst
-	// case must not scale with how many targets happen to be configured -- the
-	// caller gave up long before the third replica was asked.
+	// Two separate bounds, deliberately.
+	//
+	// Each attempt is bounded by its own target's timeout, falling back to the
+	// gateway's default_target_timeout. The allowance belongs to the target
+	// because targets are independent systems: a local cluster and a remote DR
+	// site behind one instance do not answer at the same speed. Dividing a
+	// single budget between them was tried and is wrong -- it made each
+	// target's allowance depend on how many replicas happened to be
+	// configured, so adding a third silently shortened the first two.
+	//
+	// The whole read is bounded by the request context, which is cancelled when
+	// the caller disconnects. The caller decides how long it is willing to
+	// wait, and when it stops waiting the gateway stops working on its behalf,
+	// abandoning the attempt in flight.
 	ctx := r.Context()
-	if client.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, client.Timeout)
-		defer cancel()
-	}
+	defaultTimeout := p.DefaultTargetTimeout()
 
 	ordered := p.health.order(targets)
 	if !replayable {
@@ -112,7 +121,7 @@ func (p *Proxy) ForwardQuery(w http.ResponseWriter, r *http.Request, inst *confi
 		if last != nil {
 			last.discard()
 		}
-		attempt := p.attemptRead(ctx, len(ordered)-i, r, bodyFor, inst, target, upstreamPath, client)
+		attempt := p.attemptRead(ctx, target.Timeout(defaultTimeout), r, bodyFor, inst, target, upstreamPath, client)
 		if !attempt.retryable {
 			p.health.recordSuccess(target.URL)
 			p.recordRead(inst.Name, target.URL, true)
@@ -151,7 +160,7 @@ func (p *Proxy) ForwardQuery(w http.ResponseWriter, r *http.Request, inst *confi
 // touching the client's ResponseWriter.
 func (p *Proxy) attemptRead(
 	ctx context.Context,
-	remaining int,
+	timeout time.Duration,
 	r *http.Request,
 	bodyFor func() io.Reader,
 	inst *config.InstanceConfig,
@@ -165,17 +174,12 @@ func (p *Proxy) attemptRead(
 		upstreamURL += "?" + r.URL.RawQuery
 	}
 
-	// Divide what is left of the budget across the targets still to try. A
-	// single deadline for the whole read is not enough on its own: a target
-	// that accepts the connection and then hangs would spend the entire budget
-	// and leave nothing for the replica that could have answered, so a timeout
-	// -- the most common way a backend fails -- would never fail over. Slicing
-	// keeps the caller's overall bound while guaranteeing every target a turn.
-	//
-	// A target that fails quickly gives its unused share back: the next slice is
-	// computed from the time actually remaining, not from a fixed fraction.
-	attemptCtx, cancelAttempt := sliceBudget(ctx, remaining)
-	defer cancelAttempt()
+	attemptCtx := ctx
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		attemptCtx, cancel = context.WithTimeout(attemptCtx, timeout)
+		defer cancel()
+	}
 	if target.SkipTLSVerify {
 		attemptCtx = WithSkipTLSVerify(attemptCtx)
 	}
@@ -190,7 +194,7 @@ func (p *Proxy) attemptRead(
 
 	slog.Debug("forwarding upstream",
 		"instance", inst.Name, "method", r.Method, "url", upstreamURL,
-		"org_id", req.Header.Get("X-Scope-OrgID"))
+		"timeout", timeout, "org_id", req.Header.Get("X-Scope-OrgID"))
 
 	started := time.Now()
 	resp, err := client.Do(req)
@@ -200,11 +204,11 @@ func (p *Proxy) attemptRead(
 			"duration", time.Since(started), "error", err)
 		return &readAttempt{
 			url: upstreamURL, err: err, duration: time.Since(started),
-			// This attempt's own deadline expiring is exactly the case worth
-			// retrying: the target hung, and another may answer inside what is
-			// left. The outer context is what says to stop -- the whole budget
-			// is spent, or the caller has gone. A body limit breach is the
-			// caller's fault and identical at every target.
+			// A target timing out is exactly the case worth retrying: it hung,
+			// and a replica may answer. The caller's context is what says to
+			// stop -- once it is cancelled nobody is waiting for the answer.
+			// A body limit breach is the caller's fault and identical at every
+			// target.
 			retryable: !isBodyLimitError(err) && ctx.Err() == nil,
 		}
 	}
@@ -225,21 +229,6 @@ func (p *Proxy) attemptRead(
 			attempt.duration, req.Header.Get("X-Scope-OrgID"), payload, readErr)
 	}
 	return attempt
-}
-
-// sliceBudget returns a context for one attempt, holding its share of the time
-// remaining on ctx. With no deadline, or on the last attempt, the attempt simply
-// inherits what is left.
-func sliceBudget(ctx context.Context, remaining int) (context.Context, context.CancelFunc) {
-	deadline, ok := ctx.Deadline()
-	if !ok || remaining <= 1 {
-		return context.WithCancel(ctx)
-	}
-	share := time.Until(deadline) / time.Duration(remaining)
-	if share <= 0 {
-		return context.WithCancel(ctx)
-	}
-	return context.WithTimeout(ctx, share)
 }
 
 func (a *readAttempt) status() int {

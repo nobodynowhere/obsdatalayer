@@ -12,6 +12,7 @@ const form = ref({
   push_timeout: '60s',
   log_level: 'info',
   reload_interval: '30s',
+  default_target_timeout: '30s',
   auth_limit_enabled: true,
   auth_failure_threshold: 5,
   auth_failure_window: '1m0s',
@@ -104,6 +105,15 @@ onMounted(load)
           <label>Log level</label>
           <PrimeSelect v-model="form.log_level" :options="logLevels" option-label="label" option-value="value" />
           <small>Takes effect on save; no restart needed.</small>
+        </div>
+
+        <div class="form-field">
+          <label for="s-target-timeout">Default target timeout</label>
+          <PrimeInputText id="s-target-timeout" v-model="form.default_target_timeout" class="mono" />
+          <small>
+            How long a fan-out target gets to answer a read when it does not set its own timeout.
+            Each target is bounded separately; the whole read ends when the caller disconnects.
+          </small>
         </div>
 
         <div class="form-field">

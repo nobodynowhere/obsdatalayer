@@ -1,6 +1,8 @@
 package db
 
 import (
+	"time"
+
 	"github.com/gofrs/uuid/v5"
 )
 
@@ -17,6 +19,8 @@ type GatewaySetting struct {
 	PushTimeout    string
 	LogLevel       string
 	ReloadInterval string
+	// DefaultTargetTimeout is stored as a duration string like the others.
+	DefaultTargetTimeout string
 
 	// Authentication throttling. AuthLimitEnabled is nullable on purpose: a row
 	// written before these columns existed reads as NULL, which the config
@@ -62,6 +66,8 @@ type PushTarget struct {
 	BasicAuth     string
 	TenantID      string
 	SkipTLSVerify bool
+	// TimeoutSeconds is 0 when the target defers to default_target_timeout.
+	TimeoutSeconds int
 }
 
 // LabelsGroup stores the label filter/inject configuration for an instance.
@@ -128,6 +134,29 @@ type User struct {
 	ID             uuid.UUID `gorm:"type:text;primaryKey"`
 	Name           string    `gorm:"uniqueIndex"`
 	PasswordBcrypt string
+}
+
+// APIKey is a bearer credential belonging to a user. Only the hash of the
+// secret is stored; the token itself is shown once at creation and cannot be
+// recovered.
+//
+// Handle is the clear-text lookup half of the token. It is not a secret: it
+// exists so a presented key can be found by index rather than by hashing
+// against every row.
+type APIKey struct {
+	ID       uuid.UUID `gorm:"type:text;primaryKey"`
+	UserName string    `gorm:"index"`
+	Label    string
+	Handle   string `gorm:"uniqueIndex"`
+	Hash     string
+
+	CreatedAt time.Time
+	// ExpiresAt is nil for a key that never expires, which is the default: an
+	// unattended shipper whose credential lapses is an outage.
+	ExpiresAt *time.Time
+	// LastUsedAt is written at most once a minute per key, so a busy shipper
+	// does not turn every request into a database write.
+	LastUsedAt *time.Time
 }
 
 // Role makes roles first-class so they can be created, listed and described

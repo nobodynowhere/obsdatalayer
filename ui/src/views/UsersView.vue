@@ -28,9 +28,90 @@ const editForm = ref({ roles: [], grants: [] })
 const passwordFor = ref(null)
 const newPassword = ref('')
 
+// API keys are bearer credentials for a user. The secret is shown once, at
+// creation, and is not recoverable afterwards.
+const keysDialog = ref(false)
+const keysFor = ref(null)
+const keys = ref([])
+const keysLoading = ref(false)
+const newKeyLabel = ref('')
+const newKeyExpires = ref('')
+const issuedSecret = ref('')
+const copied = ref(false)
+
 const message = (e) => e?.response?.data?.error || e.message || 'Unexpected error'
 const tenantName = (id) => tenants.value.find((t) => t.id === id)?.name ?? id.slice(0, 8) + '…'
 const readPolicy = (grant) => grant.read_label_selector?.trim()
+
+async function openKeys(user) {
+  keysFor.value = user
+  keys.value = []
+  newKeyLabel.value = ''
+  newKeyExpires.value = ''
+  issuedSecret.value = ''
+  copied.value = false
+  formError.value = ''
+  keysDialog.value = true
+  await loadKeys()
+}
+
+async function loadKeys() {
+  keysLoading.value = true
+  try {
+    keys.value = await svc.listApiKeys(keysFor.value.name)
+  } catch (e) {
+    formError.value = message(e)
+  } finally {
+    keysLoading.value = false
+  }
+}
+
+async function issueKey() {
+  saving.value = true
+  formError.value = ''
+  try {
+    const expires = newKeyExpires.value ? new Date(newKeyExpires.value).toISOString() : ''
+    const created = await svc.createApiKey(keysFor.value.name, newKeyLabel.value.trim(), expires)
+    issuedSecret.value = created.secret
+    newKeyLabel.value = ''
+    newKeyExpires.value = ''
+    await loadKeys()
+  } catch (e) {
+    formError.value = message(e)
+  } finally {
+    saving.value = false
+  }
+}
+
+async function copySecret() {
+  try {
+    await navigator.clipboard.writeText(issuedSecret.value)
+    copied.value = true
+  } catch {
+    // Clipboard access can be refused; the secret is on screen to copy by hand.
+    copied.value = false
+  }
+}
+
+function revokeKey(key) {
+  confirm.require({
+    message: `Revoke key "${key.label}"? Anything using it stops working immediately.`,
+    header: 'Revoke API key',
+    icon: 'pi pi-exclamation-triangle',
+    acceptClass: 'p-button-danger',
+    accept: async () => {
+      try {
+        await svc.deleteApiKey(keysFor.value.name, key.id)
+        toast.add({ severity: 'success', summary: 'Key revoked', life: 3000 })
+        await loadKeys()
+      } catch (e) {
+        toast.add({ severity: 'error', summary: message(e), life: 5000 })
+      }
+    },
+  })
+}
+
+const fmtDate = (v) => (v ? new Date(v).toLocaleString() : '—')
 
 async function load() {
   loading.value = true
@@ -182,6 +263,7 @@ onMounted(load)
           <template #body="{ data }">
             <PrimeButton icon="pi pi-pencil" text rounded severity="secondary" v-tooltip="'Roles and grants'" @click="openEdit(data)" />
             <PrimeButton icon="pi pi-key" text rounded severity="secondary" v-tooltip="'Change password'" @click="openPassword(data)" />
+            <PrimeButton icon="pi pi-ticket" text rounded severity="secondary" v-tooltip="'API keys'" @click="openKeys(data)" />
             <PrimeButton icon="pi pi-trash" text rounded severity="danger" v-tooltip="'Delete'" @click="remove(data)" />
           </template>
         </PrimeColumn>
@@ -259,6 +341,92 @@ onMounted(load)
     <template #footer>
       <PrimeButton label="Cancel" severity="secondary" outlined @click="passwordDialog = false" />
       <PrimeButton label="Change" :loading="saving" :disabled="newPassword.length < 12" @click="savePassword" />
+    </template>
+  </PrimeDialog>
+
+  <PrimeDialog
+    v-model:visible="keysDialog"
+    modal
+    :header="`API keys for ${keysFor?.name}`"
+    :style="{ width: '46rem' }"
+  >
+    <PrimeMessage v-if="formError" severity="error" :closable="false" class="mb-3">{{ formError }}</PrimeMessage>
+
+    <PrimeMessage severity="secondary" :closable="false" class="mb-3">
+      A key is a bearer credential for this user and carries exactly the same grants. Send it as
+      <span class="mono">Authorization: Bearer &lt;key&gt;</span> on the data plane. The admin API
+      still requires a password.
+    </PrimeMessage>
+
+    <div v-if="issuedSecret" class="issued-key mb-3">
+      <div class="issued-key__label">
+        Copy this now — it is shown once and cannot be retrieved again.
+      </div>
+      <code class="issued-key__value mono">{{ issuedSecret }}</code>
+      <PrimeButton
+        :icon="copied ? 'pi pi-check' : 'pi pi-copy'"
+        :label="copied ? 'Copied' : 'Copy'"
+        size="small"
+        severity="secondary"
+        outlined
+        @click="copySecret"
+      />
+    </div>
+
+    <div class="form-grid mb-3">
+      <div class="form-field">
+        <label for="k-label">New key label</label>
+        <PrimeInputText id="k-label" v-model="newKeyLabel" placeholder="promtail-prod" />
+        <small>Names the key so it can be identified and retired later.</small>
+      </div>
+      <div class="form-field">
+        <label for="k-expires">Expires (optional)</label>
+        <PrimeInputText id="k-expires" v-model="newKeyExpires" placeholder="2027-01-31" class="mono" />
+        <small>Leave empty for a key that never expires, which suits unattended shippers.</small>
+      </div>
+      <div>
+        <PrimeButton
+          icon="pi pi-plus"
+          label="Issue key"
+          size="small"
+          :loading="saving"
+          :disabled="!newKeyLabel.trim()"
+          @click="issueKey"
+        />
+      </div>
+    </div>
+
+    <div v-if="keysLoading" class="empty-state"><PrimeProgressSpinner style="width: 2rem" /></div>
+    <PrimeDataTable v-else :value="keys" size="small" data-key="id">
+      <template #empty>
+        <div class="empty-state">No keys yet.</div>
+      </template>
+      <PrimeColumn field="label" header="Label" />
+      <PrimeColumn header="Key">
+        <template #body="{ data }">
+          <span class="mono">obsgw_{{ data.handle }}_…</span>
+        </template>
+      </PrimeColumn>
+      <PrimeColumn header="Created">
+        <template #body="{ data }">{{ fmtDate(data.created_at) }}</template>
+      </PrimeColumn>
+      <PrimeColumn header="Last used">
+        <template #body="{ data }">
+          <span :class="{ 'text-muted': !data.last_used_at }">{{ fmtDate(data.last_used_at) }}</span>
+        </template>
+      </PrimeColumn>
+      <PrimeColumn header="Expires">
+        <template #body="{ data }">{{ fmtDate(data.expires_at) }}</template>
+      </PrimeColumn>
+      <PrimeColumn style="width: 4rem">
+        <template #body="{ data }">
+          <PrimeButton icon="pi pi-trash" text rounded severity="danger" v-tooltip="'Revoke'" @click="revokeKey(data)" />
+        </template>
+      </PrimeColumn>
+    </PrimeDataTable>
+
+    <template #footer>
+      <PrimeButton label="Close" severity="secondary" outlined @click="keysDialog = false" />
     </template>
   </PrimeDialog>
 </template>

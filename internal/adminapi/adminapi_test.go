@@ -1018,3 +1018,104 @@ func TestReorderedTargetsKeepDistinctCredentialsOnRead(t *testing.T) {
 		t.Errorf("second read target = %q with %q", read[1].URL, read[1].BasicAuth)
 	}
 }
+
+// ---- API keys ---------------------------------------------------------------
+
+func TestAPIKeyLifecycleThroughAPI(t *testing.T) {
+	e := newEnv(t)
+
+	if rec := e.do(t, http.MethodPost, "/api/users", map[string]any{
+		"name": "promtail-prod", "password": "a-long-enough-password",
+	}); rec.Code != http.StatusCreated {
+		t.Fatalf("create user: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Issue.
+	rec := e.do(t, http.MethodPost, "/api/users/promtail-prod/apikeys",
+		map[string]any{"label": "shipper"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create key: %d %s", rec.Code, rec.Body.String())
+	}
+	var created map[string]any
+	decodeInto(t, rec, &created)
+	secret, _ := created["secret"].(string)
+	if secret == "" {
+		t.Fatal("the create response did not carry the secret")
+	}
+	if !strings.HasPrefix(secret, "obsgw_") {
+		t.Errorf("token lacks its identifying prefix: %q", secret)
+	}
+
+	// List: metadata only, never the secret again.
+	rec = e.do(t, http.MethodGet, "/api/users/promtail-prod/apikeys", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list: %d", rec.Code)
+	}
+	if body := rec.Body.String(); strings.Contains(body, secret) {
+		t.Fatalf("listing a key returned its secret: %s", body)
+	}
+	var listed []map[string]any
+	decodeInto(t, rec, &listed)
+	if len(listed) != 1 || listed[0]["label"] != "shipper" {
+		t.Fatalf("unexpected listing: %v", listed)
+	}
+
+	// Revoke.
+	id, _ := created["id"].(string)
+	if rec := e.do(t, http.MethodDelete, "/api/users/promtail-prod/apikeys/"+id, nil); rec.Code != http.StatusNoContent {
+		t.Fatalf("revoke: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = e.do(t, http.MethodGet, "/api/users/promtail-prod/apikeys", nil)
+	decodeInto(t, rec, &listed)
+	if len(listed) != 0 {
+		t.Errorf("key survived revocation: %v", listed)
+	}
+}
+
+// The secret must not reach the audit log, which records request bodies at
+// debug. The body of a create request carries only the label, and the secret
+// exists solely in the response.
+func TestAPIKeySecretIsNotAudited(t *testing.T) {
+	e := newEnv(t)
+	if rec := e.do(t, http.MethodPost, "/api/users", map[string]any{
+		"name": "promtail-prod", "password": "a-long-enough-password",
+	}); rec.Code != http.StatusCreated {
+		t.Fatalf("create user: %d", rec.Code)
+	}
+
+	logs := captureLogs(t, slog.LevelDebug)
+	rec := e.do(t, http.MethodPost, "/api/users/promtail-prod/apikeys",
+		map[string]any{"label": "shipper"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create key: %d", rec.Code)
+	}
+	var created map[string]any
+	decodeInto(t, rec, &created)
+	secret, _ := created["secret"].(string)
+
+	if out := logs.String(); strings.Contains(out, secret) {
+		t.Fatalf("the key secret leaked into the audit log:\n%s", out)
+	}
+}
+
+func TestAPIKeyForUnknownUserIs404(t *testing.T) {
+	e := newEnv(t)
+	rec := e.do(t, http.MethodPost, "/api/users/nobody/apikeys", map[string]any{"label": "x"})
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for an unknown user, got %d", rec.Code)
+	}
+}
+
+func TestAPIKeyRejectsBadExpiry(t *testing.T) {
+	e := newEnv(t)
+	if rec := e.do(t, http.MethodPost, "/api/users", map[string]any{
+		"name": "svc", "password": "a-long-enough-password",
+	}); rec.Code != http.StatusCreated {
+		t.Fatalf("create user: %d", rec.Code)
+	}
+	rec := e.do(t, http.MethodPost, "/api/users/svc/apikeys",
+		map[string]any{"label": "x", "expires_at": "next tuesday"})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for an unparseable expiry, got %d", rec.Code)
+	}
+}

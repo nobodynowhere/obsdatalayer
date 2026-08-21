@@ -1,6 +1,7 @@
 package proxy_test
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -259,34 +260,41 @@ func TestPostQueryBodyIsReplayedOnFailover(t *testing.T) {
 	}
 }
 
-// The configured query timeout bounds the whole read, not each attempt, so a
-// caller's worst case does not scale with how many targets are configured.
-func TestReadTimeoutIsSharedAcrossTargets(t *testing.T) {
-	slow := func() *httptest.Server {
+// Each target gets the full per-target timeout, rather than a slice of one
+// shared budget. Dividing a budget made each target's allowance depend on how
+// many replicas were configured, so adding a third silently shortened the time
+// the first two got -- upstream latency is a property of the backend, not of
+// the replica count.
+func TestEachTargetGetsTheFullTimeout(t *testing.T) {
+	hang := func() *httptest.Server {
 		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			<-r.Context().Done()
 		}))
 	}
-	a, b, c := slow(), slow(), slow()
+	a, b, c := hang(), hang(), hang()
 	defer a.Close()
 	defer b.Close()
 	defer c.Close()
 
-	const budget = 600 * time.Millisecond
-	p := newProxy(&http.Client{Timeout: budget})
-	inst := fanoutInstance("loki-slow", a.URL, b.URL, c.URL)
+	const perTarget = 400 * time.Millisecond
+	p := newProxy(&http.Client{Timeout: 30 * time.Second})
+	// The allowance comes from the target timeout, not the client's.
+	p.SetDefaultTargetTimeout(perTarget)
 
 	start := time.Now()
-	rec := doQuery(p, inst)
+	rec := doQuery(p, fanoutInstance("loki-slow", a.URL, b.URL, c.URL))
 	elapsed := time.Since(start)
 
 	if rec.Code != http.StatusGatewayTimeout {
-		t.Errorf("expected 504, got %d", rec.Code)
+		t.Errorf("expected 504 once every target hung, got %d", rec.Code)
 	}
-	// Three targets must not mean three full timeouts. Allow generous slack for
-	// scheduling while still failing if the budget is applied per attempt.
-	if elapsed > 2*budget {
-		t.Errorf("read took %v with a %v budget across 3 targets; the timeout is per attempt, not shared", elapsed, budget)
+	// Three targets, each given its own full allowance: roughly 3x, not 1x.
+	if elapsed < 2*perTarget {
+		t.Errorf("read took %v; targets appear to be sharing one budget rather than each getting %v",
+			elapsed, perTarget)
+	}
+	if elapsed > 6*perTarget {
+		t.Errorf("read took %v, far beyond three allowances of %v", elapsed, perTarget)
 	}
 }
 
@@ -594,8 +602,10 @@ func TestTimeoutFailoverPresentsSecondTargetsCredential(t *testing.T) {
 		},
 	}
 
-	// A budget large enough to cover both attempts once the first has expired.
-	p := newProxy(&http.Client{Timeout: 3 * time.Second})
+	// The allowance is per target, so MIMIR1's hang costs one allowance and
+	// MIMIR2 still gets its own.
+	p := newProxy(&http.Client{Timeout: 30 * time.Second})
+	p.SetDefaultTargetTimeout(500 * time.Millisecond)
 	rec := doQuery(p, inst)
 
 	if rec.Code != http.StatusOK {
@@ -698,10 +708,10 @@ func TestFailoverIsTransparentToTheCaller(t *testing.T) {
 	}
 }
 
-// Slicing must not starve later attempts: a target that fails immediately
-// returns its unused share, so the next target gets nearly the whole budget
-// rather than a fixed fraction of it.
-func TestFastFailureReturnsItsBudgetShare(t *testing.T) {
+// A target that fails fast must not eat into the next target's allowance. With
+// a per-target timeout this holds by construction: the slow target still gets
+// its full allowance however quickly the one before it failed.
+func TestFastFailureDoesNotShortenTheNextAttempt(t *testing.T) {
 	quick := newTarget(t, http.StatusBadGateway, "unwell") // fails in ~0ms
 
 	// Answers after longer than an even split of the budget would allow.
@@ -715,25 +725,28 @@ func TestFastFailureReturnsItsBudgetShare(t *testing.T) {
 	}))
 	defer slow.Close()
 
-	// An even two-way split of 1s would give the slow target 500ms and time it
-	// out. Because the first target failed instantly, nearly the full second is
-	// still available to it.
-	p := newProxy(&http.Client{Timeout: time.Second})
+	// A shared budget split two ways would have given the slow target 500ms and
+	// timed it out. Its own allowance is the full second.
+	p := newProxy(&http.Client{Timeout: 30 * time.Second})
+	p.SetDefaultTargetTimeout(time.Second)
 	rec := doQuery(p, fanoutInstance("loki-ha", quick.srv.URL, slow.URL))
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected the slow target to be given the remaining budget, got %d", rec.Code)
+		t.Fatalf("expected the slow target to get its own full allowance, got %d", rec.Code)
 	}
 	if got := rec.Body.String(); got != "slow-but-fine" {
 		t.Errorf("body = %q", got)
 	}
 }
 
-// The overall bound still holds: the caller's worst case does not grow with the
-// number of targets, however they fail.
-func TestHangingTargetsStillRespectTheOverallBudget(t *testing.T) {
+// The caller's context is what bounds the whole read. When the caller gives up
+// the gateway stops working on its behalf, abandoning the attempt in flight and
+// never trying the remaining targets -- nobody is waiting for the answer.
+func TestCallerCancellationStopsTheRead(t *testing.T) {
+	var calls atomic.Int64
 	hang := func() *httptest.Server {
 		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
 			<-r.Context().Done()
 		}))
 	}
@@ -742,17 +755,160 @@ func TestHangingTargetsStillRespectTheOverallBudget(t *testing.T) {
 	defer b.Close()
 	defer c.Close()
 
-	const budget = 600 * time.Millisecond
-	p := newProxy(&http.Client{Timeout: budget})
+	// Per-target timeout far longer than the caller's patience, so the only
+	// thing that can end this read is the cancellation.
+	p := newProxy(&http.Client{Timeout: 30 * time.Second})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/loki/api/v1/labels", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		cancel()
+	}()
 
 	start := time.Now()
-	rec := doQuery(p, fanoutInstance("loki-slow", a.URL, b.URL, c.URL))
+	p.ForwardQuery(rec, req, fanoutInstance("loki-slow", a.URL, b.URL, c.URL), "/loki/api/v1/labels")
+	elapsed := time.Since(start)
+
+	if elapsed > 5*time.Second {
+		t.Fatalf("read ran for %v after the caller went away", elapsed)
+	}
+	// Only the in-flight target should have been contacted; the rest are
+	// pointless once nobody is waiting.
+	if got := calls.Load(); got != 1 {
+		t.Errorf("contacted %d targets after cancellation, want 1", got)
+	}
+}
+
+// ---- per-target timeouts ----------------------------------------------------
+
+func hangingServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// A target's own timeout bounds the attempt against it. Targets are independent
+// systems and need not answer at the same speed.
+func TestTargetTimeoutIsHonoured(t *testing.T) {
+	slow := hangingServer(t)
+	live := newTarget(t, http.StatusOK, "ok")
+
+	inst := &config.InstanceConfig{
+		Name: "loki-ha", Backend: "loki", FanOutMode: "any",
+		PushURLs: []config.PushTarget{
+			{URL: slow.URL, TimeoutSeconds: 1},
+			{URL: live.srv.URL},
+		},
+	}
+
+	p := newProxy(&http.Client{Timeout: 30 * time.Second})
+	p.SetDefaultTargetTimeout(30 * time.Second)
+
+	start := time.Now()
+	rec := doQuery(p, inst)
+	elapsed := time.Since(start)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected failover after the first target's own timeout, got %d", rec.Code)
+	}
+	// It must give up after roughly its own second, not after the 30s default.
+	if elapsed > 5*time.Second {
+		t.Errorf("waited %v; the target's 1s timeout was not applied", elapsed)
+	}
+}
+
+// Zero means "use the gateway default", so a target that sets nothing still has
+// a bound rather than waiting forever.
+func TestZeroTargetTimeoutUsesTheDefault(t *testing.T) {
+	slow := hangingServer(t)
+	live := newTarget(t, http.StatusOK, "ok")
+
+	inst := &config.InstanceConfig{
+		Name: "loki-ha", Backend: "loki", FanOutMode: "any",
+		PushURLs: []config.PushTarget{
+			{URL: slow.URL}, // no timeout of its own
+			{URL: live.srv.URL},
+		},
+	}
+
+	p := newProxy(&http.Client{Timeout: 30 * time.Second})
+	p.SetDefaultTargetTimeout(700 * time.Millisecond)
+
+	start := time.Now()
+	rec := doQuery(p, inst)
+	elapsed := time.Since(start)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected the default timeout to bound the first attempt, got %d", rec.Code)
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("waited %v; the default target timeout was not applied", elapsed)
+	}
+}
+
+// Each target is bounded separately, so one slow target does not consume
+// another's allowance.
+func TestTargetsAreBoundedIndependently(t *testing.T) {
+	slowA := hangingServer(t)
+	slowB := hangingServer(t)
+
+	inst := &config.InstanceConfig{
+		Name: "loki-ha", Backend: "loki", FanOutMode: "any",
+		PushURLs: []config.PushTarget{
+			{URL: slowA.URL, TimeoutSeconds: 1},
+			{URL: slowB.URL, TimeoutSeconds: 1},
+		},
+	}
+
+	p := newProxy(&http.Client{Timeout: 30 * time.Second})
+	p.SetDefaultTargetTimeout(30 * time.Second)
+
+	start := time.Now()
+	rec := doQuery(p, inst)
 	elapsed := time.Since(start)
 
 	if rec.Code != http.StatusGatewayTimeout {
-		t.Errorf("expected 504 once every target hung, got %d", rec.Code)
+		t.Errorf("expected 504 once both targets timed out, got %d", rec.Code)
 	}
-	if elapsed > 2*budget {
-		t.Errorf("three hanging targets took %v against a %v budget", elapsed, budget)
+	// Two one-second allowances, not one shared second and not 30.
+	if elapsed < 1500*time.Millisecond {
+		t.Errorf("read took %v; the two targets appear to share one allowance", elapsed)
+	}
+	if elapsed > 10*time.Second {
+		t.Errorf("read took %v; per-target timeouts were not applied", elapsed)
+	}
+}
+
+// The configured value must reach the request rather than being capped by a
+// client-level timeout, which is why reads use a client with none.
+func TestTargetTimeoutExceedingQueryTimeoutIsNotCapped(t *testing.T) {
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(900 * time.Millisecond):
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, "slow-but-fine")
+		case <-r.Context().Done():
+		}
+	}))
+	defer slow.Close()
+
+	inst := &config.InstanceConfig{
+		Name: "loki-solo", Backend: "loki",
+		PushURLs: []config.PushTarget{{URL: slow.URL, TimeoutSeconds: 5}},
+	}
+
+	// The query client's own timeout is far shorter than the target's. The read
+	// client must not inherit it, or the target's 5s would silently become 300ms.
+	p := newProxy(&http.Client{Timeout: 300 * time.Millisecond})
+	p.SetDefaultTargetTimeout(30 * time.Second)
+
+	if rec := doQuery(p, inst); rec.Code != http.StatusOK {
+		t.Errorf("the target's own timeout was capped by the query client: got %d", rec.Code)
 	}
 }

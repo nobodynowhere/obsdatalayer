@@ -23,10 +23,11 @@ type instanceDoc struct {
 }
 
 type targetDoc struct {
-	URL           string `json:"url"`
-	BasicAuth     string `json:"basic_auth,omitempty"`
-	TenantID      string `json:"tenant_id,omitempty"`
-	SkipTLSVerify bool   `json:"skip_tls_verify,omitempty"`
+	URL            string `json:"url"`
+	BasicAuth      string `json:"basic_auth,omitempty"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+	TenantID       string `json:"tenant_id,omitempty"`
+	SkipTLSVerify  bool   `json:"skip_tls_verify,omitempty"`
 }
 
 type labelsDoc struct {
@@ -58,6 +59,7 @@ func toDoc(inst *config.InstanceConfig) instanceDoc {
 	}
 	for _, pt := range inst.PushURLs {
 		t := targetDoc{URL: pt.URL, TenantID: pt.TenantID, SkipTLSVerify: pt.SkipTLSVerify}
+		t.TimeoutSeconds = pt.TimeoutSeconds
 		if pt.BasicAuth != "" {
 			t.BasicAuth = redacted
 		}
@@ -108,10 +110,11 @@ func fromDoc(d instanceDoc, prev *config.InstanceConfig) (*config.InstanceConfig
 
 	for _, t := range d.PushURLs {
 		target := config.PushTarget{
-			URL:           t.URL,
-			BasicAuth:     t.BasicAuth,
-			TenantID:      t.TenantID,
-			SkipTLSVerify: t.SkipTLSVerify,
+			URL:            t.URL,
+			BasicAuth:      t.BasicAuth,
+			TenantID:       t.TenantID,
+			SkipTLSVerify:  t.SkipTLSVerify,
+			TimeoutSeconds: t.TimeoutSeconds,
 		}
 		if t.BasicAuth == redacted {
 			stored, ok := prevByURL[t.URL]
@@ -233,6 +236,9 @@ type settingsDoc struct {
 	PushTimeout    string `json:"push_timeout"`
 	LogLevel       string `json:"log_level"`
 	ReloadInterval string `json:"reload_interval"`
+	// DefaultTargetTimeout applies to any fan-out target that does not set its
+	// own timeout_seconds.
+	DefaultTargetTimeout string `json:"default_target_timeout"`
 
 	AuthLimitEnabled        *bool  `json:"auth_limit_enabled"`
 	AuthFailureThreshold    int    `json:"auth_failure_threshold"`
@@ -252,11 +258,12 @@ func (h *handler) getSettings(w http.ResponseWriter, r *http.Request) {
 	g := h.cfg.Get().Gateway
 	enabled := g.AuthLimit.ThrottleEnabled()
 	writeJSON(w, http.StatusOK, settingsDoc{
-		MaxBodyBytes:   g.MaxBodyBytes,
-		QueryTimeout:   g.Timeouts.Query.Duration().String(),
-		PushTimeout:    g.Timeouts.Push.Duration().String(),
-		LogLevel:       g.LogLevel,
-		ReloadInterval: g.ReloadInterval.Duration().String(),
+		MaxBodyBytes:         g.MaxBodyBytes,
+		QueryTimeout:         g.Timeouts.Query.Duration().String(),
+		PushTimeout:          g.Timeouts.Push.Duration().String(),
+		LogLevel:             g.LogLevel,
+		ReloadInterval:       g.ReloadInterval.Duration().String(),
+		DefaultTargetTimeout: g.DefaultTargetTimeout.Duration().String(),
 
 		AuthLimitEnabled:        &enabled,
 		AuthFailureThreshold:    g.AuthLimit.FailureThreshold,
@@ -289,6 +296,7 @@ func (h *handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 		{doc.QueryTimeout, &g.Timeouts.Query},
 		{doc.PushTimeout, &g.Timeouts.Push},
 		{doc.ReloadInterval, &g.ReloadInterval},
+		{doc.DefaultTargetTimeout, &g.DefaultTargetTimeout},
 		{doc.AuthFailureWindow, &g.AuthLimit.FailureWindow},
 		{doc.AuthBlockDuration, &g.AuthLimit.BlockDuration},
 		{doc.AuthMaxBlockDuration, &g.AuthLimit.MaxBlockDuration},

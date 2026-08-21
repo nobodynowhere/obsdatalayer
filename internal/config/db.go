@@ -81,6 +81,8 @@ func EnsureSettings(db *gorm.DB) error {
 		AuthMaxBlockDuration:    durationString(defaults.Gateway.AuthLimit.MaxBlockDuration),
 		AuthMaxConcurrentHashes: defaults.Gateway.AuthLimit.MaxConcurrentHashes,
 		AuthHashWait:            durationString(defaults.Gateway.AuthLimit.HashWait),
+
+		DefaultTargetTimeout: durationString(defaults.Gateway.DefaultTargetTimeout),
 	}
 	if err := db.Create(&row).Error; err != nil {
 		return fmt.Errorf("create gateway settings: %w", err)
@@ -115,6 +117,8 @@ func SaveSettings(db *gorm.DB, g GatewayConfig) error {
 		"auth_max_block_duration":    durationString(cfg.Gateway.AuthLimit.MaxBlockDuration),
 		"auth_max_concurrent_hashes": cfg.Gateway.AuthLimit.MaxConcurrentHashes,
 		"auth_hash_wait":             durationString(cfg.Gateway.AuthLimit.HashWait),
+
+		"default_target_timeout": durationString(cfg.Gateway.DefaultTargetTimeout),
 	}
 	if err := db.Model(&dbstore.GatewaySetting{}).Where("id = ?", setting.ID).Updates(updates).Error; err != nil {
 		return fmt.Errorf("update gateway settings: %w", err)
@@ -295,6 +299,15 @@ func mapConfig(setting *dbstore.GatewaySetting, instances []dbstore.Instance, c 
 		return nil, err
 	}
 
+	// Empty is a row written before the column existed; applyDefaults fills it.
+	var defaultTargetTimeout Duration
+	if setting.DefaultTargetTimeout != "" {
+		defaultTargetTimeout, err = parseDurationString(setting.DefaultTargetTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("invalid default_target_timeout %q: %w", setting.DefaultTargetTimeout, err)
+		}
+	}
+
 	cfg := &Config{
 		Gateway: GatewayConfig{
 			MaxBodyBytes:   setting.MaxBodyBytes,
@@ -304,7 +317,8 @@ func mapConfig(setting *dbstore.GatewaySetting, instances []dbstore.Instance, c 
 				Query: queryDur,
 				Push:  pushDur,
 			},
-			AuthLimit: authLimit,
+			AuthLimit:            authLimit,
+			DefaultTargetTimeout: defaultTargetTimeout,
 		},
 		Instances: make([]*InstanceConfig, 0, len(instances)),
 	}
@@ -374,10 +388,11 @@ func mapInstance(inst *dbstore.Instance, c *secret.Cipher) (*InstanceConfig, err
 				return nil, fmt.Errorf("instance %q push target %q basic_auth: %w", inst.Name, pt.URL, err)
 			}
 			ic.PushURLs = append(ic.PushURLs, PushTarget{
-				URL:           pt.URL,
-				BasicAuth:     ptAuth,
-				TenantID:      pt.TenantID,
-				SkipTLSVerify: pt.SkipTLSVerify,
+				URL:            pt.URL,
+				BasicAuth:      ptAuth,
+				TenantID:       pt.TenantID,
+				SkipTLSVerify:  pt.SkipTLSVerify,
+				TimeoutSeconds: pt.TimeoutSeconds,
 			})
 		}
 	}
@@ -460,13 +475,14 @@ func savePushTarget(tx *gorm.DB, instID uuid.UUID, position int, pt PushTarget, 
 		return fmt.Errorf("encrypt push target %q basic_auth: %w", pt.URL, err)
 	}
 	dbPt := dbstore.PushTarget{
-		ID:            ptID,
-		InstanceID:    instID,
-		Position:      position,
-		URL:           pt.URL,
-		BasicAuth:     basicAuth,
-		TenantID:      pt.TenantID,
-		SkipTLSVerify: pt.SkipTLSVerify,
+		ID:             ptID,
+		InstanceID:     instID,
+		Position:       position,
+		URL:            pt.URL,
+		BasicAuth:      basicAuth,
+		TenantID:       pt.TenantID,
+		SkipTLSVerify:  pt.SkipTLSVerify,
+		TimeoutSeconds: pt.TimeoutSeconds,
 	}
 	if err := tx.Create(&dbPt).Error; err != nil {
 		return fmt.Errorf("create push target: %w", err)

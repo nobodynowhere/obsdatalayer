@@ -277,6 +277,7 @@ func Migrate(db *gorm.DB) error {
 		&Tenant{},
 		&GrantReadPolicy{},
 		&User{},
+		&APIKey{},
 		&Role{},
 	)
 }

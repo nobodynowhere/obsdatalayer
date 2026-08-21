@@ -15,13 +15,15 @@ type Stub struct {
 	Password string
 	// Tenants is returned for any backend/action in Allow.
 	Tenants []string
-	// LabelSelectors is returned for Mimir read requests in Allow.
+	// LabelSelectors is returned for label-scoped read requests in Allow.
 	LabelSelectors []string
 	// Allow lists "backend:action" pairs the user may perform. A nil Allow
 	// permits every backend and action.
 	Allow map[string]bool
 	// Admin controls the result of CanAdmin.
 	Admin bool
+	// APIKey, when set, is the single bearer token the stub accepts.
+	APIKey string
 }
 
 var _ auth.Authorizer = (*Stub)(nil)
@@ -57,6 +59,18 @@ func (s *Stub) AuthenticateContext(_ context.Context, name, password string) (*a
 	return s.Authenticate(name, password)
 }
 
+// APIKey is the bearer token the stub accepts. Empty means it accepts none.
+// Set it on the Stub to exercise bearer authentication.
+func (s *Stub) APIKeyToken() string { return s.APIKey }
+
+// AuthenticateAPIKey implements auth.Authorizer.
+func (s *Stub) AuthenticateAPIKey(token string) (*auth.User, error) {
+	if s.APIKey == "" || token != s.APIKey {
+		return nil, auth.ErrInvalidAPIKey
+	}
+	return &auth.User{Name: s.Username}, nil
+}
+
 // AccessFor implements auth.Authorizer.
 func (s *Stub) AccessFor(name, backend, action string) (auth.Access, bool) {
 	if name != s.Username {
@@ -69,7 +83,7 @@ func (s *Stub) AccessFor(name, backend, action string) (auth.Access, bool) {
 		return auth.Access{}, false
 	}
 	access := auth.Access{TenantIDs: s.Tenants}
-	if backend == "mimir" && action == auth.ActionRead {
+	if (backend == "mimir" || backend == "loki") && action == auth.ActionRead {
 		access.LabelSelectors = s.LabelSelectors
 	}
 	return access, true

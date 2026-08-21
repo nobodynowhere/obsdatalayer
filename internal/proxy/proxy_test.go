@@ -274,8 +274,10 @@ func TestForwardQueryUpstreamTimeout(t *testing.T) {
 	}))
 	t.Cleanup(upstream.Close)
 
-	// Very short timeout client
+	// Reads are bounded per target, not by the client's own timeout, so the
+	// short allowance is set where the read path actually reads it from.
 	p := newProxy(&http.Client{Timeout: 50 * time.Millisecond})
+	p.SetDefaultTargetTimeout(50 * time.Millisecond)
 	inst := newInst("loki-prod", "loki", upstream.URL)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/loki/labels", nil)

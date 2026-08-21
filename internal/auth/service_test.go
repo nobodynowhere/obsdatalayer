@@ -254,6 +254,29 @@ func TestMimirReadAccessResolvesGrantLabelSelector(t *testing.T) {
 	}
 }
 
+func TestLokiReadAccessResolvesGrantLabelSelector(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustRole(t, svc, "logs-reader", auth.Grant{
+		Backend:           "loki",
+		Action:            "read",
+		TenantIDs:         []string{env.a},
+		ReadLabelSelector: ` {cluster="prod"} `,
+	})
+	mustUser(t, svc, "alice", "logs-reader")
+
+	access, ok := svc.AccessFor("alice", "loki", "read")
+	if !ok {
+		t.Fatal("expected loki:read to be allowed")
+	}
+	if len(access.TenantIDs) != 1 || access.TenantIDs[0] != env.a {
+		t.Fatalf("expected [%s], got %v", env.a, access.TenantIDs)
+	}
+	if len(access.LabelSelectors) != 1 || access.LabelSelectors[0] != `{cluster="prod"}` {
+		t.Fatalf("expected label selector, got %v", access.LabelSelectors)
+	}
+}
+
 func TestMimirReadAccessRejectsMixedTenantLabelSelectors(t *testing.T) {
 	env := newTestEnv(t)
 	svc := env.svc
@@ -350,6 +373,22 @@ func TestGrantValidationRejectsReadLabelSelectorOnWrite(t *testing.T) {
 	err := svc.SetUserGrants("alice", []auth.Grant{{
 		Backend:           "mimir",
 		Action:            "write",
+		TenantIDs:         []string{env.a},
+		ReadLabelSelector: `{cluster="prod"}`,
+	}})
+	if !errors.Is(err, auth.ErrInvalidGrant) {
+		t.Fatalf("expected ErrInvalidGrant, got %v", err)
+	}
+}
+
+func TestGrantValidationRejectsReadLabelSelectorOnTempo(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustUser(t, svc, "alice")
+
+	err := svc.SetUserGrants("alice", []auth.Grant{{
+		Backend:           "tempo",
+		Action:            "read",
 		TenantIDs:         []string{env.a},
 		ReadLabelSelector: `{cluster="prod"}`,
 	}})

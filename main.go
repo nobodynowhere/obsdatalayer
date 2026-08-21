@@ -153,6 +153,7 @@ func main() {
 	p := proxy.New(makeClient(cfg.Gateway.Timeouts.Query), makeClient(cfg.Gateway.Timeouts.Push))
 	m := metrics.New(prometheus.DefaultRegisterer)
 	p.SetMetrics(m)
+	p.SetDefaultTargetTimeout(cfg.Gateway.DefaultTargetTimeout.Duration())
 
 	// Each plane throttles on its own counter. Sharing one was tried and is
 	// wrong: a flood against the data listener then blocks the operator out of
@@ -534,6 +535,7 @@ func (r *reloader) run() error {
 
 	applyLogLevel(r.logLevel, staged.Gateway.LogLevel)
 	applyAuthLimit(r.auth, r.guards, staged.Gateway.AuthLimit)
+	r.proxy.SetDefaultTargetTimeout(staged.Gateway.DefaultTargetTimeout.Duration())
 	if staged.Gateway.Timeouts != r.timeouts {
 		r.proxy.SetClients(
 			makeClient(staged.Gateway.Timeouts.Query),

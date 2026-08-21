@@ -82,7 +82,7 @@ function openEdit(inst) {
     backend: inst.backend,
     mode: inst.push_urls?.length ? 'fanout' : 'single',
     url: inst.url ?? '',
-    push_urls: (inst.push_urls ?? []).map((t) => ({ ...t })),
+    push_urls: (inst.push_urls ?? []).map((t) => ({ timeout_seconds: 0, ...t })),
     fan_out_mode: inst.fan_out_mode || 'any',
     basic_auth: inst.basic_auth ?? '',
     tenant_id: inst.tenant_id ?? '',
@@ -116,6 +116,8 @@ function toPayload() {
       basic_auth: t.basic_auth || undefined,
       tenant_id: t.tenant_id || undefined,
       skip_tls_verify: t.skip_tls_verify || undefined,
+      // 0 means "use the gateway default", which the API omits.
+      timeout_seconds: Number(t.timeout_seconds) > 0 ? Number(t.timeout_seconds) : undefined,
     }))
     doc.fan_out_mode = f.fan_out_mode
   }
@@ -171,7 +173,8 @@ function remove(inst) {
   })
 }
 
-const addTarget = () => form.value.push_urls.push({ url: '', basic_auth: '', tenant_id: '', skip_tls_verify: false })
+const addTarget = () =>
+  form.value.push_urls.push({ url: '', basic_auth: '', tenant_id: '', skip_tls_verify: false, timeout_seconds: 0 })
 const removeTarget = (i) => form.value.push_urls.splice(i, 1)
 
 // Order is meaningful: writes go to every target, but reads try them in this
@@ -333,6 +336,15 @@ onMounted(load)
               option-label="label"
               option-value="value"
             />
+            <PrimeInputNumber
+              v-model="t.timeout_seconds"
+              :min="0"
+              suffix=" s"
+              placeholder="default"
+              :input-style="{ width: '100%' }"
+              aria-label="Per-target timeout in seconds"
+              title="Seconds this target gets to answer a read. 0 uses the gateway default."
+            />
             <PrimeButton
               icon="pi pi-arrow-up"
               text
@@ -355,7 +367,8 @@ onMounted(load)
           </div>
           <small v-if="form.push_urls.length > 1" style="display: block; margin-top: 0.5rem">
             Every target receives every write. Reads try them in this order, so target 1 is the one
-            normally queried and the rest are fallbacks used when it cannot answer.
+            normally queried and the rest are fallbacks used when it cannot answer. The timeout is
+            how long each target gets to answer a read; leave it at 0 to use the gateway default.
           </small>
           <div style="margin-top: 0.75rem">
             <PrimeButton icon="pi pi-plus" label="Add target" size="small" severity="secondary" outlined @click="addTarget" />

@@ -103,25 +103,49 @@ func BasicAuth(a auth.Authorizer, guard *AuthGuard, next http.Handler) http.Hand
 			return
 		}
 
-		username, password, ok := r.BasicAuth()
-		if !ok {
-			// Not counted as a failure: no credential was offered, so nothing
-			// was hashed and this costs the gateway nothing to reject.
-			slog.Debug("data plane request without credentials", "path", r.URL.Path, "method", r.Method)
-			writeUnauthorized(w)
-			return
-		}
-		if _, err := a.AuthenticateContext(r.Context(), username, password); err != nil {
-			if errors.Is(err, auth.ErrHashLimitReached) {
-				guard.saturated(w, r, "data")
+		// A bearer token is an API key belonging to a user. Authenticating with
+		// one is authenticating as that user: everything below, including the
+		// grant lookup, is identical either way.
+		//
+		// Keys are accepted on the data plane only. They are long-lived
+		// credentials issued for unattended shippers, and the admin plane
+		// creates users and edits routing, so it keeps requiring a password.
+		// This follows the same instinct as the wildcard grant that
+		// deliberately excludes the admin object.
+		var username string
+		if token, isBearer := auth.BearerToken(r.Header.Get("Authorization")); isBearer {
+			u, err := a.AuthenticateAPIKey(token)
+			if err != nil {
+				guard.recordFailure(source)
+				slog.Debug("data plane api key rejected", "path", r.URL.Path)
+				writeUnauthorized(w)
 				return
 			}
-			guard.recordFailure(source)
-			slog.Debug("data plane authentication failed", "user", username, "path", r.URL.Path)
-			writeUnauthorized(w)
-			return
+			username = u.Name
+			guard.recordSuccess(source)
+		} else {
+			name, password, ok := r.BasicAuth()
+			if !ok {
+				// Not counted as a failure: no credential was offered, so
+				// nothing was hashed and this costs the gateway nothing to
+				// reject.
+				slog.Debug("data plane request without credentials", "path", r.URL.Path, "method", r.Method)
+				writeUnauthorized(w)
+				return
+			}
+			if _, err := a.AuthenticateContext(r.Context(), name, password); err != nil {
+				if errors.Is(err, auth.ErrHashLimitReached) {
+					guard.saturated(w, r, "data")
+					return
+				}
+				guard.recordFailure(source)
+				slog.Debug("data plane authentication failed", "user", name, "path", r.URL.Path)
+				writeUnauthorized(w)
+				return
+			}
+			username = name
+			guard.recordSuccess(source)
 		}
-		guard.recordSuccess(source)
 
 		backend := extractBackend(r.URL.Path)
 		action := actionForRequest(r)

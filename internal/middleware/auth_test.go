@@ -1185,3 +1185,102 @@ func TestNilGuardDisablesThrottling(t *testing.T) {
 		}
 	}
 }
+
+// ---- bearer API keys --------------------------------------------------------
+
+func bearerRequest(h http.Handler, path, token string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.RemoteAddr = "10.0.0.9:50000"
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// A key authenticates on the data plane exactly as its owner's password would.
+func TestBearerKeyAuthenticatesOnDataPlane(t *testing.T) {
+	inner, called := newHandlerCalledFlag()
+	stub := authtest.New()
+	stub.APIKey = "obsgw_abc123_the-secret_with-underscores"
+	h := middleware.BasicAuth(stub, nil, inner)
+
+	rec := bearerRequest(h, "/loki/loki/api/v1/labels", stub.APIKey)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected the key to authenticate, got %d", rec.Code)
+	}
+	if !*called {
+		t.Error("inner handler was not reached")
+	}
+}
+
+func TestBearerKeyRejectedWhenWrong(t *testing.T) {
+	inner, called := newHandlerCalledFlag()
+	stub := authtest.New()
+	stub.APIKey = "obsgw_abc123_the-secret"
+	h := middleware.BasicAuth(stub, nil, inner)
+
+	rec := bearerRequest(h, "/loki/loki/api/v1/labels", "obsgw_abc123_wrong")
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", rec.Code)
+	}
+	if *called {
+		t.Error("inner handler ran for a bad key")
+	}
+}
+
+// Keys are long-lived credentials issued for unattended shippers. The admin
+// plane creates users and edits routing, so it keeps requiring a password --
+// the same instinct as the wildcard grant that excludes the admin object.
+func TestBearerKeyIsRejectedOnAdminPlane(t *testing.T) {
+	inner, called := newHandlerCalledFlag()
+	stub := authtest.NewAdmin()
+	stub.APIKey = "obsgw_abc123_the-secret"
+	h := middleware.AdminAuth(stub, nil, inner)
+
+	rec := bearerRequest(h, "/api/config", stub.APIKey)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("expected the admin plane to refuse a bearer key, got %d", rec.Code)
+	}
+	if *called {
+		t.Error("a bearer key reached the admin API")
+	}
+}
+
+// A rejected key counts against the source throttle: guessing tokens must be
+// rate limited like guessing passwords.
+func TestBearerKeyFailuresAreThrottled(t *testing.T) {
+	inner, _ := newHandlerCalledFlag()
+	guard, m := newGuard(2)
+	stub := authtest.New()
+	stub.APIKey = "obsgw_abc123_the-secret"
+	h := middleware.BasicAuth(stub, guard, inner)
+
+	bearerRequest(h, "/loki/loki/api/v1/labels", "obsgw_abc123_wrong")
+	bearerRequest(h, "/loki/loki/api/v1/labels", "obsgw_abc123_wrong")
+	rec := bearerRequest(h, "/loki/loki/api/v1/labels", "obsgw_abc123_wrong")
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("expected repeated bad keys to be throttled, got %d", rec.Code)
+	}
+	if got := m.AuthRejectedValue("throttled"); got != 1 {
+		t.Errorf("throttled rejections = %d, want 1", got)
+	}
+}
+
+// Basic auth must keep working alongside bearer: the two are alternatives, not
+// a migration.
+func TestBasicAuthStillWorksAlongsideBearer(t *testing.T) {
+	inner, _ := newHandlerCalledFlag()
+	stub := authtest.New()
+	stub.APIKey = "obsgw_abc123_the-secret"
+	h := middleware.BasicAuth(stub, nil, inner)
+
+	req := httptest.NewRequest(http.MethodGet, "/loki/loki/api/v1/labels", nil)
+	req.Header.Set("Authorization", stub.Header())
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("basic auth stopped working: %d", rec.Code)
+	}
+}

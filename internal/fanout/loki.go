@@ -1,6 +1,7 @@
 package fanout
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -37,7 +38,7 @@ func LokiDSRoutes(mux *http.ServeMux, mount string, h *config.ConfigHolder, p *p
 	// practical URL, so Loki accepts these as form posts.
 	// middleware.isQueryPost classifies them as reads for authorization.
 	read := func(method, upstream string) {
-		registerLokiQuery(mux, method+" "+mount+upstream, h, p, upstream)
+		registerLokiQuery(mux, method+" "+mount+upstream, h, p, lokiReadEndpoint(upstream), upstream)
 	}
 	read("GET", "/loki/api/v1/query")
 	read("GET", "/loki/api/v1/query_range")
@@ -74,6 +75,9 @@ func LokiDSRoutes(mux *http.ServeMux, mount string, h *config.ConfigHolder, p *p
 	// whose X-Scope-OrgID names more than one tenant.
 	mux.HandleFunc("GET "+mount+"/loki/api/v1/tail", func(w http.ResponseWriter, r *http.Request) {
 		if inst := getInstance(h, r, w, "loki"); inst != nil && requireSingleTenant(w, r) {
+			if !applyLokiReadPolicy(w, r, "tail") {
+				return
+			}
 			p.ForwardUpgrade(w, r, inst, "/loki/api/v1/tail")
 		}
 	})
@@ -119,12 +123,63 @@ func forwardLokiPush(w http.ResponseWriter, r *http.Request, h *config.ConfigHol
 	handlePush(w, r, inst, upstreamPath, rewriteFn, maxBytes, p, m)
 }
 
-func registerLokiQuery(mux *http.ServeMux, pattern string, h *config.ConfigHolder, p *proxy.Proxy, upstreamPath string) {
+func registerLokiQuery(mux *http.ServeMux, pattern string, h *config.ConfigHolder, p *proxy.Proxy, endpoint, upstreamPath string) {
 	mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 		if inst := getInstance(h, r, w, "loki"); inst != nil {
+			if !applyLokiReadPolicy(w, r, endpoint) {
+				return
+			}
 			p.ForwardQuery(w, r, inst, expandLokiPath(upstreamPath, r))
 		}
 	})
+}
+
+func applyLokiReadPolicy(w http.ResponseWriter, r *http.Request, endpoint string) bool {
+	if err := rewrite.ApplyLokiReadPolicy(r, endpoint); err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, rewrite.ErrReadPolicyUnsupported) || errors.Is(err, rewrite.ErrReadPolicyAmbiguous) {
+			status = http.StatusForbidden
+		}
+		proxy.WriteJSONError(w, status, map[string]string{
+			"error":  "loki read policy rejected request",
+			"detail": err.Error(),
+		})
+		return false
+	}
+	return true
+}
+
+func lokiReadEndpoint(upstream string) string {
+	switch {
+	case upstream == "/loki/api/v1/query":
+		return "query"
+	case upstream == "/loki/api/v1/query_range":
+		return "query_range"
+	case upstream == "/loki/api/v1/labels":
+		return "labels"
+	case strings.HasPrefix(upstream, "/loki/api/v1/label/"):
+		return "label_values"
+	case upstream == "/loki/api/v1/series":
+		return "series"
+	case upstream == "/loki/api/v1/index/stats":
+		return "index_stats"
+	case upstream == "/loki/api/v1/index/volume":
+		return "index_volume"
+	case upstream == "/loki/api/v1/index/volume_range":
+		return "index_volume_range"
+	case upstream == "/loki/api/v1/patterns":
+		return "patterns"
+	case upstream == "/loki/api/v1/detected_fields":
+		return "detected_fields"
+	case strings.HasPrefix(upstream, "/loki/api/v1/detected_field/"):
+		return "detected_field_values"
+	case upstream == "/loki/api/v1/format_query":
+		return "format_query"
+	case upstream == "/loki/api/v1/status/buildinfo":
+		return "status_buildinfo"
+	default:
+		return ""
+	}
 }
 
 func registerLokiTenantConfig(mux *http.ServeMux, pattern string, h *config.ConfigHolder, p *proxy.Proxy, upstreamPath string) {

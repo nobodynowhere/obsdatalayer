@@ -496,3 +496,90 @@ func TestPushTargetOrderIsPerInstance(t *testing.T) {
 		}
 	}
 }
+
+// ---- per-target timeout -----------------------------------------------------
+
+func TestTargetTimeoutRoundTrips(t *testing.T) {
+	gormDB := openTestConfigDB(t)
+
+	inst := fanoutInst("mimir-ha", "http://a.local", "http://b.local")
+	inst.PushURLs[0].TimeoutSeconds = 12
+	// The second deliberately leaves it unset.
+	if err := config.CreateInstance(gormDB, inst, nil, nil); err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+
+	cfg, err := config.LoadFromDB(gormDB, nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	targets := cfg.Instances[0].PushURLs
+	if targets[0].TimeoutSeconds != 12 {
+		t.Errorf("first target timeout = %d, want 12", targets[0].TimeoutSeconds)
+	}
+	if targets[1].TimeoutSeconds != 0 {
+		t.Errorf("second target timeout = %d, want 0 (defer to the default)", targets[1].TimeoutSeconds)
+	}
+
+	// And the effective value resolves against the supplied default.
+	if got := targets[0].Timeout(30 * time.Second); got != 12*time.Second {
+		t.Errorf("effective timeout = %v, want 12s", got)
+	}
+	if got := targets[1].Timeout(30 * time.Second); got != 30*time.Second {
+		t.Errorf("effective fallback = %v, want the 30s default", got)
+	}
+}
+
+func TestDefaultTargetTimeoutDefaultsAndRoundTrips(t *testing.T) {
+	gormDB := openTestConfigDB(t)
+
+	cfg, err := config.LoadFromDB(gormDB, nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := cfg.Gateway.DefaultTargetTimeout.Duration(); got != 30*time.Second {
+		t.Errorf("default = %v, want 30s", got)
+	}
+
+	g := cfg.Gateway
+	g.DefaultTargetTimeout = config.Duration(45 * time.Second)
+	if err := config.SaveSettings(gormDB, g); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	reloaded, err := config.LoadFromDB(gormDB, nil)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got := reloaded.Gateway.DefaultTargetTimeout.Duration(); got != 45*time.Second {
+		t.Errorf("reloaded default = %v, want 45s", got)
+	}
+}
+
+// A settings row written before the column existed reads as empty and must take
+// the default rather than zero, which would mean "no bound at all".
+func TestDefaultTargetTimeoutOnPreUpgradeRow(t *testing.T) {
+	gormDB := openTestConfigDB(t)
+
+	if err := gormDB.Table("gateway_settings").Where("1 = 1").
+		Update("default_target_timeout", "").Error; err != nil {
+		t.Fatalf("simulate pre-upgrade row: %v", err)
+	}
+
+	cfg, err := config.LoadFromDB(gormDB, nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := cfg.Gateway.DefaultTargetTimeout.Duration(); got != 30*time.Second {
+		t.Errorf("pre-upgrade row gave %v, want the 30s default", got)
+	}
+}
+
+func TestNegativeTargetTimeoutIsRejected(t *testing.T) {
+	gormDB := openTestConfigDB(t)
+
+	inst := fanoutInst("mimir-ha", "http://a.local")
+	inst.PushURLs[0].TimeoutSeconds = -5
+	if err := config.CreateInstance(gormDB, inst, nil, nil); err == nil {
+		t.Error("expected a negative per-target timeout to be rejected")
+	}
+}

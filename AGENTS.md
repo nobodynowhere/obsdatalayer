@@ -85,8 +85,15 @@
   to every target — `fan_out_mode` only aggregates responses — so targets are
   replicas and any can serve a query.
 - Only transport errors and 5xx fail over. A 4xx is the upstream answering.
-- One deadline covers the whole read (`internal/proxy/read.go`), not each
-  attempt, so worst-case latency does not scale with target count.
+- Each attempt is bounded by its target's `timeout_seconds`, falling back to the
+  `default_target_timeout` setting (`PushTarget.Timeout`,
+  `Proxy.SetDefaultTargetTimeout`). The whole read is bounded by the request
+  context, i.e. caller disconnect. Do not reintroduce a shared budget divided
+  between targets: it made each target's allowance depend on the replica count.
+- Reads use `Proxy.ReadClient()`, which shares the query client's transport but
+  carries no `http.Client.Timeout`. That is deliberate — a client-level timeout
+  would silently cap a target configured to allow longer. Tests that need a
+  short read bound must call `SetDefaultTargetTimeout`, not set a client timeout.
 - Nothing is written to the client until an attempt is known good: see
   `readAttempt.commit` / `.discard`. Do not write headers before that decision.
 - `targetHealth` (`internal/proxy/health.go`) skips a repeatedly-failing target
@@ -105,6 +112,23 @@
   metrics sink is optional (`Proxy.SetMetrics`); all uses are nil-guarded. New
   instance-labelled counter sets must be added to `RetainInstances` or they leak
   series for deleted instances.
+
+## API Keys
+
+- A key is a credential for a user and inherits that user's grants. Do not give
+  keys their own grants: that duplicates the authorization model onto a second
+  object (`internal/auth/apikey.go`).
+- Only the SHA-256 hash is stored. bcrypt is deliberately not used — the secret
+  is 256 random bits, and bcrypt would put every shipper request on the hash
+  path the auth throttle exists to protect.
+- The token is `obsgw_<handle>_<secret>`. The secret is base64url, whose
+  alphabet contains `_`, so `parseAPIKey` must use `SplitN(..., 3)`. An
+  unlimited split rejected roughly half of all issued keys.
+- Keys authenticate on the data plane only; `middleware.AdminAuth` does not
+  accept bearer tokens.
+- The authentication index is in memory and refreshed by `Service.Reload`, so
+  issuing and revoking take effect immediately. `last_used_at` writes are
+  throttled to one per key per minute.
 
 ## Dependencies
 

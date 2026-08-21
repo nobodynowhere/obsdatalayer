@@ -80,6 +80,8 @@ type Authorizer interface {
 	// AuthenticateContext is Authenticate bound to a request, so a caller that
 	// disconnects stops occupying a password-hashing slot.
 	AuthenticateContext(ctx context.Context, name, password string) (*User, error)
+	// AuthenticateAPIKey resolves a bearer token to its owning user.
+	AuthenticateAPIKey(token string) (*User, error)
 	AccessFor(name, backend, action string) (Access, bool)
 	CanAdmin(name string) bool
 }
@@ -98,6 +100,10 @@ type Service struct {
 	tenants *tenant.Store
 	users   atomic.Pointer[map[string]*User]
 	cache   *credentialCache
+
+	// apiKeys is the authentication index for bearer credentials, refreshed by
+	// Reload so issuing or revoking a key takes effect immediately.
+	apiKeys *apiKeyIndex
 
 	// hashGate bounds concurrent bcrypt work. It is swapped wholesale on a
 	// settings reload rather than resized: an in-flight caller holds the gate
@@ -128,7 +134,7 @@ func NewService(db *gorm.DB, tenants *tenant.Store) (*Service, error) {
 		return nil, fmt.Errorf("auth: load policy: %w", err)
 	}
 
-	s := &Service{db: db, enf: enf, tenants: tenants, cache: newCredentialCache(time.Minute)}
+	s := &Service{db: db, enf: enf, tenants: tenants, cache: newCredentialCache(time.Minute), apiKeys: newAPIKeyIndex()}
 	s.SetHashLimit(authlimit.DefaultMaxConcurrentHashes(), authlimit.DefaultHashWait)
 	if err := s.Reload(); err != nil {
 		return nil, err
@@ -163,6 +169,10 @@ func (s *Service) Reload() error {
 	// every valid caller back through bcrypt twice a minute at the default
 	// reload interval, which is precisely when they most need to stay out of
 	// the hashing queue an attacker is filling.
+
+	if err := s.loadAPIKeys(); err != nil {
+		return err
+	}
 
 	if err := s.enf.LoadPolicy(); err != nil {
 		return fmt.Errorf("auth: reload policy: %w", err)
@@ -321,7 +331,7 @@ func (s *Service) AccessFor(name, backend, action string) (Access, bool) {
 			tenants = decodeTenants(row[3])
 			tenantSets = append(tenantSets, tenants)
 		}
-		if backend == "mimir" && action == ActionRead {
+		if backendSupportsReadLabelSelector(backend) && action == ActionRead {
 			selector, ok := s.grantReadPolicySelector(row, tenants)
 			if !ok {
 				return Access{}, false
@@ -363,7 +373,7 @@ func (s *Service) AccessFor(name, backend, action string) (Access, bool) {
 	}
 
 	access := Access{TenantIDs: live}
-	if backend == "mimir" && action == ActionRead {
+	if backendSupportsReadLabelSelector(backend) && action == ActionRead {
 		selectors, ok := effectiveReadSelectors(live, perTenantReadPolicy)
 		if !ok {
 			return Access{}, false
@@ -427,7 +437,7 @@ func effectiveReadSelectors(tenantIDs []string, policies map[string]*readPolicyS
 }
 
 func (s *Service) grantReadPolicySelector(policyRow, tenants []string) (string, bool) {
-	if len(policyRow) < 4 || policyRow[1] != "mimir" || policyRow[2] != ActionRead {
+	if len(policyRow) < 4 || !backendSupportsReadLabelSelector(policyRow[1]) || policyRow[2] != ActionRead {
 		return "", true
 	}
 	var row dbstore.GrantReadPolicy
@@ -560,6 +570,9 @@ func (s *Service) DeleteUser(name string) error {
 	}
 	if _, err := s.enf.DeleteUser(userSubject(name)); err != nil {
 		return fmt.Errorf("delete user policies %q: %w", name, err)
+	}
+	if err := deleteAPIKeysForUser(s.db, name); err != nil {
+		return err
 	}
 	if err := s.db.Where("subject = ?", userSubject(name)).Delete(&dbstore.GrantReadPolicy{}).Error; err != nil {
 		return fmt.Errorf("delete user read policies %q: %w", name, err)

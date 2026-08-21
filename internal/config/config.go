@@ -98,6 +98,10 @@ type GatewayConfig struct {
 	LogLevel       string          `yaml:"log_level"`
 	ReloadInterval Duration        `yaml:"reload_interval"`
 	AuthLimit      AuthLimitConfig `yaml:"auth_limit"`
+
+	// DefaultTargetTimeout bounds one attempt against a target that does not
+	// set its own timeout. It is the fallback for PushTarget.TimeoutSeconds.
+	DefaultTargetTimeout Duration `yaml:"default_target_timeout"`
 }
 
 // AuthLimitConfig bounds the cost an unauthenticated caller can impose.
@@ -170,6 +174,23 @@ type PushTarget struct {
 	BasicAuth     string `yaml:"basic_auth"`
 	TenantID      string `yaml:"tenant_id"`
 	SkipTLSVerify bool   `yaml:"skip_tls_verify"`
+
+	// TimeoutSeconds bounds a single attempt against this target. Targets are
+	// independent systems and need not answer at the same speed -- a local
+	// cluster and a remote DR site behind one instance are not comparable -- so
+	// the allowance belongs to the target rather than to the instance.
+	//
+	// Zero means "use the gateway's default_target_timeout".
+	TimeoutSeconds int `yaml:"timeout_seconds"`
+}
+
+// Timeout returns the effective per-attempt timeout for this target, falling
+// back to the supplied default when the target does not set one.
+func (pt PushTarget) Timeout(def time.Duration) time.Duration {
+	if pt.TimeoutSeconds > 0 {
+		return time.Duration(pt.TimeoutSeconds) * time.Second
+	}
+	return def
 }
 
 type LabelsConfig struct {
@@ -224,6 +245,9 @@ func applyDefaults(cfg *Config) {
 	if al.HashWait == 0 {
 		al.HashWait = Duration(authlimit.DefaultHashWait)
 	}
+	if cfg.Gateway.DefaultTargetTimeout == 0 {
+		cfg.Gateway.DefaultTargetTimeout = Duration(30 * time.Second)
+	}
 	for _, inst := range cfg.Instances {
 		if inst.FanOutMode == "" && len(inst.PushURLs) > 0 {
 			inst.FanOutMode = "any"
@@ -249,6 +273,9 @@ func validateGateway(g *GatewayConfig) error {
 	}
 	if g.ReloadInterval <= 0 {
 		return fmt.Errorf("config: reload_interval must be positive")
+	}
+	if g.DefaultTargetTimeout <= 0 {
+		return fmt.Errorf("config: default_target_timeout must be positive")
 	}
 	var lvl slog.Level
 	if err := lvl.UnmarshalText([]byte(g.LogLevel)); err != nil {
@@ -343,6 +370,13 @@ func validate(cfg *Config) error {
 			}
 		}
 
+		// 12b. negative per-target timeout
+		for i, pt := range inst.PushURLs {
+			if pt.TimeoutSeconds < 0 {
+				return fmt.Errorf("config: instance %q push_urls[%d] has a negative timeout_seconds", inst.Name, i)
+			}
+		}
+
 		// 13. push_urls target missing url
 		for i, pt := range inst.PushURLs {
 			if pt.URL == "" {
@@ -401,7 +435,13 @@ func resolveTarget(pt PushTarget, instBasicAuth, instTenantID string, instSkipTL
 	if tenantID == "" {
 		tenantID = instTenantID
 	}
-	return PushTarget{URL: pt.URL, BasicAuth: basicAuth, TenantID: tenantID, SkipTLSVerify: pt.SkipTLSVerify || instSkipTLSVerify}
+	return PushTarget{
+		URL:            pt.URL,
+		BasicAuth:      basicAuth,
+		TenantID:       tenantID,
+		SkipTLSVerify:  pt.SkipTLSVerify || instSkipTLSVerify,
+		TimeoutSeconds: pt.TimeoutSeconds,
+	}
 }
 
 // GetPushTargets returns resolved push targets with effective auth.

@@ -118,8 +118,8 @@ func (g Grant) Validate() error {
 		return fmt.Errorf("grant on backend %q action %q must carry exactly one tenant_id", g.Backend, g.Action)
 	}
 	if selector := strings.TrimSpace(g.ReadLabelSelector); selector != "" {
-		if g.Backend != "mimir" || g.Action != ActionRead {
-			return errors.New("read_label_selector is only supported on mimir read grants")
+		if !backendSupportsReadLabelSelector(g.Backend) || g.Action != ActionRead {
+			return errors.New("read_label_selector is only supported on mimir and loki read grants")
 		}
 	}
 	for _, t := range g.TenantIDs {
@@ -134,6 +134,10 @@ func (g Grant) Validate() error {
 		}
 	}
 	return nil
+}
+
+func backendSupportsReadLabelSelector(backend string) bool {
+	return backend == "mimir" || backend == "loki"
 }
 
 // ---- request context --------------------------------------------------------

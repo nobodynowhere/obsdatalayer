@@ -68,8 +68,9 @@ than parsed from the path, so a new route cannot silently acquire a backend.
 
 ### Authentication and tenancy
 
-Every route requires HTTP Basic credentials for a gateway user holding a `write`
-grant on the matching backend. A `read` grant does not authorize ingestion. The
+Every route requires credentials for a gateway user holding a `write`
+grant on the matching backend. Either HTTP Basic, or an API key as
+`Authorization: Bearer <key>` — see below. A `read` grant does not authorize ingestion. The
 gateway sets `X-Scope-OrgID` from that user's grant; any tenant header supplied
 by the client is discarded.
 
@@ -244,8 +245,14 @@ in the configured order until one answers.
 
 - Transport failures and 5xx move on to the next target. A 4xx does not — that
   is the upstream answering, and a replica returns the same answer.
-- The configured `query_timeout` bounds the whole read, not each attempt, so
-  worst-case latency does not grow with the number of targets.
+- **Each target has its own timeout.** Set `timeout_seconds` per target in the
+  instance editor; leave it at 0 to use the gateway's `default_target_timeout`
+  setting. Targets are independent systems — a local cluster and a remote DR
+  site need not answer at the same speed — so the allowance belongs to the
+  target rather than being divided out of one shared budget.
+- **The whole read is bounded by the caller.** When the client disconnects the
+  gateway abandons the attempt in flight and stops. There is no artificial
+  overall deadline: the caller decides how long it is willing to wait.
 - A target that fails repeatedly is skipped for a short cool-off, so one dead
   replica does not add a connection timeout to every read. It is tried again
   once the window elapses.
@@ -262,6 +269,43 @@ are counted per target, so a replica that is failing shows up on the Overview
 page and in `gateway_read_requests_total{instance,target,result}`, alongside
 `gateway_read_failovers_total` and the existing
 `gateway_partial_failures_total` for writes.
+
+### API keys
+
+A user can hold bearer API keys. A key is a credential, not a separate
+permission model: authenticating with one is authenticating as its owner, and
+the owner's grants decide everything that follows. To narrow what a key may do,
+create a narrower user — which is how service accounts already work here.
+
+Issue one under **Users → API keys** in the admin UI, or:
+
+```bash
+curl -u admin:PASSWORD -X POST https://gateway:9091/api/users/promtail-prod/apikeys \
+  -H 'Content-Type: application/json' -d '{"label":"promtail-prod"}'
+```
+
+The response carries the only copy of the token; only its hash is stored, so it
+cannot be retrieved again. Use it as a bearer credential:
+
+```bash
+curl -H "Authorization: Bearer obsgw_..." https://gateway:8080/loki/api/v1/push
+```
+
+Notes:
+
+- **Rotation without downtime.** A user may hold several live keys, so a new one
+  can be issued and deployed before the old is revoked. A password cannot do
+  this — changing it is a hard cutover.
+- **Revocation is immediate**, not at the next config reload, and deleting a
+  user revokes its keys with it.
+- **Expiry is optional** and off by default: an unattended shipper whose
+  credential lapses on a forgotten date is an outage.
+- **Last-used** is recorded (at most once a minute per key) so stale credentials
+  can be identified and retired.
+- **Data plane only.** The admin API still requires a password.
+- Keys are hashed with SHA-256 rather than bcrypt. The secret is 256 random
+  bits, so there is nothing to guess; a deliberately slow hash would protect
+  nothing while putting every shipper request on the expensive path.
 
 ## Testing
 

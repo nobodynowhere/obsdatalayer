@@ -31,6 +31,25 @@ export default class UserService {
       .then((r) => r.data)
   }
 
+  listApiKeys(name) {
+    return axios.get(`${API}/${encodeURIComponent(name)}/apikeys`).then((r) => r.data ?? [])
+  }
+
+  // The response carries the only copy of the secret; it cannot be fetched again.
+  createApiKey(name, label, expiresAt) {
+    const body = { label }
+    if (expiresAt) body.expires_at = expiresAt
+    return axios
+      .post(`${API}/${encodeURIComponent(name)}/apikeys`, JSON.stringify(body))
+      .then((r) => r.data)
+  }
+
+  deleteApiKey(name, id) {
+    return axios
+      .delete(`${API}/${encodeURIComponent(name)}/apikeys/${encodeURIComponent(id)}`)
+      .then((r) => r.data)
+  }
+
   setGrants(name, grants) {
     return axios
       .put(`${API}/${encodeURIComponent(name)}/grants`, JSON.stringify({ grants }))

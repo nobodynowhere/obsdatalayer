@@ -33,6 +33,21 @@ func WithSkipTLSVerify(ctx context.Context) context.Context {
 type clients struct {
 	query *http.Client
 	push  *http.Client
+
+	// read shares the query client's transport but carries no overall timeout
+	// of its own. Read attempts are bounded per target instead, and a client
+	// timeout would silently cap a target configured to allow longer.
+	read *http.Client
+}
+
+// readClientFrom derives the per-attempt read client from the query client,
+// keeping its transport -- and therefore its connection pool -- while dropping
+// the whole-call timeout.
+func readClientFrom(query *http.Client) *http.Client {
+	if query == nil {
+		return nil
+	}
+	return &http.Client{Transport: query.Transport, CheckRedirect: query.CheckRedirect, Jar: query.Jar}
 }
 
 // Proxy forwards requests to upstream backends.
@@ -47,6 +62,10 @@ type Proxy struct {
 	// metrics is optional so that tests and the upgrade path can construct a
 	// Proxy without one. Every use is nil-guarded.
 	metrics atomic.Pointer[metrics.Metrics]
+
+	// defaultTargetTimeout is the fallback for targets with no timeout of their
+	// own, held as nanoseconds so it can be swapped on reload.
+	defaultTargetTimeout atomic.Int64
 }
 
 // SetMetrics attaches the counter sink. It is a setter rather than a
@@ -73,13 +92,31 @@ func (p *Proxy) recordReadFailover(instance string) {
 // New creates a Proxy with separate query and push clients.
 func New(queryClient, pushClient *http.Client) *Proxy {
 	p := &Proxy{health: newTargetHealth()}
-	p.clients.Store(&clients{query: queryClient, push: pushClient})
+	p.clients.Store(&clients{query: queryClient, push: pushClient, read: readClientFrom(queryClient)})
+	p.defaultTargetTimeout.Store(int64(30 * time.Second))
 	return p
 }
 
+// SetDefaultTargetTimeout sets the fallback applied to a target that does not
+// carry its own timeout. Called at startup and on every settings reload.
+func (p *Proxy) SetDefaultTargetTimeout(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	p.defaultTargetTimeout.Store(int64(d))
+}
+
+// DefaultTargetTimeout returns the current fallback.
+func (p *Proxy) DefaultTargetTimeout() time.Duration {
+	return time.Duration(p.defaultTargetTimeout.Load())
+}
+
+// ReadClient returns the client used for read attempts.
+func (p *Proxy) ReadClient() *http.Client { return p.clients.Load().read }
+
 // SetClients replaces the active HTTP clients.
 func (p *Proxy) SetClients(queryClient, pushClient *http.Client) {
-	p.clients.Store(&clients{query: queryClient, push: pushClient})
+	p.clients.Store(&clients{query: queryClient, push: pushClient, read: readClientFrom(queryClient)})
 }
 
 // QueryClient returns the current query HTTP client.

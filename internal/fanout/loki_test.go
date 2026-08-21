@@ -139,6 +139,70 @@ func TestLokiPushWithLabelsRewrite(t *testing.T) {
 	}
 }
 
+func TestLokiReadLabelSelectorRewritesQuery(t *testing.T) {
+	withAuthSelectors(t, `{cluster="prod"}`)
+
+	var receivedQuery string
+	var receivedOrgID string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedQuery = r.URL.Query().Get("query")
+		receivedOrgID = r.Header.Get("X-Scope-OrgID")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"status":"success"}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	cfg := newTestConfig([]*config.InstanceConfig{lokiInst("loki-prod", upstream.URL)})
+	client := &http.Client{Timeout: 5 * time.Second}
+	p := proxy.New(client, client)
+	h := newTestMux(cfg, p, newTestMetrics())
+
+	req := httptest.NewRequest(http.MethodGet, `/loki/loki/api/v1/query?query=%7Bjob%3D%22api%22%7D%7C%3D%22error%22`, nil)
+	req.Header.Set("Authorization", authHeader())
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(receivedQuery, `{cluster="prod",job="api"}`) {
+		t.Fatalf("expected query to be constrained, got %q", receivedQuery)
+	}
+	if receivedOrgID != "test-tenant" {
+		t.Fatalf("expected tenant header to still be injected, got %q", receivedOrgID)
+	}
+}
+
+func TestLokiRestrictedQueryWithoutSelectorIsRejected(t *testing.T) {
+	withAuthSelectors(t, `{cluster="prod"}`)
+
+	var called bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	cfg := newTestConfig([]*config.InstanceConfig{lokiInst("loki-prod", upstream.URL)})
+	client := &http.Client{Timeout: 5 * time.Second}
+	p := proxy.New(client, client)
+	h := newTestMux(cfg, p, newTestMetrics())
+
+	req := httptest.NewRequest(http.MethodGet, `/loki/loki/api/v1/query?query=1%2B1`, nil)
+	req.Header.Set("Authorization", authHeader())
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if called {
+		t.Fatal("restricted query without an enforceable selector reached upstream")
+	}
+}
+
 func TestLokiPushNoMatchingInstance(t *testing.T) {
 	cfg := newTestConfig([]*config.InstanceConfig{})
 	m := newTestMetrics()

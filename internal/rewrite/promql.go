@@ -18,8 +18,8 @@ import (
 )
 
 var (
-	ErrReadPolicyUnsupported = errors.New("mimir read policy cannot be applied to this endpoint")
-	ErrReadPolicyAmbiguous   = errors.New("multiple mimir read policy selectors are not supported")
+	ErrReadPolicyUnsupported = errors.New("read label policy cannot be applied to this endpoint")
+	ErrReadPolicyAmbiguous   = errors.New("multiple read label policy selectors are not supported")
 )
 
 // ValidateGrantReadPolicies checks backend-specific read policy syntax before
@@ -30,8 +30,8 @@ func ValidateGrantReadPolicies(grants []auth.Grant) error {
 		if selector == "" {
 			continue
 		}
-		if grant.Backend != "mimir" || grant.Action != auth.ActionRead {
-			return errors.New("read_label_selector is only supported on mimir read grants")
+		if (grant.Backend != "mimir" && grant.Backend != "loki") || grant.Action != auth.ActionRead {
+			return errors.New("read_label_selector is only supported on mimir and loki read grants")
 		}
 		if _, _, err := singlePolicySelector([]string{selector}); err != nil {
 			return fmt.Errorf("read_label_selector %q is not valid PromQL: %w", selector, err)
@@ -93,7 +93,7 @@ func mutableRequestValues(r *http.Request) (url.Values, func(url.Values), error)
 		mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 		if mediaType != "" && mediaType != "application/x-www-form-urlencoded" {
 			r.Body = io.NopCloser(bytes.NewReader(body))
-			return nil, nil, fmt.Errorf("restricted Mimir POST queries must use application/x-www-form-urlencoded")
+			return nil, nil, fmt.Errorf("restricted POST queries must use application/x-www-form-urlencoded")
 		}
 		bodyValues, err = url.ParseQuery(string(body))
 		if err != nil {
@@ -163,7 +163,7 @@ func ConstrainMetricSelectorParams(values map[string][]string, selectors []strin
 	for _, match := range matches {
 		match = strings.TrimSpace(match)
 		if match == "" {
-			return errors.New("match[] must not be empty for a restricted Mimir read")
+			return errors.New("match[] must not be empty for a restricted read")
 		}
 		next, err := MergeMetricSelectors(match, policySelector)
 		if err != nil {

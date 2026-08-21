@@ -6,131 +6,104 @@ the database, Casbin RBAC over first-class tenants, bcrypt credentials, separate
 data and admin listeners, and an embedded admin UI. Severity is assigned from the
 perspective of production multi-tenant use.
 
-Each entry below was re-verified against the current source. A summary of what
-has been resolved since earlier revisions is at the end.
+**There are no open P1 entries.** Every P1 this register ever carried has been
+closed and its entry removed. Two were closed as deliberate design decisions
+rather than as fixes -- the fan-out delivery contract and per-instance
+authorization -- and their reasoning is kept under those decisions below so
+neither is re-reported as a defect. The entries that remain are real and open,
+and the Tempo one is a genuine capability gap.
 
-## P1 - Authorization is per backend type, not per instance
+Entries were re-verified against the source on 2026-08-20 and again on
+2026-08-21, with line references refreshed.
 
-A grant names a backend kind (`loki`, `mimir`, `tempo`, or `*`), an action, and a
-set of tenants. Instance selection remains path-only: `getInstance` checks that
-the named instance exists and is of the right backend kind, and nothing more.
+Tempo's read scoping needs a word, because it is what is left of the last P1.
+Read label scoping was one entry covering Loki and Tempo. Loki is fixed. Tempo
+is not, but the argument that made it a P1 -- writes tagged, reads unconstrained
+-- does not apply there, because a Tempo instance cannot carry a label policy on
+the write path either. What is left is a capability gap, recorded below at P2.
 
-References:
-- `internal/fanout/fanout.go:52`.
-- Policy object vocabulary in `internal/auth/auth.go`.
+Three entries were added while verifying the above: the config reload route is
+the only admin mutation that escapes the audit wrapper, encryption keys have no
+rotation workflow, and the Loki read rewriter is a scanner rather than a full
+LogQL parser.
 
-Impact: any caller holding `loki:read` can query every configured Loki instance,
-not only the ones intended for them. Their own tenant IDs are still injected, so
-upstream scoping applies — but instances may be separate clusters, regions or
-estates with different data and trust levels, and the gateway does not
-distinguish them. Tenant isolation holds; instance isolation does not.
+Every entry here has been confirmed present in the source except **Dark mode is
+incomplete**, which is carried forward on structural evidence and needs a visual
+pass to confirm or close; the entry says so.
 
-Fix direction: make the policy object the instance name (or an instance group),
-with the backend kind derived from it, so a grant can be scoped to `loki-prod`
-rather than to Loki in general.
+## P2 - Tempo has no label-scoped tenancy model
 
-## P1 - Failed authentication is an unauthenticated CPU denial-of-service
-
-The bcrypt equalizer that closes the username-enumeration timing channel also
-means a wrong password costs the same as a right one — roughly 76 ms of CPU.
-There is no rate limiting, no per-source throttle and no account lockout.
-
-References:
-- `Service.Authenticate` compares against `dummyHash` for unknown users and
-  against the stored hash for wrong passwords.
-- Successful credentials are cached briefly, but failed credentials deliberately
-  are not.
-
-Impact: an unauthenticated client can saturate every core by sending garbage
-credentials at modest request rates. The successful-credential cache does not
-help, because failures never populate it. This is reachable on the data listener,
-which binds all interfaces by default.
-
-Fix direction: per-source rate limiting in front of the bcrypt path, plus a
-failure counter with backoff.
-
-## P1 - There is no tenant-issued token or API-key workflow
-
-Creating a tenant creates a UUID that is used as the upstream `X-Scope-OrgID`
-value. It does not issue a credential. Callers still authenticate as users with
-HTTP Basic, and user or role grants decide which tenant UUIDs may be injected.
+Tenant scoping on Tempo reads and writes is enforced by `X-Scope-OrgID`, but
+Tempo still has no equivalent of the Loki and Mimir label filter/inject policy.
+`read_label_selector` is intentionally rejected on Tempo grants rather than
+accepted and ignored.
 
 References:
-- Tenant creation in `internal/adminapi/adminapi.go`, `createTenant`.
-- Authentication in `middleware.BasicAuth`.
+- Tempo instances reject `labels` config in `internal/config/config.go`.
+- `read_label_selector` is accepted only for Mimir and Loki read grants,
+  `internal/auth/auth.go` and `internal/rewrite/promql.go`.
+- Tempo read routes forward through `p.ForwardQuery` without a TraceQL or search
+  attribute constraint, `internal/fanout/tempo.go`.
 
-Impact: automation cannot be handed a narrow tenant-scoped token. Operators must
-create a user, assign grants, and distribute that user's Basic credential. The
-new successful-credential cache reduces bcrypt pressure for valid callers, but
-it is still not an explicit telemetry-writer credential model.
+Impact: Tempo cannot participate in a label-scoped tenancy model. That is no
+longer the same write/read mismatch that existed for Loki logs -- Loki reads are
+now constrained where Loki writes are tagged -- but traces cannot yet be scoped
+by attributes at the gateway.
 
-Fix direction: add first-class API keys or tokens with tenant, backend and action
-claims, revocation, rotation and last-used metadata.
+Fix direction: define a Tempo policy model first: which attributes can be
+filtered or injected on each supported write format, how the same policy maps
+onto TraceQL and search endpoints, and which Tempo endpoints must be refused
+when the policy cannot be expressed.
 
-## P1 - Fan-out has no delivery contract
+## P3 - Loki read-policy rewriting is not backed by a full LogQL parser
 
-`fan_out_mode: any` returns success when at least one target accepts the write.
-There is no retry queue, replay mechanism, target health state, idempotency
-strategy or operator workflow for the writes a failed target missed.
-
-References:
-- `doAnyMode` in `internal/fanout/fanout.go` reports partial failures in a
-  response header and a counter, then returns success.
-
-Impact: partial success is silent data loss unless the design explicitly accepts
-eventual divergence between targets. For observability data that needs to be
-stated and backed by operational mechanics — at minimum a durable backlog, or an
-alert tied to `gateway_partial_failures_total`.
-
-Debug logging now records which targets failed and which Mimir errors were
-suppressed, so the divergence is at least observable after the fact.
-
-## P1 - Fan-out instances have no correct read target
-
-The config forbids setting both `url` and `push_urls`, and `GetQueryTarget`
-returns the first push target when `push_urls` is present.
+Loki read policies are now enforced fail-closed for supported query endpoints,
+but the gateway does the rewrite with a conservative stream-selector scanner
+rather than a full LogQL AST. The scanner recognizes brace-delimited stream
+selectors outside quoted strings and validates each candidate with the existing
+Prometheus selector parser before merging the policy selector.
 
 References:
-- `internal/config/config.go`, `GetQueryTarget`.
-- Query routes forward to that single target, for example in
-  `internal/fanout/loki.go` and `internal/fanout/mimir.go`.
+- `ConstrainLogQL`, `internal/rewrite/logql.go`.
+- The Loki read hook before forwarding, `internal/fanout/loki.go`.
+- Existing PromQL read policies use the Prometheus parser directly,
+  `internal/rewrite/promql.go`.
 
-Impact: under `fan_out_mode: any` a write may land only on the second target
-while every subsequent read queries the first, so data written successfully
-appears to be missing. Even under `all` mode the first push target is not
-necessarily the right query endpoint. The model needs an explicit read URL, or
-query fan-out with result merging.
+Impact: the current behavior is safer than accepting a restricted Loki read and
+forwarding it unconstrained: requests that cannot be constrained are rejected.
+The tradeoff is compatibility risk. Future LogQL syntax, or valid edge cases
+that do not look like ordinary stream selectors to the scanner, may be rejected
+until the rewriter learns them. The larger concern is maintainability: policy
+rewrites should ideally be AST-based so they track LogQL semantics instead of a
+gateway-local approximation.
 
-## P1 - Read paths are not label-scoped
+Fix direction: adopt Loki's LogQL parser when the dependency cost is acceptable,
+rewrite stream selector nodes in the parsed AST, and keep the existing fail-closed
+behavior for endpoints or query forms the parser cannot represent safely.
 
-Tenant scoping on reads is enforced: the gateway injects the caller's tenant
-UUIDs as `X-Scope-OrgID` on every query. Label scoping is not. Label filtering
-and injection are applied only on push, and queries are forwarded with the
-caller's raw selectors.
+## P2 - Encrypted credentials have no rotation workflow
 
-References:
-- Push rewrite in `handlePush` (`internal/fanout/fanout.go`).
-- Query routes forward without touching selectors.
+Upstream credentials are encrypted at rest, but changing the encryption key is a
+manual exercise. There is no command that re-encrypts every stored credential
+under a new key, and no way to run with an old key accepted for reads while a
+new one is used for writes.
 
-Impact: where labels form part of the tenancy model, writes are tagged but reads
-are not constrained by those tags. Within a tenant a caller can query outside the
-label scope their writes are confined to.
-
-## P1 - Upstream credentials are stored as plaintext
-
-Backend `basic_auth` values are ordinary columns in the instances and
-push_targets tables. They are redacted in `GET /api/config`, in the instance API
-and in the audit log, but they are plaintext at rest and readable by anyone with
-database access. There is no design for secret references, environment expansion,
-file references, rotation or audit of the secrets themselves.
+The envelope carries a version (`enc:v1:`), so a second scheme can be introduced
+without ambiguity, but nothing consumes that version yet.
 
 References:
-- `InstanceConfig.BasicAuth` and `PushTarget.BasicAuth` in
-  `internal/config/config.go`; written verbatim by `saveInstance`.
+- Envelope format and the version prefix, `internal/secret/secret.go`.
+- The startup reconciliation that would host a rotation pass,
+  `config.EnsureCredentialsEncrypted` in `internal/config/encryption.go`.
 
-Impact: a database backup or a read-only database credential yields every
-upstream credential. Gateway user passwords are bcrypt hashed; upstream
-credentials cannot be, because they must be replayed.
+Impact: rotating the key today means decrypting with the old key and
+re-encrypting with the new one by hand, or re-entering every upstream credential
+through the admin UI. An operator who suspects the key is compromised has no
+supported path that keeps the gateway serving.
+
+Fix direction: a `--rotate-encryption-key` pass that reads with the old key and
+writes with the new one in a single transaction, plus an optional secondary
+decryption key so the rotation can be staged across a restart.
 
 ## P2 - A tenant can be deleted while instances still reference it
 
@@ -139,7 +112,7 @@ but it does not consult instance configuration. An instance `tenant_id` or push
 target `tenant_id` pointing at the tenant is not checked.
 
 References:
-- `internal/adminapi/adminapi.go`, `deleteTenant`, inspects `ListUsers` and
+- `deleteTenant`, `internal/adminapi/adminapi.go:449`, inspects `ListUsers` and
   `ListRoles` only.
 - Instance references are validated on load by `Config.ValidateTenants`.
 
@@ -156,12 +129,33 @@ Tempo — but a single request still holds the body resident while every target
 streams its own copy from it.
 
 References:
-- `handlePush` reads the body with `io.ReadAll`.
-- `doSingleTarget` creates a reader per target over the same buffer.
+- `handlePush` reads the body with `io.ReadAll`,
+  `internal/fanout/fanout.go:328`.
+- `doSingleTarget` creates a `bytes.NewReader` per target over the same buffer,
+  `internal/fanout/fanout.go:458`.
 
 Impact: memory scales with concurrent pushes times body size. At the default cap,
 a few hundred concurrent maximum-size pushes are enough to exhaust a modest
 container.
+
+## P2 - Config reload is the one unaudited mutation
+
+Every mutating admin operation is wrapped in `h.audited(...)`, which emits a
+started/finished pair naming the actor. `POST /api/config/reload` is registered
+directly on the admin mux in `main.go`, outside `adminapi.Register`, and carries
+no such wrapper.
+
+References:
+- The fifteen audited mutations, `internal/adminapi/adminapi.go:43`-`:69`.
+- The unaudited reload handler, `main.go:466`.
+
+Impact: a reload swaps the entire runtime config and auth snapshot — it is the
+operation that makes every other pending edit take effect — and it leaves no
+record of who triggered it. An operator reconstructing a change window from the
+audit log sees the edits but not the moment they went live.
+
+Fix direction: move the route into `adminapi.Register` so it inherits `audited`,
+or wrap the handler in `main.go` with the same helper.
 
 ## P2 - Admin access is all-or-nothing
 
@@ -170,8 +164,11 @@ admin: anyone who can inspect the configuration can also reload it, create users
 assign roles, edit instances and delete tenants.
 
 References:
-- `middleware.AdminAuth` checks `CanAdmin` alone.
-- Every route registered by `adminapi.Register` sits behind that one check.
+- `middleware.AdminAuth` checks `CanAdmin` alone,
+  `internal/middleware/auth.go:97`.
+- All 28 routes registered by `adminapi.Register`
+  (`internal/adminapi/adminapi.go:38`-`:69`) sit behind that one check, as do
+  `GET /api/config` and `POST /api/config/reload` in `main.go:454` and `:466`.
 
 Impact: an operator who needs only to read `/api/config` or scrape `/metrics`
 must be granted full administrative control, including user management. The audit
@@ -183,7 +180,8 @@ log now records who did what, but does not constrain what they may do.
 so the instance UUID changes on every edit.
 
 References:
-- `internal/config/db.go`, `UpdateInstance`.
+- `UpdateInstance`, `internal/config/db.go:137`, deletes the row and its children
+  then calls `saveInstance`, which mints a fresh UUID.
 
 Impact: nothing currently references an instance by UUID — the runtime keys on
 name — so this is latent. It becomes a defect the moment anything external (an
@@ -196,7 +194,10 @@ is deterministic, and `EnsureSettings` creates the row only when the table is
 empty. Nothing enforces that the table holds exactly one row.
 
 References:
-- `internal/config/db.go`, `loadSetting` and `EnsureSettings`.
+- `EnsureSettings`, `internal/config/db.go:46`, and `loadSetting`,
+  `internal/config/db.go:102`.
+- `dbstore.GatewaySetting` (`internal/db/models.go`) carries a primary key and no
+  uniqueness or singleton constraint.
 
 Impact: a second row inserted by hand or by a future migration would be silently
 ignored rather than reported. A singleton constraint, or an explicit "active"
@@ -210,7 +211,11 @@ endpoints are added, or how unsupported endpoints fail. The admin API is likewis
 unversioned.
 
 References:
-- Route subsets hard-coded in `internal/fanout/loki.go`, `mimir.go` and `tempo.go`.
+- Route subsets hard-coded in `internal/fanout/loki.go`, `mimir.go` and
+  `tempo.go`. Each documents its own gaps in a `Not implemented` doc comment —
+  Loki omits the deprecated `/api/prom` query aliases, Mimir omits tenant limits
+  and stats and block upload, Tempo reports full query coverage — but the gaps
+  are documented per file, not stated as an API contract.
 - Admin routes are grouped under `/api`, but without a version prefix.
 
 Impact: clients may assume the gateway is a transparent replacement for each
@@ -234,6 +239,22 @@ covering push, query, tenant header handling, rewrite support and fan-out.
 The admin UI exposes dark mode, but not every surface renders correctly under
 the dark palette. Some controls, text, tables or nested panels have insufficient
 contrast or retain light-mode assumptions.
+
+This entry is carried forward on structural evidence rather than a fresh visual
+pass — it is the one item in this register that reading the source cannot settle
+either way. The structure is what keeps it open: `ui/src/assets/app.css` reassigns
+semantic tokens for `.my-app-dark` and then overrides the DDS chrome by selector,
+because, in its own words, DDS hardcodes light colours on bare elements and "a
+long tail of generated class names that cannot practically be enumerated." A
+theme built by enumerating overrides is incomplete until proven otherwise, and
+nothing enumerates it. The application's own views are clean — a grep for
+hardcoded light colours across `ui/src/views` and `ui/src/components` finds only
+a `white-space` property — so any remaining gaps live in that override layer.
+
+References:
+- Token reassignment and the DDS override layer, `ui/src/assets/app.css:13` and
+  `:44` onward (342 lines, 27 dark rules).
+- Nine views to audit, `ui/src/views`.
 
 Impact: operators using dark mode can miss important configuration state or find
 parts of the UI hard to read. For an admin console that edits tenants, roles,
@@ -278,8 +299,19 @@ Two things to settle when it is built:
   destroy.
 
 Until then, a `delete` grant is rejected on the `mimir` backend rather than
-silently accepted and inert; see `controlActionBackends` in
-`internal/auth/auth.go`.
+silently accepted and inert; see `controlActionBackends`,
+`internal/auth/auth.go:256`.
+
+One rough edge in that rejection: `controlActionGaps` (`internal/auth/auth.go:277`)
+supplies the explanatory clause appended to the error, and it has an entry for
+`loki` but none for `mimir`. A rejected `mimir` `delete` grant therefore fails
+with a truncated message ending in a bare colon:
+
+    action "delete" is not supported on the mimir backend:
+
+Adding a `mimir` entry saying that Mimir supports no selector-based deletion, only
+tenant-level destruction, would make the error say what the comment above the map
+promises it says.
 
 ## Deliberate design decisions
 
@@ -312,19 +344,136 @@ Recorded so they are not re-reported as defects.
   nullable so unassigned tenants do not collide on its unique index.
 - **A redacted credential is resolved by URL, never by position.** An unresolvable
   mask is rejected rather than guessed at.
+- **Reconciling divergent fan-out targets is the upstream's job.** A fan-out
+  instance pushes every write to every target; `fan_out_mode` decides only how
+  the responses are aggregated, so `any` reports success when at least one
+  target accepted. That can leave targets holding different data when a push
+  fails against one of them, and the gateway does not attempt to repair it — no
+  retry queue, no replay log, no anti-entropy. Loki, Mimir and Tempo are
+  replicated systems in their own right and are expected to reconcile, so
+  duplicating that here would mean a second, worse implementation of something
+  the backends already do.
+
+  What the gateway owes instead is visibility, and it is expected to keep it: a
+  partial write is reported in the `X-Gateway-Partial-Failure` response header
+  and counted by `gateway_partial_failures_total`, the failing target and any
+  suppressed Mimir error are named at debug level, and reads count success and
+  failure per target (`gateway_read_requests_total`) so a replica that is
+  falling behind is visible on the Overview page rather than only in a
+  divergence nobody notices.
+- **An API key is a credential, never a scope.** A key belongs to one user and
+  inherits that user's grants unchanged. Narrowing what a key may do means
+  creating a narrower user, which is how service accounts already work here.
+  Giving keys their own grants would duplicate the authorization model onto a
+  second object and raise the question of what happens when the owner's grants
+  shrink below the key's.
+- **API keys are a data-plane credential.** They are long-lived and issued for
+  unattended shippers; the admin plane creates users and edits routing, so it
+  keeps requiring a password. Same instinct as the wildcard grant that excludes
+  the admin object.
+- **Grants scope callers to backends and tenants; the instance is chosen by the
+  gateway, never named by the caller.** Two different things get called
+  "instance scoping", and only one of them is absent. Stating both is the point
+  of this entry, because the earlier wording claimed instances of a kind were
+  interchangeable, and they are not.
+
+  Instances are *not* interchangeable to the gateway. Each carries its own
+  upstream credential, tenant ID and TLS setting, and each push target within an
+  instance may override all three — `resolveTarget` in
+  `internal/config/config.go`. Every request is authenticated to the specific
+  backend it lands on, including after a read failover moves it to another
+  target. That per-target identity is a decision in its own right and is
+  recorded immediately below.
+
+  What callers cannot do is choose one. No data-plane route contains an instance
+  name: the public paths are the backends' own API paths, and `selectInstance`
+  in `internal/fanout/fanout.go` resolves the instance from the caller's
+  tenants. An instance whose targets carry tenant IDs is eligible only to a
+  caller holding every one of them; an instance whose targets carry none is
+  shared and eligible to any caller with the backend grant; a tenant-bound match
+  wins over a shared one; and when more than one instance is eligible the
+  request is refused with 409 rather than settled by guessing. At most one
+  instance is selectable for a given caller, backend and direction.
+
+  So an instance-scoped grant would have nothing to attach to. The caller cannot
+  express a preference, and cannot reach a tenant-bound instance whose tenants
+  they do not hold. What remains is that two callers with different tenants can
+  share one tenant-less instance and be separated by `X-Scope-OrgID` alone —
+  which is the isolation boundary this gateway is built on, applied per request
+  rather than per backend.
+
+  This was previously recorded as a defect proposing that the policy object
+  become the instance name. That is rejected on the grounds above, and because
+  it would tie authorization policy to backend topology: moving or renaming an
+  instance would silently rewrite who can read what.
+
+- **How the gateway authenticates to a backend is unrelated to grants.** This is
+  the other half of the decision above: instances are distinct to the gateway
+  even though callers cannot select between them. Each instance carries its own
+  upstream credential, and each push target may override it. Two clusters behind
+  one instance can require entirely different credentials. This is deliberately
+  independent of the caller's grants: the caller proves who they are to the
+  gateway, and the gateway separately proves who it is to each backend.
+
+  The pairing is per target throughout, and covered by tests on every path that
+  carries it: fan-out writes present each target its own credential and tenant,
+  reads present the credential of whichever target is being tried including
+  after a failover, a target with no credential of its own inherits the
+  instance's, and reordering targets in the admin UI moves each credential with
+  its own URL rather than its position.
+
+- **Read preference follows the configured push-target order.** The first target
+  is the one queried; the rest are fallbacks. It is stored as an explicit
+  position rather than left to the database's row order, so reordering the list
+  in the admin UI changes where reads go.
 
 ---
 
 ## Resolved since earlier revisions
 
+- **Push-target order was not preserved by the database** — found while making
+  the read order configurable. `push_targets` had no position column and was
+  loaded without an ORDER BY, so the order rows came back in was the database's
+  choice; the primary key is a random UUID, so ordering by it is arbitrary.
+  Targets now carry an explicit position, and the admin UI has controls to
+  reorder them. Verified by re-running the ordering tests against an arbitrary
+  row order, which returns targets scrambled and silently ignores a reorder.
+- **The encryption envelope prefix could bypass encryption on write** —
+  `Cipher.Encrypt` short-circuited on `IsEncrypted` to make itself idempotent,
+  so a credential whose text began with `enc:v1:` was written to the database
+  verbatim, in plaintext, with a key configured. The shortcut is gone: every
+  non-empty value is sealed. The prefix describes what the gateway itself wrote
+  and was never evidence about a value arriving from outside. Nothing needed the
+  idempotence — the startup migration partitions on the prefix and only ever
+  hands `Encrypt` plaintext — and a test now pins that it still does not
+  double-wrap. Reproduced before the fix and covered afterwards at both the
+  cipher and the storage layer, for instance and push-target credentials.
+- **The credential cache was wiped on every config reload** — `Service.Reload`
+  no longer clears it. Invalidation was already structural and is now pinned by
+  tests: the cache key binds the stored password hash and is always checked
+  against the freshly loaded one, so a rotated password cannot match a stale
+  entry; a deleted user fails the snapshot lookup before the cache is consulted;
+  and the cache covers authentication only, so a revoked grant still takes
+  effect at once. Clearing was also the only thing bounding the map, since
+  lookups evict just the key they touch, so the cache gained its own TTL sweep.
+  Measured over 24 requests spanning several reloads: tail latency fell from
+  91 ms to 6.3 ms and gateway CPU from 0.59 s to 0.02 s, with revocation
+  verified still immediate against a running gateway.
+- **Instance selection ignored tenancy** — `selectInstance` now prefers a
+  tenant-bound instance the caller holds, falls back to shared instances, and
+  returns 409 instead of guessing when the choice is ambiguous. Scoping grants
+  to instances rather than to backends and tenants was considered and rejected;
+  the reasoning is under the deliberate design decisions above.
 - **SIGHUP terminated the process** while the packaged unit's `ExecReload` sent
   it — signals are now handled, SIGHUP reloads, and SIGTERM/SIGINT drain both
   listeners through `http.Server.Shutdown`.
 - **An empty instance list was unrecoverable** — removing the last instance no
   longer wedges every subsequent reload.
-- **Administrative mutations were not audited** — all sixteen mutating operations
-  emit a started/finished pair naming the actor, target, status and duration,
-  with the submitted body recorded at debug and credentials masked.
+- **Administrative mutations were not audited** — the fifteen mutating operations
+  registered by `adminapi.Register` emit a started/finished pair naming the
+  actor, target, status and duration, with the submitted body recorded at debug
+  and credentials masked. `POST /api/config/reload` is the one mutation still
+  outside that wrapper; it is recorded above.
 - **The active settings row was chosen arbitrarily** — selection is now ordered
   and deterministic (the remaining singleton gap is recorded above).
 - **Repository hygiene** — a `.gitignore` now excludes build output, the UI
@@ -340,8 +489,9 @@ Recorded so they are not re-reported as defects.
   targets sent one upstream's password to another. They are now matched by URL.
 - **Every successful data-plane request paid full bcrypt cost** — valid
   credentials are now cached briefly and the cache is invalidated on auth reload
-  or password-hash change. Failed authentication remains a DoS risk and is
-  recorded above.
+  or password-hash change. The separate denial-of-service risk in failed
+  authentication has since been closed by the per-source throttle and the
+  process-wide hashing gate in `internal/authlimit`.
 - **Admin API routes lived at the root** — they now sit under `/api/...`, and the
   UI and dev proxy call the prefixed paths.
 - **Configured instance or push-target tenants were not checked against grants**

@@ -64,6 +64,14 @@ func Register(mux *http.ServeMux, d Deps) {
 	mux.HandleFunc("PUT /api/users/{name}/roles", h.audited("user.set_roles", h.setUserRoles))
 	mux.HandleFunc("PUT /api/users/{name}/grants", h.audited("user.set_grants", h.setUserGrants))
 
+	// API keys are credentials for a user, so they hang off the user they
+	// belong to. Issuing and revoking are mutations and are audited like the
+	// rest; the secret itself never reaches the audit log, because only the
+	// response carries it and bodies are recorded at debug with secrets masked.
+	mux.HandleFunc("GET /api/users/{name}/apikeys", h.listAPIKeys)
+	mux.HandleFunc("POST /api/users/{name}/apikeys", h.audited("user.apikey_create", h.createAPIKey))
+	mux.HandleFunc("DELETE /api/users/{name}/apikeys/{id}", h.audited("user.apikey_delete", h.deleteAPIKey))
+
 	mux.HandleFunc("GET /api/roles", h.listRoles)
 	mux.HandleFunc("GET /api/roles/{name}", h.getRole)
 	mux.HandleFunc("POST /api/roles", h.audited("role.create", h.createRole))
