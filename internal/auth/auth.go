@@ -28,6 +28,9 @@ const (
 	ActionRulesWrite  = "rules:write"
 	ActionAlertsRead  = "alerts:read"
 	ActionAlertsWrite = "alerts:write"
+	// ActionTail covers Loki's live tail WebSocket. It is read-like, but Loki
+	// cannot serve it across multiple tenants, so it is a separate grant.
+	ActionTail = "tail"
 	// ActionDelete covers the whole deletion API -- listing, requesting and
 	// cancelling a deletion. It is not split into read and write: a deletion
 	// request is the only thing the API does, and being able to see pending
@@ -57,6 +60,7 @@ var (
 		ActionRulesWrite:  true,
 		ActionAlertsRead:  true,
 		ActionAlertsWrite: true,
+		ActionTail:        true,
 		ActionDelete:      true,
 		ActionAny:         true,
 	}
@@ -100,7 +104,10 @@ func (g Grant) Validate() error {
 		return fmt.Errorf("unknown backend %q (must be loki, mimir, tempo, admin or *)", g.Backend)
 	}
 	if !validActions[g.Action] {
-		return fmt.Errorf("unknown action %q (must be read, write, rules:read, rules:write, alerts:read, alerts:write, delete or *)", g.Action)
+		return fmt.Errorf("unknown action %q (must be read, write, rules:read, rules:write, alerts:read, alerts:write, tail, delete or *)", g.Action)
+	}
+	if g.Action == ActionTail && g.Backend != "loki" {
+		return fmt.Errorf("action %q is only supported on the loki backend, got %q", g.Action, g.Backend)
 	}
 	if IsControlAction(g.Action) {
 		supported, ok := controlActionBackends[g.Backend]
@@ -118,8 +125,8 @@ func (g Grant) Validate() error {
 		return fmt.Errorf("grant on backend %q action %q must carry exactly one tenant_id", g.Backend, g.Action)
 	}
 	if selector := strings.TrimSpace(g.ReadLabelSelector); selector != "" {
-		if !backendSupportsReadLabelSelector(g.Backend) || g.Action != ActionRead {
-			return errors.New("read_label_selector is only supported on mimir and loki read grants")
+		if !actionSupportsReadLabelSelector(g.Backend, g.Action) {
+			return errors.New("read_label_selector is only supported on mimir/loki read grants and loki tail grants")
 		}
 	}
 	for _, t := range g.TenantIDs {
@@ -140,6 +147,11 @@ func backendSupportsReadLabelSelector(backend string) bool {
 	return backend == "mimir" || backend == "loki"
 }
 
+func actionSupportsReadLabelSelector(backend, action string) bool {
+	return backendSupportsReadLabelSelector(backend) && action == ActionRead ||
+		backend == "loki" && action == ActionTail
+}
+
 // ---- request context --------------------------------------------------------
 
 type contextKey struct{}
@@ -148,7 +160,7 @@ type contextKey struct{}
 type RequestAuth struct {
 	Username       string
 	TenantIDs      []string // resolved for this request's backend + action
-	LabelSelectors []string // resolved Mimir read policy selectors, if any
+	LabelSelectors []string // resolved read policy selectors, if any
 	IsRead         bool
 }
 
@@ -226,7 +238,8 @@ func actionMatches(policyAct, requested string) bool {
 func ActionIsRead(action string) bool {
 	return action == ActionRead ||
 		action == ActionRulesRead ||
-		action == ActionAlertsRead
+		action == ActionAlertsRead ||
+		action == ActionTail
 }
 
 func ActionIsWrite(action string) bool {
@@ -241,6 +254,7 @@ func ActionRequiresSingleTenant(action string) bool {
 	return action == ActionWrite ||
 		action == ActionRulesWrite ||
 		action == ActionAlertsWrite ||
+		action == ActionTail ||
 		// Deleting data is irreversible, so it is never allowed to resolve to an
 		// ambiguous tenant. A caller who cannot say which tenant they mean must
 		// not be deleting from any.
@@ -248,24 +262,24 @@ func ActionRequiresSingleTenant(action string) bool {
 		action == ActionAny
 }
 
-// IsControlAction reports whether action governs rule or alert management
-// rather than ordinary data read/write.
+// IsControlAction reports whether action governs a discrete backend API rather
+// than ordinary data read/write.
 func IsControlAction(action string) bool {
 	return action == ActionRulesRead ||
 		action == ActionRulesWrite ||
 		action == ActionAlertsRead ||
 		action == ActionAlertsWrite ||
+		action == ActionTail ||
 		action == ActionDelete
 }
 
 // controlActionBackends records which control actions each backend actually
 // exposes, so a grant can never authorize an API that does not exist.
 //
-// Mimir runs both a ruler and an alertmanager, so all four actions map to a
-// real endpoint. Loki runs a ruler but has no alertmanager: it serves the rule
-// configuration API and a read-only Prometheus-compatible alerts listing, and
-// forwards firing alerts to an external Alertmanager, so there is nothing for
-// alerts:write to address. Tempo has neither and is absent entirely.
+// Mimir runs both a ruler and an alertmanager. Loki runs a ruler, serves live
+// tail and log deletion, and exposes a read-only Prometheus-compatible alerts
+// listing; it has no alert configuration write API. Tempo has none of these
+// discrete APIs and is absent entirely.
 var controlActionBackends = map[string]map[string]bool{
 	"mimir": {
 		ActionRulesRead:   true,
@@ -277,6 +291,7 @@ var controlActionBackends = map[string]map[string]bool{
 		ActionRulesRead:  true,
 		ActionRulesWrite: true,
 		ActionAlertsRead: true,
+		ActionTail:       true,
 		// Loki's log deletion API: request, list and cancel deletions of log
 		// lines matching a selector and time range. Separate from write so a
 		// log shipper cannot delete what it ships.

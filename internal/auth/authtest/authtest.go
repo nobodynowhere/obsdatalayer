@@ -83,7 +83,8 @@ func (s *Stub) AccessFor(name, backend, action string) (auth.Access, bool) {
 		return auth.Access{}, false
 	}
 	access := auth.Access{TenantIDs: s.Tenants}
-	if (backend == "mimir" || backend == "loki") && action == auth.ActionRead {
+	if (backend == "mimir" || backend == "loki") && action == auth.ActionRead ||
+		backend == "loki" && action == auth.ActionTail {
 		access.LabelSelectors = s.LabelSelectors
 	}
 	return access, true

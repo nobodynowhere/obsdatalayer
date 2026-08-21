@@ -1,10 +1,13 @@
 package middleware_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,6 +36,24 @@ func decodeError(t *testing.T, rec *httptest.ResponseRecorder) string {
 		t.Fatalf("decode body: %v", err)
 	}
 	return body["error"]
+}
+
+type decisionStub struct {
+	*authtest.Stub
+	Decision auth.AccessDecision
+}
+
+func (s *decisionStub) AccessDecision(_, _, _ string) auth.AccessDecision {
+	return s.Decision
+}
+
+func captureLogs(t *testing.T, level slog.Level) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: level})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
 }
 
 // ---- BasicAuth (data plane) -------------------------------------------------
@@ -310,6 +331,78 @@ func TestBasicAuthMimirMetricReadDoesNotAllowRulesOrAlerts(t *testing.T) {
 				t.Fatal("expected inner handler not to be called")
 			}
 		})
+	}
+}
+
+func TestBasicAuthLokiTailUsesTailAction(t *testing.T) {
+	const path = "/loki/loki/api/v1/tail"
+
+	inner, called := newHandlerCalledFlag()
+	stub := authtest.New()
+	stub.Allow = map[string]bool{"loki:" + auth.ActionTail: true}
+	h := middleware.BasicAuth(stub, nil, inner)
+
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("Authorization", stub.Header())
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 with loki:tail, got %d", rec.Code)
+	}
+	if !*called {
+		t.Fatal("expected inner handler to be called")
+	}
+
+	inner2, called2 := newHandlerCalledFlag()
+	denied := authtest.New()
+	denied.Allow = map[string]bool{"loki:" + auth.ActionRead: true}
+	rec2 := httptest.NewRecorder()
+	middleware.BasicAuth(denied, nil, inner2).ServeHTTP(rec2, authedRequest(http.MethodGet, path, denied))
+	if rec2.Code != http.StatusForbidden {
+		t.Fatalf("loki:read must not authorize tail; got %d", rec2.Code)
+	}
+	if *called2 {
+		t.Fatal("handler must not run for a denied tail request")
+	}
+}
+
+func TestBasicAuthLogsAmbiguousTenantDenial(t *testing.T) {
+	logs := captureLogs(t, slog.LevelInfo)
+	inner, called := newHandlerCalledFlag()
+	stub := &decisionStub{
+		Stub: authtest.New(),
+		Decision: auth.AccessDecision{
+			Allowed:     false,
+			DenyReason:  auth.AccessDenyAmbiguousTenant,
+			TenantCount: 2,
+		},
+	}
+	h := middleware.BasicAuth(stub, nil, inner)
+
+	req := httptest.NewRequest(http.MethodGet, "/loki/loki/api/v1/tail", nil)
+	req.Header.Set("Authorization", stub.Header())
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+	if *called {
+		t.Fatal("handler must not run for a denied request")
+	}
+	got := logs.String()
+	for _, want := range []string{
+		`msg="data plane request denied"`,
+		`reason=ambiguous_tenant`,
+		`backend=loki`,
+		`action=tail`,
+		`path=/loki/loki/api/v1/tail`,
+		`tenant_count=2`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected log to contain %s, got:\n%s", want, got)
+		}
 	}
 }
 

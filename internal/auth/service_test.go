@@ -277,6 +277,29 @@ func TestLokiReadAccessResolvesGrantLabelSelector(t *testing.T) {
 	}
 }
 
+func TestLokiTailAccessResolvesGrantLabelSelector(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustRole(t, svc, "logs-tailer", auth.Grant{
+		Backend:           "loki",
+		Action:            auth.ActionTail,
+		TenantIDs:         []string{env.a},
+		ReadLabelSelector: ` {cluster="prod"} `,
+	})
+	mustUser(t, svc, "alice", "logs-tailer")
+
+	access, ok := svc.AccessFor("alice", "loki", auth.ActionTail)
+	if !ok {
+		t.Fatal("expected loki:tail to be allowed")
+	}
+	if len(access.TenantIDs) != 1 || access.TenantIDs[0] != env.a {
+		t.Fatalf("expected [%s], got %v", env.a, access.TenantIDs)
+	}
+	if len(access.LabelSelectors) != 1 || access.LabelSelectors[0] != `{cluster="prod"}` {
+		t.Fatalf("expected label selector, got %v", access.LabelSelectors)
+	}
+}
+
 func TestMimirReadAccessRejectsMixedTenantLabelSelectors(t *testing.T) {
 	env := newTestEnv(t)
 	svc := env.svc
@@ -746,6 +769,8 @@ func TestGrantValidation(t *testing.T) {
 		{"unknown backend", grant("kafka", "read", uuidA), true},
 		{"unknown action", grant("loki", "purge", uuidA), true},
 		{"valid loki delete", grant("loki", "delete", uuidA), false},
+		{"valid loki tail", grant("loki", "tail", uuidA), false},
+		{"valid loki tail read policy", auth.Grant{Backend: "loki", Action: "tail", TenantIDs: []string{uuidA}, ReadLabelSelector: `{cluster="prod"}`}, false},
 		{"valid loki rules read", grant("loki", "rules:read", uuidA), false},
 		{"valid loki rules write", grant("loki", "rules:write", uuidA), false},
 		{"valid loki alerts read", grant("loki", "alerts:read", uuidA), false},
@@ -753,9 +778,13 @@ func TestGrantValidation(t *testing.T) {
 		{"alerts write on loki", grant("loki", "alerts:write", uuidA), true},
 		{"alerts action on tempo", grant("tempo", "alerts:write", uuidA), true},
 		{"rules action on tempo", grant("tempo", "rules:read", uuidA), true},
+		{"tail action on mimir", grant("mimir", "tail", uuidA), true},
+		{"tail action on tempo", grant("tempo", "tail", uuidA), true},
+		{"tail action on wildcard backend", grant("*", "tail", uuidA), true},
 		// A control action must name a concrete backend; the wildcard does not
 		// implicitly confer rule or alert management.
 		{"rules action on wildcard backend", grant("*", "rules:read", uuidA), true},
+		{"loki tail with multiple tenants", grant("loki", "tail", uuidA, "56f1bd96-55a2-4f34-9451-99eeccdd40d8"), true},
 		{"loki rules write with multiple tenants", grant("loki", "rules:write", uuidA, "56f1bd96-55a2-4f34-9451-99eeccdd40d8"), true},
 		{"loki rules read with multiple tenants", grant("loki", "rules:read", uuidA, "56f1bd96-55a2-4f34-9451-99eeccdd40d8"), false},
 		{"rules read with multiple tenants", grant("mimir", "rules:read", uuidA, "56f1bd96-55a2-4f34-9451-99eeccdd40d8"), false},
@@ -901,29 +930,51 @@ func TestGrantWithUnknownTenantIsInvalid(t *testing.T) {
 	}
 }
 
-// TestDeleteGrantsAreSingleTenant pins that deletion never resolves to an
-// ambiguous tenant, in either direction. Deleting data is irreversible, so a
-// caller who cannot say which tenant they mean must not delete from any.
-func TestDeleteGrantsAreSingleTenant(t *testing.T) {
+// TestSingleTenantActionsAreSingleTenant pins actions that must never resolve
+// to an ambiguous tenant, whether from one grant or several merged grants.
+func TestSingleTenantActionsAreSingleTenant(t *testing.T) {
 	const uuidA = "6f1d2c9e-9d3a-4c1b-8f47-2b0a5e7c1d34"
 	const uuidB = "56f1bd96-55a2-4f34-9451-99eeccdd40d8"
 
-	for _, action := range []string{auth.ActionDelete} {
+	for _, action := range []string{auth.ActionDelete, auth.ActionTail} {
 		t.Run(action+" single tenant", func(t *testing.T) {
 			if err := grant("loki", action, uuidA).Validate(); err != nil {
-				t.Errorf("expected a single-tenant delete grant to be valid: %v", err)
+				t.Errorf("expected a single-tenant %s grant to be valid: %v", action, err)
 			}
 		})
 		t.Run(action+" multi tenant", func(t *testing.T) {
 			if err := grant("loki", action, uuidA, uuidB).Validate(); err == nil {
-				t.Error("expected a multi-tenant delete grant to be rejected")
+				t.Errorf("expected a multi-tenant %s grant to be rejected", action)
 			}
 		})
 		t.Run(action+" on tempo", func(t *testing.T) {
 			if err := grant("tempo", action, uuidA).Validate(); err == nil {
-				t.Error("expected a delete grant on tempo to be rejected")
+				t.Errorf("expected a %s grant on tempo to be rejected", action)
 			}
 		})
+	}
+}
+
+func TestTailAccessDeniesMergedTenants(t *testing.T) {
+	env := newTestEnv(t)
+	svc := env.svc
+	mustUser(t, svc, "alice")
+	if err := svc.SetUserGrants("alice", []auth.Grant{
+		grant("loki", auth.ActionTail, env.a),
+		grant("loki", auth.ActionTail, env.b),
+	}); err != nil {
+		t.Fatalf("set grants: %v", err)
+	}
+
+	decision := svc.AccessDecision("alice", "loki", auth.ActionTail)
+	if decision.Allowed {
+		t.Fatal("expected merged loki:tail grants to be denied")
+	}
+	if decision.DenyReason != auth.AccessDenyAmbiguousTenant {
+		t.Fatalf("expected ambiguous tenant denial, got %q", decision.DenyReason)
+	}
+	if decision.TenantCount != 2 {
+		t.Fatalf("expected tenant_count=2, got %d", decision.TenantCount)
 	}
 }
 

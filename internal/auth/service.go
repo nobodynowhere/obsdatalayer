@@ -92,6 +92,25 @@ type Access struct {
 	LabelSelectors []string
 }
 
+type AccessDenyReason string
+
+const (
+	AccessDenyNoMatchingGrant  AccessDenyReason = "no_matching_grant"
+	AccessDenyNoLiveTenants    AccessDenyReason = "no_live_tenants"
+	AccessDenyAmbiguousTenant  AccessDenyReason = "ambiguous_tenant"
+	AccessDenyReadPolicy       AccessDenyReason = "read_policy"
+	AccessDenyReadPolicyLookup AccessDenyReason = "read_policy_lookup"
+)
+
+// AccessDecision is the resolved authorization result plus the reason a
+// request was refused when Allowed is false.
+type AccessDecision struct {
+	Access      Access
+	Allowed     bool
+	DenyReason  AccessDenyReason
+	TenantCount int
+}
+
 // Service owns authentication (bcrypt over the users table) and authorization
 // (Casbin over the casbin_rule table). Both share the gateway's database.
 type Service struct {
@@ -311,9 +330,16 @@ func credentialCacheKey(name, password, passwordHash string) string {
 // may use for the given backend and action. ok is false when no policy matches,
 // which callers should surface as 403.
 func (s *Service) AccessFor(name, backend, action string) (Access, bool) {
+	decision := s.AccessDecision(name, backend, action)
+	return decision.Access, decision.Allowed
+}
+
+// AccessDecision returns AccessFor's decision with a refusal reason suitable
+// for structured operator logs.
+func (s *Service) AccessDecision(name, backend, action string) AccessDecision {
 	perms, err := s.enf.GetImplicitPermissionsForUser(userSubject(name))
 	if err != nil {
-		return Access{}, false
+		return AccessDecision{DenyReason: AccessDenyNoMatchingGrant}
 	}
 	var tenantSets [][]string
 	perTenantReadPolicy := make(map[string]*readPolicyState)
@@ -331,10 +357,10 @@ func (s *Service) AccessFor(name, backend, action string) (Access, bool) {
 			tenants = decodeTenants(row[3])
 			tenantSets = append(tenantSets, tenants)
 		}
-		if backendSupportsReadLabelSelector(backend) && action == ActionRead {
+		if actionSupportsReadLabelSelector(backend, action) {
 			selector, ok := s.grantReadPolicySelector(row, tenants)
 			if !ok {
-				return Access{}, false
+				return AccessDecision{DenyReason: AccessDenyReadPolicyLookup}
 			}
 			for _, tenantID := range tenants {
 				state := perTenantReadPolicy[tenantID]
@@ -351,7 +377,7 @@ func (s *Service) AccessFor(name, backend, action string) (Access, bool) {
 		}
 	}
 	if !matched {
-		return Access{}, false
+		return AccessDecision{DenyReason: AccessDenyNoMatchingGrant}
 	}
 	ids := mergeTenants(tenantSets)
 
@@ -366,21 +392,21 @@ func (s *Service) AccessFor(name, backend, action string) (Access, bool) {
 	if len(live) == 0 {
 		// A matching grant with no usable tenants cannot produce an
 		// X-Scope-OrgID, so there is nothing safe to forward.
-		return Access{}, false
+		return AccessDecision{DenyReason: AccessDenyNoLiveTenants}
 	}
 	if ActionRequiresSingleTenant(action) && len(live) != 1 {
-		return Access{}, false
+		return AccessDecision{DenyReason: AccessDenyAmbiguousTenant, TenantCount: len(live)}
 	}
 
 	access := Access{TenantIDs: live}
-	if backendSupportsReadLabelSelector(backend) && action == ActionRead {
+	if actionSupportsReadLabelSelector(backend, action) {
 		selectors, ok := effectiveReadSelectors(live, perTenantReadPolicy)
 		if !ok {
-			return Access{}, false
+			return AccessDecision{DenyReason: AccessDenyReadPolicy, TenantCount: len(live)}
 		}
 		access.LabelSelectors = selectors
 	}
-	return access, true
+	return AccessDecision{Access: access, Allowed: true, TenantCount: len(live)}
 }
 
 // TenantIDsFor returns the merged tenant IDs the user may use for the given
@@ -437,7 +463,7 @@ func effectiveReadSelectors(tenantIDs []string, policies map[string]*readPolicyS
 }
 
 func (s *Service) grantReadPolicySelector(policyRow, tenants []string) (string, bool) {
-	if len(policyRow) < 4 || !backendSupportsReadLabelSelector(policyRow[1]) || policyRow[2] != ActionRead {
+	if len(policyRow) < 4 || !actionSupportsReadLabelSelector(policyRow[1], policyRow[2]) {
 		return "", true
 	}
 	var row dbstore.GrantReadPolicy

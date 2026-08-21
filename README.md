@@ -4,6 +4,26 @@ The obsgateway is a Go-based observability data-layer gateway. It sits in front 
 
 ## Using
 
+### LOKI
+
+Loki needs to be configured to enable multitenancy.  This is done by setting auth_enabled to true.  The tail endpoint in loki only supports a single tenant.  This is why it is a seperate grant.
+
+```yaml
+auth_enabled: true
+querier:
+  multi_tenant_queries_enabled: true
+```
+
+in values:
+```yaml
+loki:
+  config: |
+    auth_enabled: true
+    querier:
+      multi_tenant_queries_enabled: true
+```
+
+
 ### MIMIR
 
 Mimir needs to be configured to enable multitenancy, especially for queries. 

@@ -158,6 +158,13 @@ func requireSingleTenant(w http.ResponseWriter, r *http.Request) bool {
 	if ra == nil || len(ra.TenantIDs) == 1 {
 		return true
 	}
+	slog.Info("data plane request denied",
+		"status", http.StatusForbidden,
+		"phase", "tenant_scope",
+		"reason", "ambiguous_tenant",
+		"user", ra.Username,
+		"path", r.URL.Path,
+		"tenant_count", len(ra.TenantIDs))
 	proxy.WriteJSONError(w, http.StatusForbidden, map[string]string{
 		"error": "tenant is ambiguous for this endpoint",
 	})

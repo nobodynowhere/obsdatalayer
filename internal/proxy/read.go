@@ -322,16 +322,38 @@ func (a *readAttempt) commit(p *Proxy, w http.ResponseWriter, r *http.Request, i
 		return
 	}
 
-	// The status line is already on the wire, so the client cannot be told.
-	// It sees a success carrying a body that stops mid-way -- for a JSON API
-	// like the Prometheus query endpoints, a parse error at the client with
-	// nothing in the gateway to explain it. Log it at error and count it: this
-	// is data loss the caller cannot detect from the status alone.
-	slog.Error("read response body truncated; client received an incomplete body",
+	// A body that stops part-way is deliberately NOT handled like a failed
+	// attempt, and must not reach the failover path:
+	//
+	//   - There is nothing to retry. The status line and headers are already on
+	//     the wire, so a replica's answer could not be sent even if one were
+	//     asked for it.
+	//   - The target is not unwell. It answered, and the copy can fail on the
+	//     client's side of the gateway just as easily as the upstream's.
+	//     Recording a target failure here would park a working replica in the
+	//     read cool-off over a request it served correctly.
+	//
+	// What must not happen is the client being left with a well-formed short
+	// body. The upstream framing decides how bad that is, and the quiet case is
+	// the common one: when the upstream answered chunked, this response is
+	// chunked too, and returning normally would have Go write the terminating
+	// chunk -- so the caller reads a complete-looking reply that is simply
+	// missing data. For a JSON API like the Prometheus query endpoints that
+	// surfaces as an inexplicable parse error, with the gateway reporting 200.
+	//
+	// Aborting the handler drops the connection without a terminator instead,
+	// which every HTTP client reports as a failed read. The caller learns the
+	// answer was incomplete, which is the one thing it cannot work out for
+	// itself, and the log line and counter say why.
+	slog.Error("read response body truncated; aborting the connection so the client cannot mistake it for a complete answer",
 		"instance", inst.Name, "target", a.target, "method", r.Method, "url", a.url,
 		"status", a.resp.StatusCode, "bytes_written", written,
 		"content_length", a.resp.ContentLength, "error", err)
 	p.recordReadTruncated(inst.Name, a.target)
+
+	// Recovered by net/http, which closes the connection and logs nothing
+	// further. The deferred release above still runs.
+	panic(http.ErrAbortHandler)
 }
 
 // writeTransportError maps a failure to reach an upstream onto a client status.

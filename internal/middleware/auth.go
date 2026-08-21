@@ -150,11 +150,18 @@ func BasicAuth(a auth.Authorizer, guard *AuthGuard, next http.Handler) http.Hand
 		backend := extractBackend(r.URL.Path)
 		action := actionForRequest(r)
 
-		access, allowed := a.AccessFor(username, backend, action)
+		access, allowed, denyReason, tenantCount := accessForRequest(a, username, backend, action)
 		if !allowed {
 			// The single most common support question is "why did this 403?".
-			slog.Debug("data plane request denied: no matching grant",
-				"user", username, "backend", backend, "action", action, "path", r.URL.Path)
+			slog.Info("data plane request denied",
+				"status", http.StatusForbidden,
+				"phase", "authorization",
+				"reason", denyReason,
+				"user", username,
+				"backend", backend,
+				"action", action,
+				"path", r.URL.Path,
+				"tenant_count", tenantCount)
 			writeForbidden(w)
 			return
 		}
@@ -170,6 +177,23 @@ func BasicAuth(a auth.Authorizer, guard *AuthGuard, next http.Handler) http.Hand
 		}
 		next.ServeHTTP(w, r.WithContext(auth.WithRequestAuth(r.Context(), ra)))
 	})
+}
+
+type accessDecider interface {
+	AccessDecision(name, backend, action string) auth.AccessDecision
+}
+
+func accessForRequest(a auth.Authorizer, username, backend, action string) (auth.Access, bool, string, int) {
+	if decider, ok := a.(accessDecider); ok {
+		decision := decider.AccessDecision(username, backend, action)
+		reason := string(decision.DenyReason)
+		if reason == "" {
+			reason = string(auth.AccessDenyNoMatchingGrant)
+		}
+		return decision.Access, decision.Allowed, reason, decision.TenantCount
+	}
+	access, allowed := a.AccessFor(username, backend, action)
+	return access, allowed, string(auth.AccessDenyNoMatchingGrant), len(access.TenantIDs)
 }
 
 // AdminAuth guards the admin plane. Every API endpoint requires HTTP Basic
@@ -267,13 +291,14 @@ func actionForRequest(r *http.Request) string {
 	return auth.ActionWrite
 }
 
-// controlAction maps rule and alert management endpoints onto the discrete
-// rules:*/alerts:* actions, so managing alerting rules is a separate permission
-// from reading or writing series and logs. A plain read or write grant does not
-// satisfy them: the Casbin matcher compares actions for equality, so only the
-// specific action or the "*" wildcard matches.
+// controlAction maps endpoints with special authorization semantics onto
+// discrete actions. A plain read or write grant does not satisfy them: the
+// Casbin matcher compares actions for equality, so only the specific action or
+// the "*" wildcard matches.
 func controlAction(method, path string) string {
 	switch {
+	case isLokiTailPath(path) && method == http.MethodGet:
+		return auth.ActionTail
 	case isMimirRulesPath(path), isLokiRulesPath(path):
 		if method == http.MethodGet {
 			return auth.ActionRulesRead
@@ -332,6 +357,10 @@ func isLokiRulesPath(path string) bool {
 // GET lists pending deletions, POST and PUT create one, DELETE cancels one.
 func isDeletePath(path string) bool {
 	return path == "/loki/loki/api/v1/delete"
+}
+
+func isLokiTailPath(path string) bool {
+	return path == "/loki/loki/api/v1/tail"
 }
 
 func isLokiAlertsPath(path string) bool {

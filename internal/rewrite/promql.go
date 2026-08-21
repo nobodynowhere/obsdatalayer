@@ -30,14 +30,19 @@ func ValidateGrantReadPolicies(grants []auth.Grant) error {
 		if selector == "" {
 			continue
 		}
-		if (grant.Backend != "mimir" && grant.Backend != "loki") || grant.Action != auth.ActionRead {
-			return errors.New("read_label_selector is only supported on mimir and loki read grants")
+		if !grantSupportsReadLabelSelector(grant) {
+			return errors.New("read_label_selector is only supported on mimir/loki read grants and loki tail grants")
 		}
 		if _, _, err := singlePolicySelector([]string{selector}); err != nil {
 			return fmt.Errorf("read_label_selector %q is not valid PromQL: %w", selector, err)
 		}
 	}
 	return nil
+}
+
+func grantSupportsReadLabelSelector(grant auth.Grant) bool {
+	return (grant.Backend == "mimir" || grant.Backend == "loki") && grant.Action == auth.ActionRead ||
+		grant.Backend == "loki" && grant.Action == auth.ActionTail
 }
 
 // ApplyMimirReadPolicy constrains Mimir read request parameters with the

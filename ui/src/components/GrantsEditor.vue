@@ -27,16 +27,16 @@ const controlActionLabels = {
   'rules:write': { label: 'rules write', value: 'rules:write' },
   'alerts:read': { label: 'alerts read', value: 'alerts:read' },
   'alerts:write': { label: 'alerts write', value: 'alerts:write' },
+  tail: { label: 'tail', value: 'tail' },
   delete: { label: 'delete', value: 'delete' },
 }
 
 // Which control actions each backend actually exposes. Mirrors
 // controlActionBackends in internal/auth: Mimir runs a ruler and an
-// alertmanager, Loki runs a ruler only and forwards alerts to an external
-// Alertmanager, so it has no alert configuration to write. Tempo has neither.
+// alertmanager, Loki runs a ruler, live tail, and log deletion. Tempo has neither.
 const controlActionsByBackend = {
   mimir: ['rules:read', 'rules:write', 'alerts:read', 'alerts:write'],
-  loki: ['rules:read', 'rules:write', 'alerts:read', 'delete'],
+  loki: ['rules:read', 'rules:write', 'alerts:read', 'tail', 'delete'],
 }
 
 const tenantOptions = computed(() =>
@@ -57,7 +57,7 @@ function normalizeGrant(grant) {
   if (usesSingleTenant(next)) {
     next.tenant_ids = (next.tenant_ids ?? []).slice(0, 1)
   }
-  if (!isMimirRead(next)) {
+  if (!supportsReadLabelPolicy(next)) {
     next.read_label_selector = ''
   }
   return next
@@ -100,8 +100,11 @@ function setReadLabelSelector(index, value) {
   update(index, { read_label_selector: String(value ?? '').trim() })
 }
 
-function isMimirRead(grant) {
-  return grant.backend === 'mimir' && grant.action === 'read'
+function supportsReadLabelPolicy(grant) {
+  return (
+    (['mimir', 'loki'].includes(grant.backend) && grant.action === 'read') ||
+    (grant.backend === 'loki' && grant.action === 'tail')
+  )
 }
 
 function isWriteCapable(grant) {
@@ -112,8 +115,8 @@ function isWriteCapable(grant) {
 }
 
 function usesSingleTenant(grant) {
-  // Deletion is irreversible, so both directions are single-tenant.
-  return ['write', '*', 'rules:write', 'alerts:write', 'delete'].includes(grant.action)
+  // Tail and deletion are single-tenant; writes are also narrowed to one tenant.
+  return ['write', '*', 'rules:write', 'alerts:write', 'tail', 'delete'].includes(grant.action)
 }
 
 function isControlAction(action) {
@@ -207,7 +210,7 @@ watch(
 
       <PrimeButton icon="pi pi-times" text rounded severity="danger" @click="remove(i)" />
 
-      <div v-if="isMimirRead(grant)" class="grant-row__policy">
+      <div v-if="supportsReadLabelPolicy(grant)" class="grant-row__policy">
         <label>Read label policy</label>
         <PrimeInputText
           :model-value="grant.read_label_selector ?? ''"

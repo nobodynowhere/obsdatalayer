@@ -22,6 +22,11 @@ func TestValidateGrantReadPolicies(t *testing.T) {
 		Action:            "read",
 		TenantIDs:         []string{"tenant-a"},
 		ReadLabelSelector: `{cluster="prod"}`,
+	}, {
+		Backend:           "loki",
+		Action:            "tail",
+		TenantIDs:         []string{"tenant-a"},
+		ReadLabelSelector: `{cluster="prod"}`,
 	}}
 	if err := ValidateGrantReadPolicies(grants); err != nil {
 		t.Fatalf("expected valid policy, got %v", err)
