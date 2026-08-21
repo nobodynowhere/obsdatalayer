@@ -89,6 +89,13 @@ func (p *Proxy) recordReadFailover(instance string) {
 	}
 }
 
+// recordReadTruncated counts a read whose body failed part-way to the client.
+func (p *Proxy) recordReadTruncated(instance, target string) {
+	if m := p.metrics.Load(); m != nil {
+		m.RecordReadTruncated(instance, target)
+	}
+}
+
 // New creates a Proxy with separate query and push clients.
 func New(queryClient, pushClient *http.Client) *Proxy {
 	p := &Proxy{health: newTargetHealth()}

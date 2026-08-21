@@ -40,6 +40,10 @@ type rewriteLabelsKey struct{ backend, instance, operation string }
 // "success" or "failure".
 type readKey struct{ instance, target, result string }
 
+// truncatedKey labels a read whose response body was cut short on its way to
+// the client. target is the upstream that was serving it.
+type truncatedKey struct{ instance, target string }
+
 // labelKey is the contract every key type satisfies so counterSet can stay
 // generic: values() returns the label values in the order its Desc declares
 // them, and instanceName() is what RetainInstances prunes on.
@@ -70,6 +74,9 @@ func (k rewriteLabelsKey) instanceName() string { return k.instance }
 
 func (k readKey) values() []string     { return []string{k.instance, k.target, k.result} }
 func (k readKey) instanceName() string { return k.instance }
+
+func (k truncatedKey) values() []string     { return []string{k.instance, k.target} }
+func (k truncatedKey) instanceName() string { return k.instance }
 
 // counterSet is a set of monotonic counters keyed by label tuple. The map is
 // guarded by a mutex; the values are atomics, so the common case (a series that
@@ -156,6 +163,7 @@ type Metrics struct {
 	rewriteLabelsDesc *prometheus.Desc
 	readDesc          *prometheus.Desc
 	readFailoverDesc  *prometheus.Desc
+	readTruncatedDesc *prometheus.Desc
 	authRejectedDesc  *prometheus.Desc
 	authFailuresDesc  *prometheus.Desc
 
@@ -166,6 +174,7 @@ type Metrics struct {
 	rewriteLabels *counterSet[rewriteLabelsKey]
 	reads         *counterSet[readKey]
 	readFailovers *counterSet[partialKey]
+	readTruncated *counterSet[truncatedKey]
 
 	// Authentication counters are plain atomics rather than a counterSet.
 	// They carry no instance label, so they must not be reachable by
@@ -220,6 +229,16 @@ func New(reg prometheus.Registerer) *Metrics {
 			[]string{"instance"}, nil,
 		),
 
+		readTruncatedDesc: prometheus.NewDesc(
+			"gateway_read_truncated_total",
+			"Reads whose response body failed part-way through being copied to the client, "+
+				"labeled by instance and the upstream target that was serving it. The status "+
+				"line was already sent, so the client received an incomplete body under a "+
+				"success status; any non-zero rate here means clients are silently seeing "+
+				"partial results.",
+			[]string{"instance", "target"}, nil,
+		),
+
 		authRejectedDesc: prometheus.NewDesc(
 			"gateway_auth_rejected_total",
 			"Requests rejected before their credentials were checked, labeled by reason: "+
@@ -239,6 +258,7 @@ func New(reg prometheus.Registerer) *Metrics {
 		rewriteLabels: newCounterSet[rewriteLabelsKey](),
 		reads:         newCounterSet[readKey](),
 		readFailovers: newCounterSet[partialKey](),
+		readTruncated: newCounterSet[truncatedKey](),
 	}
 	reg.MustRegister(m)
 	return m
@@ -254,6 +274,7 @@ func (m *Metrics) Describe(ch chan<- *prometheus.Desc) {
 	ch <- m.rewriteLabelsDesc
 	ch <- m.readDesc
 	ch <- m.readFailoverDesc
+	ch <- m.readTruncatedDesc
 	ch <- m.authRejectedDesc
 	ch <- m.authFailuresDesc
 }
@@ -266,6 +287,7 @@ func (m *Metrics) Collect(ch chan<- prometheus.Metric) {
 	m.rewriteLabels.collect(ch, m.rewriteLabelsDesc)
 	m.reads.collect(ch, m.readDesc)
 	m.readFailovers.collect(ch, m.readFailoverDesc)
+	m.readTruncated.collect(ch, m.readTruncatedDesc)
 
 	// Emitted unconditionally, zeros included, so an alert on the rate of these
 	// has a series to attach to from process start rather than only once the
@@ -295,6 +317,20 @@ func (m *Metrics) RecordRead(instance, target string, ok bool) {
 // RecordReadFailover counts a read that had to try more than one target.
 func (m *Metrics) RecordReadFailover(instance string) {
 	m.readFailovers.add(partialKey{instance}, 1)
+}
+
+// RecordReadTruncated counts a read whose body was cut short mid-copy. It is
+// separate from RecordRead because the read was already counted a success: the
+// upstream answered, the status went out, and only then did the body fail. A
+// failure counted against the target would misreport that target as unhealthy.
+func (m *Metrics) RecordReadTruncated(instance, target string) {
+	m.readTruncated.add(truncatedKey{instance, target}, 1)
+}
+
+// ReadTruncatedValue returns how many reads for an instance and target were cut
+// short mid-body.
+func (m *Metrics) ReadTruncatedValue(instance, target string) uint64 {
+	return m.readTruncated.value(truncatedKey{instance, target})
 }
 
 // ReadValue returns the count for one instance, target and result.
@@ -409,7 +445,8 @@ func (m *Metrics) RetainInstances(names []string) {
 		m.writeItems.retain(live) +
 		m.rewriteLabels.retain(live) +
 		m.reads.retain(live) +
-		m.readFailovers.retain(live)
+		m.readFailovers.retain(live) +
+		m.readTruncated.retain(live)
 	if dropped > 0 {
 		slog.Debug("dropped metric series for removed instances",
 			"series", dropped, "live_instances", len(live))
@@ -430,6 +467,7 @@ type Summary struct {
 	ReadSuccesses    uint64            `json:"read_successes"`
 	ReadFailures     uint64            `json:"read_failures"`
 	ReadFailovers    uint64            `json:"read_failovers"`
+	ReadTruncated    uint64            `json:"read_truncated"`
 	Instances        []InstanceSummary `json:"instances"`
 }
 
@@ -445,6 +483,7 @@ type InstanceSummary struct {
 	ReadSuccesses    uint64 `json:"read_successes"`
 	ReadFailures     uint64 `json:"read_failures"`
 	ReadFailovers    uint64 `json:"read_failovers"`
+	ReadTruncated    uint64 `json:"read_truncated"`
 	// ReadTargets breaks the read counts down by upstream, so a dashboard can
 	// show which replica is failing rather than only that something is.
 	ReadTargets []ReadTargetSummary `json:"read_targets,omitempty"`
@@ -523,6 +562,10 @@ func (m *Metrics) Summary() Summary {
 	for k, v := range m.readFailovers.snapshot() {
 		at(k.instance).ReadFailovers += v
 		out.ReadFailovers += v
+	}
+	for k, v := range m.readTruncated.snapshot() {
+		at(k.instance).ReadTruncated += v
+		out.ReadTruncated += v
 	}
 	for instance, byTarget := range readTargets {
 		s := at(instance)

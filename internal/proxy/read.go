@@ -28,6 +28,11 @@ type readAttempt struct {
 	url      string
 	duration time.Duration
 
+	// target is the upstream base URL, without the path or query. It is what
+	// the counters are labeled by: a.url carries the caller's query string and
+	// would give every distinct query its own series.
+	target string
+
 	// resp is non-nil when the upstream answered. Its body is still open and
 	// must be either committed or discarded.
 	resp *http.Response
@@ -145,7 +150,7 @@ func (p *Proxy) ForwardQuery(w http.ResponseWriter, r *http.Request, inst *confi
 				// "working because a replica covered for a broken one".
 				p.recordReadFailover(inst.Name)
 			}
-			attempt.commit(w, r, inst)
+			attempt.commit(p, w, r, inst)
 			return
 		}
 
@@ -167,7 +172,7 @@ func (p *Proxy) ForwardQuery(w http.ResponseWriter, r *http.Request, inst *confi
 	if len(ordered) > 1 {
 		p.recordReadFailover(inst.Name)
 	}
-	last.commit(w, r, inst)
+	last.commit(p, w, r, inst)
 }
 
 // attemptRead performs one upstream read and classifies the outcome without
@@ -202,7 +207,7 @@ func (p *Proxy) attemptRead(
 		// A malformed target URL is a configuration fault, not an outage, and
 		// the next target would be built the same way. Do not retry it.
 		cancel()
-		return &readAttempt{url: upstreamURL, err: err}
+		return &readAttempt{url: upstreamURL, target: target.URL, err: err}
 	}
 	CopyHeadersForUpstream(req, r.Header, target)
 
@@ -218,7 +223,7 @@ func (p *Proxy) attemptRead(
 			"duration", time.Since(started), "error", err)
 		cancel()
 		return &readAttempt{
-			url: upstreamURL, err: err, duration: time.Since(started),
+			url: upstreamURL, target: target.URL, err: err, duration: time.Since(started),
 			// A target timing out is exactly the case worth retrying: it hung,
 			// and a replica may answer. The caller's context is what says to
 			// stop -- once it is cancelled nobody is waiting for the answer.
@@ -232,7 +237,10 @@ func (p *Proxy) attemptRead(
 		"instance", inst.Name, "url", upstreamURL,
 		"status", resp.StatusCode, "duration", time.Since(started))
 
-	attempt := &readAttempt{url: upstreamURL, resp: resp, duration: time.Since(started), cancel: cancel}
+	attempt := &readAttempt{
+		url: upstreamURL, target: target.URL, resp: resp,
+		duration: time.Since(started), cancel: cancel,
+	}
 	if resp.StatusCode >= 500 {
 		// Read the body now: it is needed for the log line, and holding the
 		// connection open across another attempt would pin it for nothing.
@@ -268,7 +276,11 @@ func (a *readAttempt) discard() {
 
 // commit writes the attempt to the client. It is called exactly once per
 // request, on the attempt that decided the outcome.
-func (a *readAttempt) commit(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig) {
+//
+// It takes the Proxy only to reach the counters: a body that fails part-way is
+// invisible in the response, because the status line has already gone out, so
+// the only place it can be reported is a log line and a counter.
+func (a *readAttempt) commit(p *Proxy, w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig) {
 	// The timeout context stays live until the body has been copied out, and
 	// is released here rather than when the attempt was made.
 	defer a.release()
@@ -305,7 +317,21 @@ func (a *readAttempt) commit(w http.ResponseWriter, r *http.Request, inst *confi
 		return
 	}
 	w.WriteHeader(a.resp.StatusCode)
-	_, _ = io.Copy(w, a.resp.Body)
+	written, err := io.Copy(w, a.resp.Body)
+	if err == nil {
+		return
+	}
+
+	// The status line is already on the wire, so the client cannot be told.
+	// It sees a success carrying a body that stops mid-way -- for a JSON API
+	// like the Prometheus query endpoints, a parse error at the client with
+	// nothing in the gateway to explain it. Log it at error and count it: this
+	// is data loss the caller cannot detect from the status alone.
+	slog.Error("read response body truncated; client received an incomplete body",
+		"instance", inst.Name, "target", a.target, "method", r.Method, "url", a.url,
+		"status", a.resp.StatusCode, "bytes_written", written,
+		"content_length", a.resp.ContentLength, "error", err)
+	p.recordReadTruncated(inst.Name, a.target)
 }
 
 // writeTransportError maps a failure to reach an upstream onto a client status.

@@ -41,6 +41,13 @@ const trafficCards = computed(() => {
       hint: 'Served only after a target failed',
       alert: t.read_failovers > 0,
     },
+    {
+      key: 'reads-truncated',
+      label: 'Truncated reads',
+      value: t.read_truncated,
+      hint: 'Answered 200, body cut short',
+      alert: t.read_truncated > 0,
+    },
   ]
 })
 
