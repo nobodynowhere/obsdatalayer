@@ -380,6 +380,9 @@ func TestSummaryIncludesReadBreakdown(t *testing.T) {
 	if inst.ReadTargets[1].Successes != 1 {
 		t.Errorf("row b = %+v, want 1 success", inst.ReadTargets[1])
 	}
+	if inst.ReadTargets[0].LastResult != "failure" || inst.ReadTargets[1].LastResult != "success" {
+		t.Errorf("latest target results = %+v, want failure/success", inst.ReadTargets)
+	}
 }
 
 // Read counters are instance-labeled, so deleting an instance must drop them
@@ -400,5 +403,12 @@ func TestReadCountersArePrunedWithInstances(t *testing.T) {
 	}
 	if got := m.ReadValue("kept", "http://b.local", "success"); got != 1 {
 		t.Errorf("surviving instance lost its counter: %d", got)
+	}
+	s := m.Summary()
+	if len(s.Instances) != 1 || len(s.Instances[0].ReadTargets) != 1 {
+		t.Fatalf("expected one surviving read target, got %+v", s.Instances)
+	}
+	if s.Instances[0].ReadTargets[0].LastResult != "success" {
+		t.Errorf("surviving latest status = %q", s.Instances[0].ReadTargets[0].LastResult)
 	}
 }

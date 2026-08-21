@@ -67,13 +67,21 @@ const readTargets = computed(() => {
   for (const inst of traffic.value?.instances ?? []) {
     const rows = (inst.read_targets ?? []).map((t) => {
       const total = (t.successes ?? 0) + (t.failures ?? 0)
+      const successes = t.successes ?? 0
+      const failures = t.failures ?? 0
+      const okPct = total ? Math.round((successes / total) * 100) : 0
+      const failPct = total ? 100 - okPct : 0
+      const lastResult = t.last_result || (failures && !successes ? 'failure' : 'success')
       return {
         target: t.target,
-        successes: t.successes ?? 0,
-        failures: t.failures ?? 0,
+        successes,
+        failures,
         total,
-        // Width of the healthy portion of the bar.
-        okPct: total ? Math.round(((t.successes ?? 0) / total) * 100) : 0,
+        okPct,
+        failPct,
+        lastResult,
+        statusText: lastResult === 'failure' ? 'Latest failure' : 'Latest success',
+        hover: `${successes.toLocaleString()} served (${okPct}%), ${failures.toLocaleString()} failed (${failPct}%)`,
       }
     })
     if (rows.length) out.push({ instance: inst.instance, rows })
@@ -190,9 +198,13 @@ onMounted(load)
               <div class="read-target__name mono" :title="row.target">
                 <span class="target-rank">{{ i + 1 }}</span>{{ row.target }}
               </div>
-              <div class="read-bar" :title="`${fmt(row.successes)} served, ${fmt(row.failures)} failed`">
-                <div class="read-bar__ok" :style="{ width: row.okPct + '%' }"></div>
-                <div class="read-bar__fail" :style="{ width: 100 - row.okPct + '%' }"></div>
+              <div
+                class="read-status"
+                :class="`read-status--${row.lastResult}`"
+                :title="row.hover"
+              >
+                <span class="read-status__dot"></span>
+                <span>{{ row.statusText }}</span>
               </div>
               <div class="read-target__counts">
                 <span class="read-count read-count--ok">{{ fmt(row.successes) }}</span>

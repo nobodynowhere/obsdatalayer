@@ -399,16 +399,39 @@ body {
   flex: none;
 }
 
-.read-bar {
-  display: flex;
-  height: 0.5rem;
+.read-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 1.75rem;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid var(--app-border);
   border-radius: 999px;
-  overflow: hidden;
-  background: var(--app-surface-muted);
+  font-size: 0.825rem;
+  font-weight: 600;
+  width: fit-content;
 }
 
-.read-bar__ok { background: var(--app-ok); }
-.read-bar__fail { background: var(--app-fail); }
+.read-status__dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 999px;
+  flex: none;
+}
+
+.read-status--success {
+  color: var(--app-ok);
+  background: color-mix(in srgb, var(--app-ok), transparent 90%);
+}
+
+.read-status--success .read-status__dot { background: var(--app-ok); }
+
+.read-status--failure {
+  color: var(--app-fail);
+  background: color-mix(in srgb, var(--app-fail), transparent 90%);
+}
+
+.read-status--failure .read-status__dot { background: var(--app-fail); }
 
 .read-target__counts {
   display: flex;

@@ -39,6 +39,7 @@ type rewriteLabelsKey struct{ backend, instance, operation string }
 // fan-out instance shows which replica served and which failed; result is
 // "success" or "failure".
 type readKey struct{ instance, target, result string }
+type readTargetKey struct{ instance, target string }
 
 // truncatedKey labels a read whose response body was cut short on its way to
 // the client. target is the upstream that was serving it. Shared by the
@@ -179,6 +180,9 @@ type Metrics struct {
 	readFailovers *counterSet[partialKey]
 	readTruncated *counterSet[truncatedKey]
 
+	lastReadMu sync.RWMutex
+	lastRead   map[readTargetKey]string
+
 	// readDisconnects is deliberately not folded into readTruncated. A caller
 	// hanging up mid-body is routine -- a dashboard panel closed, a query
 	// cancelled -- while a truncation means the gateway lost data it had
@@ -277,6 +281,7 @@ func New(reg prometheus.Registerer) *Metrics {
 		reads:           newCounterSet[readKey](),
 		readFailovers:   newCounterSet[partialKey](),
 		readTruncated:   newCounterSet[truncatedKey](),
+		lastRead:        make(map[readTargetKey]string),
 		readDisconnects: newCounterSet[truncatedKey](),
 	}
 	reg.MustRegister(m)
@@ -333,6 +338,9 @@ func (m *Metrics) RecordRead(instance, target string, ok bool) {
 		result = "success"
 	}
 	m.reads.add(readKey{instance, target, result}, 1)
+	m.lastReadMu.Lock()
+	m.lastRead[readTargetKey{instance, target}] = result
+	m.lastReadMu.Unlock()
 }
 
 // RecordReadFailover counts a read that had to try more than one target.
@@ -482,6 +490,14 @@ func (m *Metrics) RetainInstances(names []string) {
 		m.readFailovers.retain(live) +
 		m.readTruncated.retain(live) +
 		m.readDisconnects.retain(live)
+	m.lastReadMu.Lock()
+	for k := range m.lastRead {
+		if _, ok := live[k.instance]; !ok {
+			delete(m.lastRead, k)
+			dropped++
+		}
+	}
+	m.lastReadMu.Unlock()
 	if dropped > 0 {
 		slog.Debug("dropped metric series for removed instances",
 			"series", dropped, "live_instances", len(live))
@@ -528,9 +544,10 @@ type InstanceSummary struct {
 
 // ReadTargetSummary is the read outcome for one upstream target.
 type ReadTargetSummary struct {
-	Target    string `json:"target"`
-	Successes uint64 `json:"successes"`
-	Failures  uint64 `json:"failures"`
+	Target     string `json:"target"`
+	Successes  uint64 `json:"successes"`
+	Failures   uint64 `json:"failures"`
+	LastResult string `json:"last_result,omitempty"`
 }
 
 // Summary aggregates the current counters. Each set is snapshotted separately,
@@ -574,6 +591,7 @@ func (m *Metrics) Summary() Summary {
 	}
 	// Read outcomes, aggregated per instance and broken down per target.
 	readTargets := map[string]map[string]*ReadTargetSummary{}
+	latestReads := m.lastReadSnapshot()
 	for k, v := range m.reads.snapshot() {
 		s := at(k.instance)
 		byTarget, ok := readTargets[k.instance]
@@ -583,7 +601,7 @@ func (m *Metrics) Summary() Summary {
 		}
 		t, ok := byTarget[k.target]
 		if !ok {
-			t = &ReadTargetSummary{Target: k.target}
+			t = &ReadTargetSummary{Target: k.target, LastResult: latestReads[readTargetKey{k.instance, k.target}]}
 			byTarget[k.target] = t
 		}
 		if k.result == "success" {
@@ -631,6 +649,16 @@ func (m *Metrics) Summary() Summary {
 	sort.Slice(out.Instances, func(i, j int) bool {
 		return out.Instances[i].Instance < out.Instances[j].Instance
 	})
+	return out
+}
+
+func (m *Metrics) lastReadSnapshot() map[readTargetKey]string {
+	m.lastReadMu.RLock()
+	defer m.lastReadMu.RUnlock()
+	out := make(map[readTargetKey]string, len(m.lastRead))
+	for k, v := range m.lastRead {
+		out[k] = v
+	}
 	return out
 }
 
