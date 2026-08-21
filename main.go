@@ -545,8 +545,40 @@ func splitCSV(value string) []string {
 func setupLogging() *slog.LevelVar {
 	level := &slog.LevelVar{}
 	level.Set(slog.LevelInfo)
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+	// AddSource costs a caller lookup per record, which is why it is off by
+	// default. It is worth paying here: several messages are emitted from more
+	// than one place -- "data plane request denied" comes from both the auth
+	// middleware and the fan-out layer -- and without the file and line a log
+	// line does not say which one produced it.
+	//
+	// It is renamed to "caller" because slog's own key for it is "source",
+	// which two lines already use for something else: the config path on
+	// "config reloaded" and the throttled client on "authentication throttled".
+	// Left alone the two collide and a record carries two source= keys. Moving
+	// the new field is what keeps the existing ones stable, and an operator
+	// alerting on source= from the throttle warning keeps working.
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level:       level,
+		AddSource:   true,
+		ReplaceAttr: renameSourceToCaller,
+	})))
 	return level
+}
+
+// renameSourceToCaller re-keys slog's built-in source attribute.
+//
+// The key alone does not identify it -- "config reloaded" and "authentication
+// throttled" both carry a top-level attribute of their own called "source", and
+// renaming those is the opposite of the point. Only the built-in holds a
+// *slog.Source, so the value's type is what tells them apart.
+func renameSourceToCaller(groups []string, a slog.Attr) slog.Attr {
+	if len(groups) != 0 || a.Key != slog.SourceKey {
+		return a
+	}
+	if _, ok := a.Value.Any().(*slog.Source); ok {
+		a.Key = "caller"
+	}
+	return a
 }
 
 // authGuards holds one throttle per listener. They share configuration and the
@@ -656,7 +688,13 @@ func (r *reloader) run() error {
 		)
 		r.timeouts = staged.Gateway.Timeouts
 	}
-	slog.Info("config reloaded", "instances", len(staged.Instances), "source", r.holder.Path())
+	// Debug, not info: this runs on a timer (gateway.reload_interval, 30s by
+	// default) and almost always finds nothing changed, so at info it is a line
+	// every half minute saying the same thing. The events worth seeing are
+	// still at their own levels -- SIGHUP announces an operator-initiated
+	// reload, a failed reload is logged as an error by both callers, and a
+	// changed reload interval or log level says so where it is applied.
+	slog.Debug("config reloaded", "instances", len(staged.Instances), "source", r.holder.Path())
 	return nil
 }
 

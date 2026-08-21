@@ -44,12 +44,18 @@ func (rw *responseWriter) Flush() {
 }
 
 // Logging wraps a handler with structured request/response logging using log/slog.
+//
+// The line is debug rather than info. One line per request is the largest
+// single source of log volume the gateway produces, and on a hosted backend
+// that volume is billed. What an operator needs at the default level is logged
+// where it happens instead: authorization denials, throttling, and non-2xx
+// upstream responses each have their own line outside this one.
 func Logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(rw, r)
-		slog.Info("request",
+		slog.Debug("request",
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", rw.statusCode,

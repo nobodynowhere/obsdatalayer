@@ -41,6 +41,8 @@ type rewriteLabelsKey struct{ backend, instance, operation string }
 type readKey struct{ instance, target, result string }
 type readTargetKey struct{ instance, target string }
 
+const readHistoryLimit = 100
+
 // truncatedKey labels a read whose response body was cut short on its way to
 // the client. target is the upstream that was serving it. Shared by the
 // truncation and client-disconnect counters, which carry the same labels and
@@ -180,8 +182,8 @@ type Metrics struct {
 	readFailovers *counterSet[partialKey]
 	readTruncated *counterSet[truncatedKey]
 
-	lastReadMu sync.RWMutex
-	lastRead   map[readTargetKey]string
+	readHistoryMu sync.RWMutex
+	readHistory   map[readTargetKey][]string
 
 	// readDisconnects is deliberately not folded into readTruncated. A caller
 	// hanging up mid-body is routine -- a dashboard panel closed, a query
@@ -281,7 +283,7 @@ func New(reg prometheus.Registerer) *Metrics {
 		reads:           newCounterSet[readKey](),
 		readFailovers:   newCounterSet[partialKey](),
 		readTruncated:   newCounterSet[truncatedKey](),
-		lastRead:        make(map[readTargetKey]string),
+		readHistory:     make(map[readTargetKey][]string),
 		readDisconnects: newCounterSet[truncatedKey](),
 	}
 	reg.MustRegister(m)
@@ -338,9 +340,7 @@ func (m *Metrics) RecordRead(instance, target string, ok bool) {
 		result = "success"
 	}
 	m.reads.add(readKey{instance, target, result}, 1)
-	m.lastReadMu.Lock()
-	m.lastRead[readTargetKey{instance, target}] = result
-	m.lastReadMu.Unlock()
+	m.recordReadHistory(readTargetKey{instance, target}, result)
 }
 
 // RecordReadFailover counts a read that had to try more than one target.
@@ -490,14 +490,14 @@ func (m *Metrics) RetainInstances(names []string) {
 		m.readFailovers.retain(live) +
 		m.readTruncated.retain(live) +
 		m.readDisconnects.retain(live)
-	m.lastReadMu.Lock()
-	for k := range m.lastRead {
+	m.readHistoryMu.Lock()
+	for k := range m.readHistory {
 		if _, ok := live[k.instance]; !ok {
-			delete(m.lastRead, k)
+			delete(m.readHistory, k)
 			dropped++
 		}
 	}
-	m.lastReadMu.Unlock()
+	m.readHistoryMu.Unlock()
 	if dropped > 0 {
 		slog.Debug("dropped metric series for removed instances",
 			"series", dropped, "live_instances", len(live))
@@ -544,10 +544,11 @@ type InstanceSummary struct {
 
 // ReadTargetSummary is the read outcome for one upstream target.
 type ReadTargetSummary struct {
-	Target     string `json:"target"`
-	Successes  uint64 `json:"successes"`
-	Failures   uint64 `json:"failures"`
-	LastResult string `json:"last_result,omitempty"`
+	Target        string   `json:"target"`
+	Successes     uint64   `json:"successes"`
+	Failures      uint64   `json:"failures"`
+	LastResult    string   `json:"last_result,omitempty"`
+	RecentResults []string `json:"recent_results,omitempty"`
 }
 
 // Summary aggregates the current counters. Each set is snapshotted separately,
@@ -591,7 +592,7 @@ func (m *Metrics) Summary() Summary {
 	}
 	// Read outcomes, aggregated per instance and broken down per target.
 	readTargets := map[string]map[string]*ReadTargetSummary{}
-	latestReads := m.lastReadSnapshot()
+	readHistory := m.readHistorySnapshot()
 	for k, v := range m.reads.snapshot() {
 		s := at(k.instance)
 		byTarget, ok := readTargets[k.instance]
@@ -601,7 +602,12 @@ func (m *Metrics) Summary() Summary {
 		}
 		t, ok := byTarget[k.target]
 		if !ok {
-			t = &ReadTargetSummary{Target: k.target, LastResult: latestReads[readTargetKey{k.instance, k.target}]}
+			history := readHistory[readTargetKey{k.instance, k.target}]
+			t = &ReadTargetSummary{
+				Target:        k.target,
+				LastResult:    lastReadResult(history),
+				RecentResults: history,
+			}
 			byTarget[k.target] = t
 		}
 		if k.result == "success" {
@@ -652,14 +658,31 @@ func (m *Metrics) Summary() Summary {
 	return out
 }
 
-func (m *Metrics) lastReadSnapshot() map[readTargetKey]string {
-	m.lastReadMu.RLock()
-	defer m.lastReadMu.RUnlock()
-	out := make(map[readTargetKey]string, len(m.lastRead))
-	for k, v := range m.lastRead {
-		out[k] = v
+func (m *Metrics) recordReadHistory(k readTargetKey, result string) {
+	m.readHistoryMu.Lock()
+	defer m.readHistoryMu.Unlock()
+	history := append(m.readHistory[k], result)
+	if len(history) > readHistoryLimit {
+		history = append([]string(nil), history[len(history)-readHistoryLimit:]...)
+	}
+	m.readHistory[k] = history
+}
+
+func (m *Metrics) readHistorySnapshot() map[readTargetKey][]string {
+	m.readHistoryMu.RLock()
+	defer m.readHistoryMu.RUnlock()
+	out := make(map[readTargetKey][]string, len(m.readHistory))
+	for k, v := range m.readHistory {
+		out[k] = append([]string(nil), v...)
 	}
 	return out
+}
+
+func lastReadResult(history []string) string {
+	if len(history) == 0 {
+		return ""
+	}
+	return history[len(history)-1]
 }
 
 // isFailureStatus reports whether a recorded fan-out status counts as a failure.

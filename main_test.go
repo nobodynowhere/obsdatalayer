@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -214,5 +217,50 @@ func TestPromptNewPasswordDoesNotTrimEntries(t *testing.T) {
 
 	if _, err := promptNewPassword("admin"); err == nil {
 		t.Fatal("expected entries differing by whitespace to be refused")
+	}
+}
+
+// logWithCallerRenaming formats one record through the handler configuration
+// setupLogging installs, and returns the line.
+func logWithCallerRenaming(t *testing.T, log func(l *slog.Logger)) string {
+	t.Helper()
+	var buf bytes.Buffer
+	log(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{
+		AddSource:   true,
+		ReplaceAttr: renameSourceToCaller,
+	})))
+	return buf.String()
+}
+
+func TestSetupLoggingRecordsTheCallSite(t *testing.T) {
+	got := logWithCallerRenaming(t, func(l *slog.Logger) { l.Info("listener started") })
+
+	if !strings.Contains(got, "caller=") {
+		t.Fatalf("expected a caller field, got %s", got)
+	}
+	if !strings.Contains(got, "main_test.go:") {
+		t.Errorf("expected the caller to name this file, got %s", got)
+	}
+	if strings.Contains(got, "source=") {
+		t.Errorf("built-in source key was not renamed, got %s", got)
+	}
+}
+
+// Two lines carry a top-level attribute of their own called "source" -- the
+// config path and the throttled client. Renaming the built-in must not rename
+// those, or an operator alerting on them silently stops matching.
+func TestSetupLoggingLeavesCallerAttributesNamedSourceAlone(t *testing.T) {
+	got := logWithCallerRenaming(t, func(l *slog.Logger) {
+		l.Info("config reloaded", "instances", 3, "source", "./gateway.yaml")
+	})
+
+	if !strings.Contains(got, "source=./gateway.yaml") {
+		t.Errorf("the line's own source attribute was rewritten, got %s", got)
+	}
+	if !strings.Contains(got, "caller=") {
+		t.Errorf("expected a caller field, got %s", got)
+	}
+	if strings.Count(got, "caller=") != 1 {
+		t.Errorf("expected exactly one caller field, got %s", got)
 	}
 }

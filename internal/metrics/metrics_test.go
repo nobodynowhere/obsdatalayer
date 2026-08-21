@@ -1,6 +1,7 @@
 package metrics_test
 
 import (
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -383,6 +384,41 @@ func TestSummaryIncludesReadBreakdown(t *testing.T) {
 	if inst.ReadTargets[0].LastResult != "failure" || inst.ReadTargets[1].LastResult != "success" {
 		t.Errorf("latest target results = %+v, want failure/success", inst.ReadTargets)
 	}
+	if !reflect.DeepEqual(inst.ReadTargets[0].RecentResults, []string{"failure", "failure"}) {
+		t.Errorf("row a recent results = %+v, want two failures", inst.ReadTargets[0].RecentResults)
+	}
+	if !reflect.DeepEqual(inst.ReadTargets[1].RecentResults, []string{"success"}) {
+		t.Errorf("row b recent results = %+v, want one success", inst.ReadTargets[1].RecentResults)
+	}
+}
+
+func TestReadTargetHistoryKeepsNewestSamples(t *testing.T) {
+	m := metrics.New(prometheus.NewRegistry())
+	for i := 0; i < 105; i++ {
+		m.RecordRead("loki-ha", "http://a.local", i >= 10)
+	}
+
+	s := m.Summary()
+	if len(s.Instances) != 1 || len(s.Instances[0].ReadTargets) != 1 {
+		t.Fatalf("expected one read target, got %+v", s.Instances)
+	}
+	history := s.Instances[0].ReadTargets[0].RecentResults
+	if len(history) != 100 {
+		t.Fatalf("history length = %d, want 100", len(history))
+	}
+	for i := 0; i < 5; i++ {
+		if history[i] != "failure" {
+			t.Fatalf("history[%d] = %q, want failure", i, history[i])
+		}
+	}
+	for i := 5; i < len(history); i++ {
+		if history[i] != "success" {
+			t.Fatalf("history[%d] = %q, want success", i, history[i])
+		}
+	}
+	if s.Instances[0].ReadTargets[0].LastResult != "success" {
+		t.Errorf("latest status = %q, want success", s.Instances[0].ReadTargets[0].LastResult)
+	}
 }
 
 // Read counters are instance-labeled, so deleting an instance must drop them
@@ -410,5 +446,8 @@ func TestReadCountersArePrunedWithInstances(t *testing.T) {
 	}
 	if s.Instances[0].ReadTargets[0].LastResult != "success" {
 		t.Errorf("surviving latest status = %q", s.Instances[0].ReadTargets[0].LastResult)
+	}
+	if !reflect.DeepEqual(s.Instances[0].ReadTargets[0].RecentResults, []string{"success"}) {
+		t.Errorf("surviving recent results = %+v", s.Instances[0].ReadTargets[0].RecentResults)
 	}
 }
