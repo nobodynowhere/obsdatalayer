@@ -25,6 +25,8 @@ const error = ref('')
 const fetchedAt = ref(Date.now())
 const now = ref(Date.now())
 let ticker = null
+let metricsRefreshing = false
+let nextMetricsRefreshAt = 0
 
 const tenantSvc = new TenantService()
 const userSvc = new UserService()
@@ -205,6 +207,7 @@ async function load() {
     settings.value = st
     fetchedAt.value = Date.now()
     now.value = fetchedAt.value
+    nextMetricsRefreshAt = fetchedAt.value + reloadIntervalSeconds.value * 1000
   } catch (e) {
     error.value = e?.response?.data?.error || 'Failed to load gateway state.'
   } finally {
@@ -212,13 +215,33 @@ async function load() {
   }
 }
 
+async function refreshMetrics() {
+  if (metricsRefreshing) return
+  metricsRefreshing = true
+  try {
+    const mx = await metricsSvc.get()
+    const refreshedAt = Date.now()
+    traffic.value = mx
+    fetchedAt.value = refreshedAt
+    now.value = refreshedAt
+    nextMetricsRefreshAt = refreshedAt + reloadIntervalSeconds.value * 1000
+  } catch {
+    nextMetricsRefreshAt = Date.now() + reloadIntervalSeconds.value * 1000
+  } finally {
+    metricsRefreshing = false
+  }
+}
+
 onMounted(() => {
   load()
-  // Advances the displayed config age between refreshes, so a dashboard left
-  // open on a wall keeps counting up while reloads are failing rather than
-  // freezing at whatever it read on load.
+  // Advance the displayed config age between backend checks, then refresh only
+  // metrics on the reload cadence so a long-open dashboard does not report a
+  // stale config after the gateway has successfully reloaded again.
   ticker = window.setInterval(() => {
     now.value = Date.now()
+    if (!loading.value && nextMetricsRefreshAt > 0 && now.value >= nextMetricsRefreshAt) {
+      refreshMetrics()
+    }
   }, 1000)
 })
 
