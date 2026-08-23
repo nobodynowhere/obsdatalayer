@@ -50,7 +50,7 @@ import (
 // at upstream-exact paths. Point the three per-signal variables
 // (OTEL_EXPORTER_OTLP_{TRACES,METRICS,LOGS}_ENDPOINT) at the full URLs instead;
 // the OTLP spec treats those as complete URLs rather than bases.
-func IngestRoutes(mux *http.ServeMux, h *config.ConfigHolder, p *proxy.Proxy, m *metrics.Metrics) {
+func IngestRoutes(mux Registrar, h *config.ConfigHolder, p *proxy.Proxy, m *metrics.Metrics) {
 	// ---- Mimir ----------------------------------------------------------
 	mux.HandleFunc("POST /api/v1/push", func(w http.ResponseWriter, r *http.Request) {
 		forwardMimirPush(w, r, h, p, m, "/api/v1/push", true)

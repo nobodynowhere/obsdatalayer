@@ -308,6 +308,17 @@ func actionForRequest(r *http.Request) string {
 // Casbin matcher compares actions for equality, so only the specific action or
 // the "*" wildcard matches.
 func controlAction(method, path string) string {
+	// The operational routes carry their required action in the same tables that
+	// register them, one per backend in that backend's route file, so this asks
+	// rather than re-deriving it -- including for the handful of endpoints that
+	// predate the actions and are still served at their upstream paths. Knowing
+	// here which Mimir paths dump configuration would put a Mimir fact where
+	// nobody reading mimir.go would find it. An alias that does not exist
+	// resolves to the most restrictive action, not to nothing, so it cannot be
+	// authorized as a plain read on its way to a 404.
+	if action := fanout.OperationalAction(path); action != "" {
+		return action
+	}
 	switch {
 	case isLokiTailPath(path) && method == http.MethodGet:
 		return auth.ActionTail

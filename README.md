@@ -39,6 +39,117 @@ a `tail` policy that disagrees with the `read` policy is refused, because only
 one selector can be sent upstream.
 
 
+### Operational endpoints and their grants
+
+Each backend serves a handful of endpoints beside its data API: liveness, the
+running configuration, the process's own `/metrics`. They are useful to a
+consumer debugging its own pipeline and to an operator checking a fleet, so the
+gateway proxies a named subset of them:
+
+```
+GET {mount}/targets/{instance}/{alias}
+```
+
+for example `GET /loki/targets/loki-ha/ready`. The request asks **every**
+configured target of that instance and answers with all of them, so one replica
+lagging or refusing shows up next to the ones that are fine:
+
+```json
+{
+  "instance": "loki-ha", "backend": "loki", "endpoint": "ready",
+  "targets": [
+    {"rank": 1, "status": 200, "duration_ms": 7, "body": "ready\n"},
+    {"rank": 2, "error": "upstream unavailable"}
+  ]
+}
+```
+
+The same routes are served on the admin listener, which is how the Instances
+page in the admin UI shows them. The admin listener's answer also names each
+target's URL; the data listener's does not, for the same reason `AdminAuth`
+protects the admin `/metrics` — upstream addresses are not a consumer's
+business.
+
+The gateway sends **no** `X-Scope-OrgID` on these routes. None of these
+endpoints is registered inside its backend's tenant middleware, so a tenant
+assertion is a claim the answer does not honour. That is enforced structurally:
+the forwarder calls a header copier that contains no code to set the header.
+
+They are gated by three grants rather than by `read`, graded by what the answer
+contains:
+
+| Action | Covers | Notes |
+| --- | --- | --- |
+| `status` | ready, services, build info, echo, Tempo's status page | facts about the process |
+| `config` | running config, flags, runtime overrides, Loki's log level | `runtime_config` enumerates every tenant and their limits |
+| `metrics` | the raw `/metrics` exposition | **cross-tenant**; see below |
+
+All three are available on all three backends, and all three carry tenant IDs
+like any other data-plane grant. Those tenant IDs decide which *instances* the
+holder may address — an instance dedicated to tenants is visible to those
+tenants' callers, an instance with no tenant configured is visible to any holder
+— and nothing else. An instance the grant does not cover answers 404, the same
+as one that does not exist, so these routes cannot be used to enumerate instance
+names.
+
+`metrics` deserves care. Every backend labels its own metrics by tenant:
+`loki_discarded_bytes_total{tenant=...}`,
+`cortex_distributor_received_samples_total{user=...}`,
+`tempo_distributor_debug_spans_received_total{tenant=...,name=...,service=...}`.
+Granting it to one tenant shows them every other tenant's ingest volume and
+error profile. For that reason it is the one data-plane action the `*` wildcard
+does **not** cover — a broad grant must not confer cross-tenant visibility by
+breadth alone, the same carve-out the `*` backend makes for the admin plane.
+It has to be granted by name.
+
+Each request to a target is counted as
+`gateway_operational_requests_total{instance, target, endpoint, result}`, where
+`endpoint` is the gateway's alias — `ready`, `config` — so the same question
+compares across backends, and `result` is one of:
+
+| `result` | Meaning |
+| --- | --- |
+| `success` | the target answered 2xx |
+| `error` | the target answered, but not 2xx — it is up and it said no |
+| `unreachable` | the target did not answer at all |
+
+Three values rather than two on purpose: a replica refusing connections and a
+replica honestly reporting "not ready" are the same event to a success/failure
+counter, and they call for different action. These are deliberately *not* read
+counters — asking target 2 whether it is ready must never show up as target 1
+failing a read, and it never feeds the read cool-off.
+
+Loki's `/log_level` is registered GET-only. dskit serves POST on the same path
+to change the running log level, and the endpoint table has no way to express a
+method other than GET, so a config grant cannot become a process control.
+
+Two Mimir endpoints that were already proxied moved onto these grants:
+`/prometheus/api/v1/status/config` and `/prometheus/api/v1/status/flags` now
+need `config`. Existing users of those two paths need the grant added. They are
+forwarded operationally as well as gated that way — no tenant header, no read
+counters, no read cool-off. Gating them without moving the forwarding would have
+left a failing configuration dump able to park a healthy replica in the read
+cool-off and degrade query traffic.
+
+Everything a caller observes is carried over: targets are tried in order, a
+transport failure or a 5xx moves on while a 4xx is relayed as the upstream's own
+answer, the last real answer is reported when every target fails, and the
+upstream's response headers arrive intact. The one detectable difference is that
+the body is collected rather than streamed, so it is capped at 1 MiB; a response
+over the cap is refused with a 502 rather than passed through short, because a
+verbatim passthrough has nowhere to say it was truncated and a shortened
+configuration still parses.
+
+Nothing a client uses to decide whether a backend is *usable* moved.
+`/prometheus/ready`, build info on all three mounts
+(`/prometheus/api/v1/status/buildinfo`, `/loki/loki/api/v1/status/buildinfo`,
+`/tempo/api/status/buildinfo`) and Tempo's `/api/echo` all stay on `read`:
+Grafana's data sources call them unprompted — build info for feature detection,
+`/api/echo` for the Tempo health check — so moving them would break every
+existing read-only data source for no gain, since "is it up" is not a
+disclosure. The per-target aliases are how you ask the same question of every
+target rather than of whichever replica answered.
+
 ### MIMIR
 
 Mimir needs to be configured to enable multitenancy, especially for queries. 

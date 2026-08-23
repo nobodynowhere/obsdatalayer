@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,7 +18,16 @@ import (
 	"obsdatalayer/internal/proxy"
 )
 
+// captureTransport records the last upstream request made through it.
+//
+// It is guarded by a mutex because the operational routes fan out to every
+// target concurrently. The fields still hold only the most recent request, so a
+// test that asserts on them should configure a single target; one that needs
+// every request, or that fans out on purpose, should assert on the response
+// document instead. calls reports how many were made.
 type captureTransport struct {
+	mu       sync.Mutex
+	calls    int
 	method   string
 	host     string
 	path     string
@@ -30,6 +40,9 @@ type captureTransport struct {
 func (t *captureTransport) orgID() string { return t.header.Get("X-Scope-OrgID") }
 
 func (t *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.calls++
 	t.method = req.Method
 	t.host = req.URL.Host
 	t.path = req.URL.Path

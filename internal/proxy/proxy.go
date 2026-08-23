@@ -82,6 +82,15 @@ func (p *Proxy) recordRead(instance, target string, ok bool) {
 	}
 }
 
+// recordOperational counts one operational endpoint request, if a sink is
+// attached. Kept beside the read recorders and separate from them: see
+// Metrics.RecordOperational for why these must not share a series with reads.
+func (p *Proxy) recordOperational(instance, target, endpoint, result string) {
+	if m := p.metrics.Load(); m != nil {
+		m.RecordOperational(instance, target, endpoint, result)
+	}
+}
+
 // recordReadFailover counts a read that had to try more than one target.
 func (p *Proxy) recordReadFailover(instance string) {
 	if m := p.metrics.Load(); m != nil {
@@ -149,6 +158,115 @@ func (p *Proxy) ForwardPush(w http.ResponseWriter, r *http.Request, inst *config
 		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	}
 	p.forward(w, r, inst, inst.GetQueryTarget(), upstreamPath, p.PushClient())
+}
+
+// OperationalResponse is one answer collected by FetchOperational.
+//
+// Header is the upstream's full response header. ContentType is pulled out of
+// it for convenience because the fan-out surfaces that one field in JSON, but a
+// caller relaying the answer verbatim -- the endpoints still served at their
+// upstream paths -- must copy Header, or it drops everything the upstream said
+// besides the content type.
+type OperationalResponse struct {
+	StatusCode  int
+	Header      http.Header
+	ContentType string
+	Body        []byte
+	Truncated   bool
+	Duration    time.Duration
+}
+
+// FetchOperational performs one GET against one exact target and returns the
+// answer instead of streaming it to a client. It is the only way the gateway
+// reaches an upstream operational endpoint, and it differs from both
+// ForwardQuery and ForwardPush in three ways that are the whole point of it
+// existing separately:
+//
+//   - It never sends X-Scope-OrgID. These endpoints are not registered behind
+//     their backend's tenant middleware, so a tenant assertion means nothing to
+//     them; sending one anyway would be the gateway asserting a scope that the
+//     answer does not respect. The omission is structural rather than
+//     conditional: this path calls CopyHeadersUntenanted, which has no code to
+//     set the header, so it cannot be reintroduced by a caller passing
+//     different arguments.
+//   - It does not fail over, and records no read health. Asking target 2
+//     whether it is ready must not make the gateway report that target 1 failed
+//     a read, and "target 2 is down" is the answer being asked for rather than
+//     an error to route around.
+//   - It returns the body rather than streaming it, because the caller fans out
+//     to every target and answers with all of them at once. maxBody caps what
+//     is held per target; a body that hits the cap is returned truncated and
+//     says so, rather than being dropped or held whole. Pass 0 for no cap.
+//
+// A transport failure is returned as an error. An upstream that answers is not
+// an error however it answered: a 503 from /ready is a successful observation.
+func (p *Proxy) FetchOperational(ctx context.Context, inst *config.InstanceConfig, target config.PushTarget, endpoint, upstreamPath, rawQuery string, inbound http.Header, maxBody int64) (OperationalResponse, error) {
+	upstreamURL := target.URL + upstreamPath
+	if rawQuery != "" {
+		upstreamURL += "?" + rawQuery
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, target.Timeout(p.DefaultTargetTimeout()))
+	defer cancel()
+	if target.SkipTLSVerify {
+		ctx = WithSkipTLSVerify(ctx)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, upstreamURL, nil)
+	if err != nil {
+		// A malformed target URL is a configuration fault, not an outage, but
+		// the caller still could not see this target, so it counts as one.
+		p.recordOperational(inst.Name, target.URL, endpoint, metrics.OperationalUnreachable)
+		return OperationalResponse{}, err
+	}
+	CopyHeadersUntenanted(req, inbound, target)
+
+	slog.Debug("fetching upstream operational endpoint",
+		"instance", inst.Name, "url", upstreamURL)
+
+	started := time.Now()
+	resp, err := p.ReadClient().Do(req)
+	if err != nil {
+		slog.Debug("upstream operational request failed",
+			"instance", inst.Name, "url", upstreamURL,
+			"duration", time.Since(started), "error", err)
+		p.recordOperational(inst.Name, target.URL, endpoint, metrics.OperationalUnreachable)
+		return OperationalResponse{}, err
+	}
+	defer resp.Body.Close()
+
+	reader := io.Reader(resp.Body)
+	if maxBody > 0 {
+		reader = io.LimitReader(resp.Body, maxBody+1)
+	}
+	body, readErr := io.ReadAll(reader)
+	if readErr != nil {
+		// The status line arrived but the body did not. Nothing usable reached
+		// the caller, so this is the unreachable case rather than a partial
+		// success -- there is no half-answer to report.
+		p.recordOperational(inst.Name, target.URL, endpoint, metrics.OperationalUnreachable)
+		return OperationalResponse{}, readErr
+	}
+	truncated := maxBody > 0 && int64(len(body)) > maxBody
+	if truncated {
+		body = body[:maxBody]
+	}
+
+	out := OperationalResponse{
+		StatusCode:  resp.StatusCode,
+		Header:      resp.Header.Clone(),
+		ContentType: resp.Header.Get("Content-Type"),
+		Body:        body,
+		Truncated:   truncated,
+		Duration:    time.Since(started),
+	}
+	if isNon2XX(resp.StatusCode) {
+		p.recordOperational(inst.Name, target.URL, endpoint, metrics.OperationalError)
+		LogUpstreamNon2XX(inst.Name, http.MethodGet, upstreamURL, resp.StatusCode, out.Duration, "", body, nil)
+		return out, nil
+	}
+	p.recordOperational(inst.Name, target.URL, endpoint, metrics.OperationalSuccess)
+	return out, nil
 }
 
 func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, target config.PushTarget, upstreamPath string, client *http.Client) {
@@ -367,16 +485,21 @@ func (t *tlsSwitchTransport) RoundTrip(req *http.Request) (*http.Response, error
 	return t.base.RoundTrip(req)
 }
 
-// CopyHeadersForUpstream copies relayable inbound headers to the upstream
-// request. Only headers on the forwardable allowlist are copied; everything
-// else -- including Authorization, X-Scope-OrgID, and any header nobody
-// anticipated -- is dropped. X-Scope-OrgID is then injected from the auth context
-// (set by BasicAuth middleware): configured target tenant wins, reads otherwise
-// pipe-join all resolved tenant IDs, and writes otherwise use the single
-// resolved tenant chosen by the fan-out layer. Falls back to target.TenantID
-// when no auth context is present. BasicAuth credentials are injected from
-// target config.
-func CopyHeadersForUpstream(req *http.Request, inbound http.Header, target config.PushTarget) {
+// CopyHeadersUntenanted copies relayable inbound headers to the upstream
+// request and injects the target's own credentials, and does nothing else. It
+// is the tenancy-free half of CopyHeadersForUpstream, which calls it and then
+// adds the X-Scope-OrgID assertion.
+//
+// It exists as its own function so that a request which must carry no tenant
+// assertion is served by code that contains no way to add one. The upstream
+// operational endpoints are the case: they are not registered behind their
+// backend's tenant middleware, so a tenant header is at best ignored and at
+// worst a claim the answer does not honour. Expressing that as "call the
+// untenanted copier" rather than "call the normal copier with empty tenants"
+// means it cannot regress into sending one -- CopyHeadersForUpstream falls back
+// to the target's configured tenant ID when the grant has none, which is
+// exactly the silent reintroduction this avoids.
+func CopyHeadersUntenanted(req *http.Request, inbound http.Header, target config.PushTarget) {
 	for key, vals := range inbound {
 		if forwardableHeaders[key] {
 			req.Header[key] = vals
@@ -389,6 +512,19 @@ func CopyHeadersForUpstream(req *http.Request, inbound http.Header, target confi
 			req.SetBasicAuth(parts[0], parts[1])
 		}
 	}
+}
+
+// CopyHeadersForUpstream copies relayable inbound headers to the upstream
+// request. Only headers on the forwardable allowlist are copied; everything
+// else -- including Authorization, X-Scope-OrgID, and any header nobody
+// anticipated -- is dropped. X-Scope-OrgID is then injected from the auth context
+// (set by BasicAuth middleware): configured target tenant wins, reads otherwise
+// pipe-join all resolved tenant IDs, and writes otherwise use the single
+// resolved tenant chosen by the fan-out layer. Falls back to target.TenantID
+// when no auth context is present. BasicAuth credentials are injected from
+// target config.
+func CopyHeadersForUpstream(req *http.Request, inbound http.Header, target config.PushTarget) {
+	CopyHeadersUntenanted(req, inbound, target)
 
 	// Inject X-Scope-OrgID from the resolved auth context.
 	if ra := auth.FromContext(req.Context()); ra != nil && len(ra.TenantIDs) > 0 {
@@ -464,6 +600,11 @@ func looksLikeTooManyTenants(body []byte) bool {
 func isNon2XX(status int) bool {
 	return status < 200 || status >= 300
 }
+
+// IsTimeout reports whether a failure to reach an upstream was a timeout. It is
+// exported so a caller that collects an error rather than writing a status --
+// FetchOperational's -- can describe it the same way writeTransportError would.
+func IsTimeout(err error) bool { return isTimeoutError(err) }
 
 func isTimeoutError(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) {

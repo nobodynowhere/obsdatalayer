@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 
+	"obsdatalayer/internal/auth"
 	"obsdatalayer/internal/config"
 	"obsdatalayer/internal/metrics"
 	"obsdatalayer/internal/proxy"
@@ -30,9 +31,13 @@ import (
 //   - The deprecated /api/prom query aliases (query, label, series, tail).
 //
 // Ingestion is a separate bundle; see IngestRoutes.
-func LokiDSRoutes(mux *http.ServeMux, mount string, h *config.ConfigHolder, p *proxy.Proxy) {
+func LokiDSRoutes(mux Registrar, mount string, h *config.ConfigHolder, p *proxy.Proxy) {
 	// Ingestion is a separate namespace; POST /loki/api/v1/push is registered
 	// at Loki's exact upstream path by IngestRoutes, not under a mount.
+	// Per-target operational endpoints (ready, config, metrics and friends).
+	// The allowlist and the grant each entry needs live in one table; see
+	// operationalEndpoints in target_status.go.
+	RegisterOperationalRoutes(mux, "loki", h, p, OperationalOptions{})
 
 	// The POST variants are genuine reads: a LogQL selector can outgrow a
 	// practical URL, so Loki accepts these as form posts.
@@ -98,7 +103,7 @@ func LokiDSRoutes(mux *http.ServeMux, mount string, h *config.ConfigHolder, p *p
 // registerLokiRuleRoutes registers the six ruler configuration routes under
 // prefix. Every spelling is normalized onto Loki's canonical upstream path, so
 // the backend sees one form regardless of which alias the client used.
-func registerLokiRuleRoutes(mux *http.ServeMux, prefix string, h *config.ConfigHolder, p *proxy.Proxy) {
+func registerLokiRuleRoutes(mux Registrar, prefix string, h *config.ConfigHolder, p *proxy.Proxy) {
 	registerLokiTenantConfig(mux, "GET "+prefix, h, p, "/loki/api/v1/rules")
 	registerLokiTenantConfig(mux, "GET "+prefix+"/{namespace}", h, p, "/loki/api/v1/rules/{namespace}")
 	registerLokiTenantConfig(mux, "GET "+prefix+"/{namespace}/{groupName}", h, p, "/loki/api/v1/rules/{namespace}/{groupName}")
@@ -123,7 +128,7 @@ func forwardLokiPush(w http.ResponseWriter, r *http.Request, h *config.ConfigHol
 	handlePush(w, r, inst, upstreamPath, rewriteFn, maxBytes, p, m)
 }
 
-func registerLokiQuery(mux *http.ServeMux, pattern string, h *config.ConfigHolder, p *proxy.Proxy, endpoint, upstreamPath string) {
+func registerLokiQuery(mux Registrar, pattern string, h *config.ConfigHolder, p *proxy.Proxy, endpoint, upstreamPath string) {
 	mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 		if inst := getInstance(h, r, w, "loki"); inst != nil {
 			if !applyLokiReadPolicy(w, r, endpoint) {
@@ -182,7 +187,7 @@ func lokiReadEndpoint(upstream string) string {
 	}
 }
 
-func registerLokiTenantConfig(mux *http.ServeMux, pattern string, h *config.ConfigHolder, p *proxy.Proxy, upstreamPath string) {
+func registerLokiTenantConfig(mux Registrar, pattern string, h *config.ConfigHolder, p *proxy.Proxy, upstreamPath string) {
 	mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 		if inst := getInstance(h, r, w, "loki"); inst != nil && requireSingleTenant(w, r) {
 			forwardByMethod(w, r, inst, expandLokiPath(upstreamPath, r), h.Get().Gateway.MaxBodyBytes, p)
@@ -204,3 +209,26 @@ func escapedLokiPathValue(r *http.Request, name string) string {
 	}
 	return url.PathEscape(value)
 }
+
+// lokiOperationalEndpoints is what the /loki mount serves beside Loki's query
+// API. Loki serves these outside its tenant path, so the gateway sends no
+// X-Scope-OrgID on them.
+//
+// log_level is config, and GET only: dskit serves POST on the same path to
+// change the running log level, and RegisterOperationalRoutes registers no
+// method but GET, so a config grant cannot become a process control. Loki's
+// /config masks fields typed flagext.Secret but carries the runtime overrides
+// section, which is why it is config rather than status.
+//
+// No legacy paths move: /loki/loki/api/v1/status/buildinfo stays on read,
+// because Grafana's Loki data source reads it for feature detection.
+var lokiOperationalEndpoints = []OperationalEndpoint{
+	{Alias: "ready", Upstream: "/ready", Action: auth.ActionStatus},
+	{Alias: "services", Upstream: "/services", Action: auth.ActionStatus},
+	{Alias: "buildinfo", Upstream: "/loki/api/v1/status/buildinfo", Action: auth.ActionStatus},
+	{Alias: "config", Upstream: "/config", Action: auth.ActionConfig},
+	{Alias: "log_level", Upstream: "/log_level", Action: auth.ActionConfig},
+	{Alias: "metrics", Upstream: "/metrics", Action: auth.ActionMetrics},
+}
+
+var lokiLegacyOperationalPaths = map[string]string{}

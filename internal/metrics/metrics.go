@@ -42,6 +42,17 @@ type rewriteLabelsKey struct{ backend, instance, operation string }
 type readKey struct{ instance, target, result string }
 type readTargetKey struct{ instance, target string }
 
+// operationalKey labels one request to an upstream operational endpoint --
+// /ready, /config, /metrics and the rest. endpoint is the gateway's short alias
+// rather than the upstream path, because the same question has a different path
+// on each backend and an operator comparing instances wants one series.
+//
+// result has three values rather than the reads' two. "unreachable" and "error"
+// are the distinction the whole feature exists to make: a target that refuses
+// the connection and a target that answers "not ready" look identical in a
+// success/failure counter, and they call for different action.
+type operationalKey struct{ instance, target, endpoint, result string }
+
 const readHistoryLimit = 100
 
 // truncatedKey labels a read whose response body was cut short on its way to
@@ -80,6 +91,11 @@ func (k rewriteLabelsKey) instanceName() string { return k.instance }
 
 func (k readKey) values() []string     { return []string{k.instance, k.target, k.result} }
 func (k readKey) instanceName() string { return k.instance }
+
+func (k operationalKey) values() []string {
+	return []string{k.instance, k.target, k.endpoint, k.result}
+}
+func (k operationalKey) instanceName() string { return k.instance }
 
 func (k truncatedKey) values() []string     { return []string{k.instance, k.target} }
 func (k truncatedKey) instanceName() string { return k.instance }
@@ -168,6 +184,7 @@ type Metrics struct {
 	writeItemsDesc    *prometheus.Desc
 	rewriteLabelsDesc *prometheus.Desc
 	readDesc          *prometheus.Desc
+	operationalDesc   *prometheus.Desc
 	readFailoverDesc  *prometheus.Desc
 	readTruncatedDesc *prometheus.Desc
 	readClientGone    *prometheus.Desc
@@ -183,6 +200,7 @@ type Metrics struct {
 	writeItems    *counterSet[writeItemsKey]
 	rewriteLabels *counterSet[rewriteLabelsKey]
 	reads         *counterSet[readKey]
+	operational   *counterSet[operationalKey]
 	readFailovers *counterSet[partialKey]
 	readTruncated *counterSet[truncatedKey]
 
@@ -255,6 +273,11 @@ func New(reg prometheus.Registerer) *Metrics {
 			"Proxied read attempts, labeled by instance, the upstream target asked, and result (success or failure).",
 			[]string{"instance", "target", "result"}, nil,
 		),
+		operationalDesc: prometheus.NewDesc(
+			"gateway_operational_requests_total",
+			"Requests to an upstream operational endpoint, labeled by instance, the target asked, the endpoint alias, and result (success, error or unreachable).",
+			[]string{"instance", "target", "endpoint", "result"}, nil,
+		),
 		readFailoverDesc: prometheus.NewDesc(
 			"gateway_read_failovers_total",
 			"Reads that moved on to another target after one failed, labeled by instance.",
@@ -315,6 +338,7 @@ func New(reg prometheus.Registerer) *Metrics {
 		writeItems:      newCounterSet[writeItemsKey](),
 		rewriteLabels:   newCounterSet[rewriteLabelsKey](),
 		reads:           newCounterSet[readKey](),
+		operational:     newCounterSet[operationalKey](),
 		readFailovers:   newCounterSet[partialKey](),
 		readTruncated:   newCounterSet[truncatedKey](),
 		readHistory:     make(map[readTargetKey][]string),
@@ -333,6 +357,7 @@ func (m *Metrics) Describe(ch chan<- *prometheus.Desc) {
 	ch <- m.writeItemsDesc
 	ch <- m.rewriteLabelsDesc
 	ch <- m.readDesc
+	ch <- m.operationalDesc
 	ch <- m.readFailoverDesc
 	ch <- m.readTruncatedDesc
 	ch <- m.readClientGone
@@ -349,6 +374,7 @@ func (m *Metrics) Collect(ch chan<- prometheus.Metric) {
 	m.writeItems.collect(ch, m.writeItemsDesc)
 	m.rewriteLabels.collect(ch, m.rewriteLabelsDesc)
 	m.reads.collect(ch, m.readDesc)
+	m.operational.collect(ch, m.operationalDesc)
 	m.readFailovers.collect(ch, m.readFailoverDesc)
 	m.readTruncated.collect(ch, m.readTruncatedDesc)
 	m.readDisconnects.collect(ch, m.readClientGone)
@@ -391,6 +417,34 @@ func (m *Metrics) RecordRead(instance, target string, ok bool) {
 	}
 	m.reads.add(readKey{instance, target, result}, 1)
 	m.recordReadHistory(readTargetKey{instance, target}, result)
+}
+
+// Operational request outcomes.
+const (
+	// OperationalSuccess: the target answered 2xx.
+	OperationalSuccess = "success"
+	// OperationalError: the target answered, but not 2xx. It is up and it said
+	// no -- an ingester still replaying a WAL answers /ready this way.
+	OperationalError = "error"
+	// OperationalUnreachable: the target did not answer at all.
+	OperationalUnreachable = "unreachable"
+)
+
+// RecordOperational counts one request to one target's operational endpoint.
+//
+// Deliberately a counter of its own rather than a read: these requests are not
+// failed over, do not feed the read cool-off, and asking target 2 whether it is
+// ready must never show up as target 1 failing a read. Keeping them apart is
+// what lets an alert say "this replica has been unreachable for five minutes"
+// without competing with query traffic for the same series.
+func (m *Metrics) RecordOperational(instance, target, endpoint, result string) {
+	m.operational.add(operationalKey{instance, target, endpoint, result}, 1)
+}
+
+// OperationalValue returns how many requests for an instance, target, endpoint
+// and result have been counted.
+func (m *Metrics) OperationalValue(instance, target, endpoint, result string) uint64 {
+	return m.operational.value(operationalKey{instance, target, endpoint, result})
 }
 
 // RecordReadFailover counts a read that had to try more than one target.
@@ -564,6 +618,7 @@ func (m *Metrics) RetainInstances(names []string) {
 		m.writeItems.retain(live) +
 		m.rewriteLabels.retain(live) +
 		m.reads.retain(live) +
+		m.operational.retain(live) +
 		m.readFailovers.retain(live) +
 		m.readTruncated.retain(live) +
 		m.readDisconnects.retain(live)

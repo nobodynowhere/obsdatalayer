@@ -39,6 +39,7 @@ func Register(mux *http.ServeMux, d Deps) {
 	// started/finished pair naming the actor.
 	mux.HandleFunc("GET /api/whoami", h.whoami)
 	mux.HandleFunc("GET /api/metrics", h.getMetrics)
+	mux.HandleFunc("GET /api/operational-endpoints", h.getOperationalCatalog)
 
 	mux.HandleFunc("GET /api/instances", h.listInstances)
 	mux.HandleFunc("GET /api/instances/{name}", h.getInstance)

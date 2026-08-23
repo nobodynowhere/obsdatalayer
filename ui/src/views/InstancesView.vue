@@ -16,6 +16,11 @@ const dialog = ref(false)
 const saving = ref(false)
 const editing = ref(null)
 const formError = ref('')
+const statusDialog = ref(false)
+const statusLoading = ref(false)
+const statusResult = ref(null)
+const statusError = ref('')
+const statusRequest = ref(null)
 
 const backends = [
   { label: 'loki', value: 'loki' },
@@ -30,6 +35,19 @@ const filterModes = [
   { label: 'allowlist', value: 'allowlist' },
   { label: 'denylist', value: 'denylist' },
 ]
+// The endpoint catalog is served by the gateway (GET /api/operational-endpoints)
+// rather than restated here, so a button can only ever offer an alias the
+// gateway actually registers, under the grant it actually requires.
+const operationalCatalog = ref({ mounts: {}, endpoints: {} })
+
+// Aliases are snake_case identifiers; the button label is derived rather than
+// carried, so the backend table stays free of presentation.
+const checkLabel = (alias) => {
+  const words = alias.replace(/_/g, ' ')
+  return words.charAt(0).toUpperCase() + words.slice(1)
+}
+
+const maxStatusBodyChars = 100000
 
 const blank = () => ({
   name: '',
@@ -51,6 +69,33 @@ const form = ref(blank())
 const message = (e) => e?.response?.data?.error || e.message || 'Unexpected error'
 const tenantName = (id) => tenants.value.find((t) => t.id === id)?.name ?? id
 const tenantOptions = computed(() => tenants.value.map((t) => ({ label: t.name, value: t.id })))
+const statusTitle = computed(() => {
+  if (!statusRequest.value) return 'Target status'
+  return `${statusRequest.value.instance} — ${statusRequest.value.label}`
+})
+const statusTargets = computed(() => statusResult.value?.targets ?? [])
+
+function severityFor(target) {
+  if (target.error) return 'danger'
+  const status = target.status ?? 0
+  if (status >= 200 && status < 300) return 'success'
+  if (status >= 500 || status === 0) return 'danger'
+  return 'warn'
+}
+
+function statusLabel(target) {
+  if (target.error) return target.error
+  return `${target.status}${target.duration_ms != null ? ` · ${target.duration_ms} ms` : ''}`
+}
+
+// The gateway already caps each body; this second cap is only about what the
+// browser is asked to lay out, since the dialog shows every target at once.
+function bodyFor(target) {
+  const body = String(target.body ?? '')
+  const note = target.truncated ? '\n\n... truncated by the gateway' : ''
+  if (body.length <= maxStatusBodyChars) return body + note
+  return `${body.slice(0, maxStatusBodyChars)}\n\n... truncated in the UI after ${maxStatusBodyChars.toLocaleString()} characters`
+}
 
 // Tempo has no label policy, so the form hides those controls.
 const isTempo = computed(() => form.value.backend === 'tempo')
@@ -58,9 +103,16 @@ const isTempo = computed(() => form.value.backend === 'tempo')
 async function load() {
   loading.value = true
   try {
-    const [i, t] = await Promise.all([svc.list(), tenantSvc.list()])
+    const [i, t, catalog] = await Promise.all([
+      svc.list(),
+      tenantSvc.list(),
+      // A failure here costs the status buttons, not the page, so it does not
+      // take the instance list down with it.
+      svc.operationalCatalog().catch(() => ({ mounts: {}, endpoints: {} })),
+    ])
     instances.value = i
     tenants.value = t
+    operationalCatalog.value = catalog
   } catch (e) {
     toast.add({ severity: 'error', summary: 'Load failed', detail: message(e), life: 6000 })
   } finally {
@@ -173,6 +225,35 @@ function remove(inst) {
   })
 }
 
+function displayTargets(inst) {
+  const targets = inst.push_urls?.length
+    ? inst.push_urls
+    : [{ url: inst.url, skip_tls_verify: inst.skip_tls_verify }]
+  return targets.map((target, index) => ({ ...target, rank: index + 1 }))
+}
+
+function targetChecks(inst) {
+  return operationalCatalog.value.endpoints?.[inst.backend] ?? []
+}
+
+// One request per instance, not per target: the gateway asks every target and
+// answers with all of them, so the dialog can show which replica disagrees.
+async function openTargetStatus(inst, check) {
+  statusDialog.value = true
+  statusLoading.value = true
+  statusResult.value = null
+  statusError.value = ''
+  statusRequest.value = { instance: inst.name, backend: inst.backend, label: checkLabel(check.alias) }
+  try {
+    const mount = operationalCatalog.value.mounts?.[inst.backend]
+    statusResult.value = await svc.targetStatus(mount, inst.name, check.alias)
+  } catch (e) {
+    statusError.value = message(e)
+  } finally {
+    statusLoading.value = false
+  }
+}
+
 const addTarget = () =>
   form.value.push_urls.push({ url: '', basic_auth: '', tenant_id: '', skip_tls_verify: false, timeout_seconds: 0 })
 const removeTarget = (i) => form.value.push_urls.splice(i, 1)
@@ -219,10 +300,28 @@ onMounted(load)
         </PrimeColumn>
         <PrimeColumn header="Targets">
           <template #body="{ data }">
-            <div v-if="data.url" class="mono">{{ data.url }}</div>
-            <div v-if="data.skip_tls_verify" class="stat-card__hint">TLS verification skipped</div>
-            <div v-for="(t, i) in data.push_urls" :key="i" class="mono">
-              {{ t.url }}<span v-if="t.skip_tls_verify" class="stat-card__hint"> TLS verification skipped</span>
+            <div
+              v-for="target in displayTargets(data)"
+              :key="`${data.name}-${target.rank}`"
+              class="instance-target"
+            >
+              <div class="instance-target__url mono" :title="target.url">
+                <span class="target-rank">{{ target.rank }}</span>
+                <span>{{ target.url }}</span>
+              </div>
+              <div v-if="target.skip_tls_verify" class="stat-card__hint">TLS verification skipped</div>
+            </div>
+            <div v-if="targetChecks(data).length" class="instance-target__actions">
+              <PrimeButton
+                v-for="check in targetChecks(data)"
+                :key="check.alias"
+                :label="checkLabel(check.alias)"
+                :title="`Asks every target; needs a ${data.backend}:${check.action} grant on the data plane`"
+                size="small"
+                severity="secondary"
+                outlined
+                @click="openTargetStatus(data, check)"
+              />
             </div>
             <div v-if="data.push_urls?.length" class="stat-card__hint">
               fan-out: {{ data.fan_out_mode }}
@@ -261,6 +360,39 @@ onMounted(load)
       </PrimeDataTable>
     </template>
   </PrimeCard>
+
+  <PrimeDialog
+    v-model:visible="statusDialog"
+    modal
+    :header="statusTitle"
+    :style="{ width: '58rem' }"
+  >
+    <div v-if="statusLoading" class="empty-state">
+      <PrimeProgressSpinner style="width: 2.5rem" />
+    </div>
+    <PrimeMessage v-else-if="statusError" severity="error" :closable="false">
+      {{ statusError }}
+    </PrimeMessage>
+    <template v-else-if="statusResult">
+      <div v-for="target in statusTargets" :key="target.rank" class="target-status">
+        <div class="target-status__meta">
+          <div>
+            <div class="stat-card__label">Target {{ target.rank }}</div>
+            <div class="mono">{{ target.url || '—' }}</div>
+          </div>
+          <div>
+            <div class="stat-card__label">Result</div>
+            <PrimeTag :severity="severityFor(target)" :value="statusLabel(target)" />
+          </div>
+          <div>
+            <div class="stat-card__label">Content type</div>
+            <div class="mono">{{ target.content_type || 'not set' }}</div>
+          </div>
+        </div>
+        <pre v-if="!target.error" class="code-block target-status__body">{{ bodyFor(target) }}</pre>
+      </div>
+    </template>
+  </PrimeDialog>
 
   <PrimeDialog
     v-model:visible="dialog"

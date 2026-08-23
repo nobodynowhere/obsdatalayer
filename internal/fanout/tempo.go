@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"obsdatalayer/internal/auth"
 	"obsdatalayer/internal/config"
 	"obsdatalayer/internal/proxy"
 )
@@ -25,7 +26,10 @@ import (
 //   - Nothing outstanding. Tempo's query surface is covered in full.
 //
 // Ingestion is a separate bundle; see IngestRoutes.
-func TempoDSRoutes(mux *http.ServeMux, mount string, h *config.ConfigHolder, p *proxy.Proxy) {
+func TempoDSRoutes(mux Registrar, mount string, h *config.ConfigHolder, p *proxy.Proxy) {
+	// Per-target operational endpoints; see operationalEndpoints.
+	RegisterOperationalRoutes(mux, "tempo", h, p, OperationalOptions{})
+
 	read := func(upstream string) {
 		mux.HandleFunc("GET "+mount+upstream, func(w http.ResponseWriter, r *http.Request) {
 			if inst := getInstance(h, r, w, "tempo"); inst != nil {
@@ -60,3 +64,22 @@ func expandTempoPath(path string, r *http.Request) string {
 	path = strings.ReplaceAll(path, "{name}", escapedLokiPathValue(r, "name"))
 	return path
 }
+
+// tempoOperationalEndpoints is what the /tempo mount serves beside Tempo's
+// query API. Tempo registers these with bare handlers while its query routes go
+// through base.Wrap(...), which is where its tenant middleware lives, so these
+// are untenanted upstream and the gateway sends no X-Scope-OrgID.
+//
+// No legacy paths move: /tempo/api/echo stays on read, because it is what
+// Grafana's Tempo data source uses for its health check.
+var tempoOperationalEndpoints = []OperationalEndpoint{
+	{Alias: "ready", Upstream: "/ready", Action: auth.ActionStatus},
+	{Alias: "status", Upstream: "/status", Action: auth.ActionStatus},
+	{Alias: "buildinfo", Upstream: "/api/status/buildinfo", Action: auth.ActionStatus},
+	{Alias: "echo", Upstream: "/api/echo", Action: auth.ActionStatus},
+	{Alias: "config", Upstream: "/status/config", Action: auth.ActionConfig},
+	{Alias: "runtime_config", Upstream: "/status/runtime_config", Action: auth.ActionConfig},
+	{Alias: "metrics", Upstream: "/metrics", Action: auth.ActionMetrics},
+}
+
+var tempoLegacyOperationalPaths = map[string]string{}

@@ -31,9 +31,16 @@ import (
 // where object is a backend name ("loki"/"mimir"/"tempo"), "*", or the
 // admin-plane object "admin"; and tenants is a "|"-joined tenant ID list.
 //
-// The matcher's wildcard clause excludes the admin object on purpose: a grant
-// of ("*", "*") covers every backend but never the admin plane, which must be
-// granted explicitly as ("admin", "access").
+// The matcher's wildcard clauses carry two deliberate carve-outs, and both are
+// mirrored by objectMatches and actionMatches in auth.go -- the two must agree
+// or the answer depends on which path a caller took.
+//
+//   - The object wildcard excludes the admin object: a grant of ("*", "*")
+//     covers every backend but never the admin plane, which must be granted
+//     explicitly as ("admin", "access").
+//   - The action wildcard excludes "metrics", the one data-plane action
+//     that shows a caller other tenants' data. A broad grant must not confer
+//     cross-tenant visibility by breadth alone; it has to be asked for by name.
 const modelText = `
 [request_definition]
 r = sub, obj, act
@@ -48,7 +55,7 @@ g = _, _
 e = some(where (p.eft == allow))
 
 [matchers]
-m = g(r.sub, p.sub) && (r.obj == p.obj || (p.obj == "*" && r.obj != "admin")) && (p.act == "*" || r.act == p.act)
+m = g(r.sub, p.sub) && (r.obj == p.obj || (p.obj == "*" && r.obj != "admin")) && (r.act == p.act || (p.act == "*" && r.act != "metrics"))
 `
 
 // Casbin keeps every subject in one flat namespace, so a user and a role

@@ -239,7 +239,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("tls config: %v", err)
 	}
-	adminSrv := &http.Server{Addr: adminAddr, Handler: adminHandler(gormDB, holder, authSvc, tenants, m, reload, cipher, guards.admin), TLSConfig: adminTLSConfig}
+	adminSrv := &http.Server{Addr: adminAddr, Handler: adminHandler(gormDB, holder, authSvc, tenants, m, reload, cipher, p, guards.admin), TLSConfig: adminTLSConfig}
 	dataSrv := &http.Server{Addr: bootstrap.DataAddr(), Handler: dataHandler(holder, authSvc, p, m, guards.data), TLSConfig: dataTLSConfig}
 
 	// A listener that dies on its own (port already bound, for example) has to
@@ -727,7 +727,7 @@ func instanceNames(instances []*config.InstanceConfig) []string {
 // ---- listeners --------------------------------------------------------------
 
 // adminHandler builds the admin listener's handler.
-func adminHandler(gormDB *gorm.DB, holder *config.ConfigHolder, authSvc *auth.Service, tenants *tenant.Store, m *metrics.Metrics, reload *reloader, cipher *secret.Cipher, guard *middleware.AuthGuard) http.Handler {
+func adminHandler(gormDB *gorm.DB, holder *config.ConfigHolder, authSvc *auth.Service, tenants *tenant.Store, m *metrics.Metrics, reload *reloader, cipher *secret.Cipher, p fanout.OperationalFetcher, guard *middleware.AuthGuard) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -762,6 +762,15 @@ func adminHandler(gormDB *gorm.DB, holder *config.ConfigHolder, authSvc *auth.Se
 		})
 		_, _ = w.Write(msg)
 	})
+
+	// The operational routes are mounted on the admin listener too, at the same
+	// paths as on the data listener, so the SPA can call them same-origin. They
+	// come from the same table the data plane registers from -- there is no
+	// second list here to fall out of step with it -- and differ only in
+	// revealing each target's upstream URL, which an admin is already shown.
+	for backend := range fanout.BackendMounts {
+		fanout.RegisterOperationalRoutes(mux, backend, holder, p, fanout.OperationalOptions{AdminPlane: true})
+	}
 
 	adminapi.Register(mux, adminapi.Deps{
 		Auth:    authSvc,
@@ -824,9 +833,14 @@ func dataHandler(holder *config.ConfigHolder, authSvc *auth.Service, p *proxy.Pr
 	// data source. Each bundle's doc comment records the base URL it answers
 	// and the gaps it knowingly leaves. See internal/fanout/doc.go.
 	fanout.IngestRoutes(mux, holder, p, m)
-	fanout.MimirDSRoutes(mux, "/prometheus", holder, p)
-	fanout.LokiDSRoutes(mux, "/loki", holder, p)
-	fanout.TempoDSRoutes(mux, "/tempo", holder, p)
+	// Mounts come from fanout.BackendMounts so the data listener, the admin
+	// listener and the authorization middleware cannot disagree about where a
+	// backend answers. The Alertmanager mount keeps its literal: it is a URL
+	// shape onto Mimir instances rather than a backend, and is deliberately not
+	// in that map.
+	fanout.MimirDSRoutes(mux, fanout.BackendMounts["mimir"], holder, p)
+	fanout.LokiDSRoutes(mux, fanout.BackendMounts["loki"], holder, p)
+	fanout.TempoDSRoutes(mux, fanout.BackendMounts["tempo"], holder, p)
 	fanout.AlertmanagerDSRoutes(mux, "/alertmanager", holder, p)
 
 	// Order matters: BasicAuth consumes Authorization, then SanitizeHeaders

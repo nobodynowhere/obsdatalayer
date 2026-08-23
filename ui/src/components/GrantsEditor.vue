@@ -16,8 +16,11 @@ const backends = [
   { label: 'Admin plane', value: 'admin' },
 ]
 
+// The wildcard covers every action except metrics, which is excluded from
+// it server-side because the raw exposition carries every tenant's series. Its
+// label says so, so a "* covers everything" reading cannot survive the dropdown.
 const dataActions = [
-  { label: 'read + write (*)', value: '*' },
+  { label: 'everything except metrics (*)', value: '*' },
   { label: 'read', value: 'read' },
   { label: 'write', value: 'write' },
 ]
@@ -29,14 +32,21 @@ const controlActionLabels = {
   'alerts:write': { label: 'alerts write', value: 'alerts:write' },
   tail: { label: 'tail', value: 'tail' },
   delete: { label: 'delete', value: 'delete' },
+  status: { label: 'status', value: 'status' },
+  config: { label: 'config', value: 'config' },
+  metrics: { label: 'metrics (cross-tenant)', value: 'metrics' },
 }
 
 // Which control actions each backend actually exposes. Mirrors
 // controlActionBackends in internal/auth: Mimir runs a ruler and an
-// alertmanager, Loki runs a ruler, live tail, and log deletion. Tempo has none of them.
+// alertmanager, Loki runs a ruler, live tail, and log deletion. Tempo has none
+// of those, but all three serve the operational endpoints, so all three carry
+// the status, config and metrics actions.
+const operationalActions = ['status', 'config', 'metrics']
 const controlActionsByBackend = {
-  mimir: ['rules:read', 'rules:write', 'alerts:read', 'alerts:write'],
-  loki: ['rules:read', 'rules:write', 'alerts:read', 'tail', 'delete'],
+  mimir: ['rules:read', 'rules:write', 'alerts:read', 'alerts:write', ...operationalActions],
+  loki: ['rules:read', 'rules:write', 'alerts:read', 'tail', 'delete', ...operationalActions],
+  tempo: [...operationalActions],
 }
 
 const tenantOptions = computed(() =>

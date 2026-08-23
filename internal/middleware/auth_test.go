@@ -237,15 +237,24 @@ func TestBasicAuthPrometheusPostQueryIsRead(t *testing.T) {
 }
 
 func TestBasicAuthRootPrometheusPathUsesMimirBackend(t *testing.T) {
-	for _, path := range []string{
-		"/prometheus/api/v1/status/buildinfo",
-		"/prometheus/ready",
-		"/ready",
+	// The health-check endpoints stayed on read when the operational actions
+	// were introduced: they are what a client calls to decide whether a backend
+	// is usable, Grafana's data sources included, and "is it up" is not a
+	// disclosure. /ready is the gateway's own probe, served before
+	// authorization.
+	for _, tc := range []struct {
+		path  string
+		grant string
+	}{
+		{path: "/prometheus/api/v1/status/buildinfo", grant: "mimir:read"},
+		{path: "/prometheus/ready", grant: "mimir:read"},
+		{path: "/ready", grant: "mimir:read"},
 	} {
+		path := tc.path
 		t.Run(path, func(t *testing.T) {
 			inner, called := newHandlerCalledFlag()
 			stub := authtest.New()
-			stub.Allow = map[string]bool{"mimir:read": true}
+			stub.Allow = map[string]bool{tc.grant: true}
 			h := middleware.BasicAuth(stub, nil, inner)
 
 			req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -261,6 +270,76 @@ func TestBasicAuthRootPrometheusPathUsesMimirBackend(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestOperationalPathsResolveToTheirAction pins the classification the
+// operational routes get, including the two that are easy to get wrong:
+// runtime_config is config rather than status, and an alias that does not exist
+// resolves to the most restrictive action rather than falling back to read.
+func TestOperationalPathsResolveToTheirAction(t *testing.T) {
+	for _, tc := range []struct {
+		path   string
+		action string
+	}{
+		{"/loki/targets/loki-prod/ready", "status"},
+		{"/loki/targets/loki-prod/buildinfo", "status"},
+		{"/loki/targets/loki-prod/config", "config"},
+		{"/loki/targets/loki-prod/log_level", "config"},
+		{"/loki/targets/loki-prod/metrics", "metrics"},
+		{"/prometheus/targets/mimir-prod/runtime_config", "config"},
+		{"/prometheus/targets/mimir-prod/flags", "config"},
+		{"/tempo/targets/tempo-prod/status", "status"},
+		{"/tempo/targets/tempo-prod/runtime_config", "config"},
+		// Not a real alias. It must not be authorized as a plain read on its
+		// way to the 404.
+		{"/loki/targets/loki-prod/pprof", "metrics"},
+		// The Alertmanager mount registers no operational routes, on purpose.
+		// If one were ever added there, or on any other mount, the shape alone
+		// must keep it off a plain read grant -- the classification must not
+		// depend on someone having remembered to add the mount to DSMounts.
+		{"/alertmanager/targets/mimir-prod/ready", "metrics"},
+		{"/alertmanager/targets/mimir-prod/configs", "metrics"},
+		// The two Mimir config dumps that predate the actions and moved onto
+		// them.
+		{"/prometheus/api/v1/status/config", "config"},
+		{"/prometheus/api/v1/status/flags", "config"},
+		// The health checks stay on read: clients call them to decide whether a
+		// backend is usable, and Grafana's data sources call them unprompted.
+		{"/prometheus/ready", "read"},
+		{"/prometheus/api/v1/status/buildinfo", "read"},
+		{"/loki/loki/api/v1/status/buildinfo", "read"},
+		{"/tempo/api/status/buildinfo", "read"},
+		{"/tempo/api/echo", "read"},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			var captured string
+			inner := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+			stub := authtest.New()
+			stub.Allow = nil // allow everything; this test is about classification
+			recording := &actionRecorder{Stub: stub, seen: &captured}
+			h := middleware.BasicAuth(recording, nil, inner)
+
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			req.Header.Set("Authorization", stub.Header())
+			h.ServeHTTP(httptest.NewRecorder(), req)
+
+			if captured != tc.action {
+				t.Fatalf("%s resolved to action %q, want %q", tc.path, captured, tc.action)
+			}
+		})
+	}
+}
+
+// actionRecorder wraps a stub authorizer to capture the action the middleware
+// asked about.
+type actionRecorder struct {
+	*authtest.Stub
+	seen *string
+}
+
+func (a *actionRecorder) AccessDecision(name, backend, action string) auth.AccessDecision {
+	*a.seen = action
+	return a.Stub.AccessDecision(name, backend, action)
 }
 
 func TestBasicAuthMimirRulesAndAlertsUseDiscreteActions(t *testing.T) {

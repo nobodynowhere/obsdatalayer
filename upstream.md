@@ -25,9 +25,35 @@ concerns separately:
   mirrors these paths exactly.
 - **Data source** — Grafana is configured with a *base* URL and appends paths of
   its own choosing. The gateway controls only the base.
-- **Operational** — cluster and process control. These are **not** tenant-scoped
-  and must not be proxied to tenants; they are listed so it is clear they were
-  considered and excluded, not overlooked.
+- **Operational** — cluster and process control. These are **not** tenant-scoped:
+  a backend serves them outside its tenant middleware, so `X-Scope-OrgID` means
+  nothing to them and the gateway sends none. A named subset is proxied under
+  the `status`, `config` and `metrics` grants; the rest is listed
+  so it is clear it was considered and excluded, not overlooked.
+
+  The subset is addressed as `{mount}/targets/{instance}/{alias}`, which asks
+  **every** configured target and answers with all of them, so an operator can
+  see which replica of an instance disagrees with the others. It is served
+  identically on the data listener and the admin listener; the admin listener's
+  answer additionally names each target's URL.
+
+  Because these endpoints answer for the cluster rather than for a tenant, they
+  are not reachable on a `read` grant, and the three actions are graded by what
+  the answer contains rather than by what the endpoint is called:
+
+  | Action | Covers | Why separate |
+  | --- | --- | --- |
+  | `status` | liveness, module state, build info, echo | facts about the process |
+  | `config` | running config, flags, runtime overrides | `runtime_config` is keyed by tenant ID, so it enumerates the cluster's tenants and their limits |
+  | `metrics` | the raw `/metrics` exposition | per-tenant data in one document; **excluded from the `*` action wildcard** and grantable only by name |
+
+  `metrics` is the one to be careful with. Every backend labels its own
+  metrics by tenant — Loki's `loki_discarded_bytes_total` carries `tenant`,
+  Mimir's `cortex_distributor_received_samples_total` carries `user`, and
+  Tempo's `tempo_distributor_debug_spans_received_total` carries `tenant`,
+  `name` and `service` together — so granting it to one tenant shows them every
+  other tenant's ingest volume, error profile, and in Tempo's case a partial map
+  of their services. Treat it as an operator grant.
 
 Two configurable prefixes appear throughout:
 
@@ -108,11 +134,104 @@ multi-tenant `rules:read` grant is meaningful for Mimir and not for Loki.
 
 The configuration API is at the **root**, not under `/prometheus`.
 
+Mimir's `RegisterAlertmanager` mounts the whole Alertmanager beneath
+`-http.alertmanager-http-prefix` with one `RegisterRoutesWithPrefix(..., auth:
+true, ...)`, which is why the v2 paths appear in no route table of its own and
+why they sit behind the tenant middleware. Build info is the exception,
+registered explicitly with `auth: false` ahead of the prefix handler.
+
+What Grafana requests is transcribed from the `endpoints` map in
+`pkg/services/ngalert/api/lotex_am.go`:
+
+| Endpoint | Methods | `mimir` and `cortex` | `prometheus` |
+| --- | --- | --- | --- |
+| silences | GET, POST | `/alertmanager/api/v2/silences` | `/api/v2/silences` |
+| silence | GET, DELETE | `/alertmanager/api/v2/silence/{id}` | `/api/v2/silence/{id}` |
+| status | GET | `/alertmanager/api/v2/status` | `/api/v2/status` |
+| groups | GET | `/alertmanager/api/v2/alerts/groups` | `/api/v2/alerts/groups` |
+| alerts | GET, POST | `/alertmanager/api/v2/alerts` | `/api/v2/alerts` |
+| config | GET, POST, DELETE | `/api/v1/alerts` | — |
+
+The `cortex` and `mimir` entries are identical path for path, and `cortex` is
+the default when a data source names no implementation, so one route set covers
+Mimir, Cortex and unset alike.
+
+Two things do **not** come from that map:
+
+- **Feature discovery.** Before testing the data source Grafana calls
+  `discoverAlertmanagerFeaturesByUrl`, which calls `fetchPromBuildInfo` — a
+  helper shared with the Prometheus data source that appends
+  `/api/v1/status/buildinfo` to the base URL **without** the `/alertmanager`
+  prefix. So the gateway path is undoubled while the upstream path is prefixed.
+  A 404 here is read as "Cortex, which has no buildinfo endpoint", which clears
+  `lazyConfigInit` and makes Grafana report a *failed* health check for a Mimir
+  Alertmanager that merely has no configuration for the tenant yet.
+- **The `prometheus` implementation is deliberately not served**, and not only
+  because Mimir does not answer that shape. Grafana's `testDatasource` probes
+  `{url}/api/v2/status` **first** for a Mimir or Cortex data source and treats a
+  200 as proof of misconfiguration ("detected a Prometheus endpoint"). The two
+  shapes are mutually exclusive on one base URL by Grafana's own design, so this
+  mount's 404 for `/api/v2/status` is load-bearing.
+
+The gateway serves this as a fourth data source mount, whose job is to map
+Grafana's Alertmanager data source patterns onto Mimir. It is a URL shape rather
+than a system: the instances behind it are Mimir instances, so it registers no
+`targets/{instance}/{alias}` routes of its own — those would reach the same
+targets, and return the same answers, as the ones under `/prometheus`.
+
+Mimir's Alertmanager-specific operational endpoints are the
+`/multitenant_alertmanager/*` family, and they are **not proxied at any grant**.
+`/multitenant_alertmanager/configs` is registered `auth=false`, and its handler
+lists every tenant in the store and streams each one's full Alertmanager
+configuration — which is where receiver credentials live: Slack webhook URLs,
+PagerDuty routing keys, SMTP passwords. That is a larger disclosure than the raw
+`/metrics` the `metrics` action gates, with no consumer-facing use to weigh
+against it. `/multitenant_alertmanager/{status,ring}` are ring topology and
+tenant enumeration and are excluded with it.
+
+### Operational — proxied under the operational grants
+
+Mimir registers each of these with `auth=false`, which is what decides whether
+its tenant middleware wraps the handler, so none of them reads `X-Scope-OrgID`
+and the gateway sends none.
+
+| Alias | Upstream | Action |
+| --- | --- | --- |
+| `ready` | `/ready` | `status` |
+| `services` | `/services` | `status` |
+| `buildinfo` | `/api/v1/status/buildinfo` | `status` |
+| `config` | `/config` | `config` |
+| `status_config` | `/api/v1/status/config` | `config` |
+| `flags` | `/api/v1/status/flags` | `config` |
+| `runtime_config` | `/runtime_config` | `config` |
+| `metrics` | `/metrics` | `metrics` |
+
+Mimir's own index page describes `/runtime_config` as "Entire runtime config
+(including overrides)" — the per-tenant limits map — which is why it is
+`config` and not `status`.
+
+Three of these are **also** still served at their Mimir paths under the
+`/prometheus` mount, from before the operational grants existed. Only the two
+configuration dumps moved: `/prometheus/api/v1/status/{config,flags}` now
+require `config`, **and are forwarded operationally** — no tenant header, no
+read counters, and no entry in the read cool-off, so a failing configuration
+dump cannot park a healthy replica and degrade query traffic.
+
+Their observable behaviour is unchanged: same passthrough response, same
+response headers, and the same retry rule (a transport failure or a 5xx moves on
+to the next target, a 4xx is relayed). The one difference is that the body is
+collected rather than streamed and therefore capped at 1 MiB, with an oversize
+response refused rather than truncated.
+
+`/prometheus/ready` and `/prometheus/api/v1/status/buildinfo` stay on `read` and
+stay ordinary reads — they are what a client calls to decide whether the backend
+is usable, and Grafana's Prometheus data source reads build info itself for
+feature detection, so reclassifying either would break every existing read-only
+data source.
+
 ### Operational — not proxied
 
-`GET /`, `/config`, `/runtime_config`, `/services`, `/ready`, `/metrics`,
-`/memberlist`, `/debug/pprof/*`, `/debug/fgprof`,
-`/api/v1/status/config`, `/api/v1/status/flags`, `/api/v1/status/buildinfo`,
+`GET /`, `/memberlist`, `/debug/pprof/*`, `/debug/fgprof`,
 `/api/v1/user_limits`, `/api/v1/user_stats`,
 `/distributor/{ring,ha_tracker,all_user_stats}`,
 `/ingester/*` (flush, shutdown, downscale, ring, tenants, tsdb),
@@ -206,12 +325,34 @@ DEFECTS.md.
 `POST /api/prom/push`, `GET /api/prom/tail`, `GET /api/prom/query`,
 `GET /api/prom/label`, `GET /api/prom/label/{name}/values`, `GET /api/prom/series`.
 
+### Operational — proxied under the operational grants
+
+| Alias | Upstream | Action |
+| --- | --- | --- |
+| `ready` | `/ready` | `status` |
+| `services` | `/services` | `status` |
+| `buildinfo` | `/loki/api/v1/status/buildinfo` | `status` |
+| `config` | `/config` | `config` |
+| `log_level` | `/log_level` | `config` |
+| `metrics` | `/metrics` | `metrics` |
+
+`log_level` is **GET only**. dskit serves POST on the same path to change the
+running log level, and the registration table has no way to ask for a method
+other than GET, so a config grant cannot become a process control.
+
+Loki's `/config` masks fields typed `flagext.Secret` (rendering them
+`********`) but not adjacent plain-string fields such as `access_key_id`, and it
+carries the runtime overrides section, so it is `config`.
+
+`/loki/api/v1/status/buildinfo` also remains reachable at its Loki path under
+the `/loki` mount on a plain `read` grant, because Grafana's Loki data source
+reads it for feature detection.
+
 ### Operational — not proxied
 
-`GET /ready`, `/log_level` (GET, POST), `/metrics`, `/config`, `/services`,
 `/distributor/ring`, `/indexgateway/ring`, `/ruler/ring`, `/compactor/ring`,
 `POST /flush`, `/ingester/prepare_shutdown` (GET, POST, DELETE),
-`/ingester/shutdown` (GET, POST).
+`/ingester/shutdown` (GET, POST), `POST /log_level`.
 
 ### Multi-tenancy
 
@@ -269,10 +410,29 @@ Served by the query-frontend.
 | --- | --- |
 | GET, POST, PATCH, DELETE | `/api/overrides` |
 
+### Operational — proxied under the operational grants
+
+| Alias | Upstream | Action |
+| --- | --- | --- |
+| `ready` | `/ready` | `status` |
+| `status` | `/status` | `status` |
+| `buildinfo` | `/api/status/buildinfo` | `status` |
+| `echo` | `/api/echo` | `status` |
+| `config` | `/status/config` | `config` |
+| `runtime_config` | `/status/runtime_config` | `config` |
+| `metrics` | `/metrics` | `metrics` |
+
+Tempo registers `/api/echo` with a bare handler while its query routes go
+through `base.Wrap(...)`, which is where the tenant middleware lives — so echo,
+like the rest of this table, is untenanted upstream.
+
+`/api/echo` also remains reachable at its Tempo path under the `/tempo` mount on
+a plain `read` grant, because it is what Grafana's Tempo data source uses for
+its health check.
+
 ### Operational — not proxied
 
-`GET /ready`, `/metrics`, `/debug/pprof`, `/status`,
-`/status/backendscheduler`, `/usage_metrics`, `/memberlist`,
+`GET /debug/pprof`, `/status/backendscheduler`, `/usage_metrics`, `/memberlist`,
 `/distributor/ring`, `/live-store/ring`, `/partition-ring`,
 `/live-store/prepare-partition-downscale` (GET, POST, DELETE),
 `/live-store/prepare-downscale` (GET, POST, DELETE).

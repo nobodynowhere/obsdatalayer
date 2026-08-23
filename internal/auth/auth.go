@@ -44,7 +44,50 @@ const (
 	// deletions without being able to make one is not a distinction anyone
 	// needs. The grant is the action plus the single tenant it applies to.
 	ActionDelete = "delete"
-	ActionAny    = "*"
+	// ActionStatus, ActionConfig and ActionMetrics cover the operational
+	// endpoints each backend serves beside its data APIs: liveness and build
+	// information, the running configuration, and the process's own Prometheus
+	// exposition.
+	//
+	// They carry no read/write suffix, unlike rules:read and alerts:read,
+	// because there is no write half to distinguish them from: the gateway
+	// registers these endpoints GET-only and has no table entry capable of
+	// asking for another method.
+	//
+	// They are separate from ActionRead for two reasons, and neither is
+	// squeamishness about a "diagnostic" endpoint.
+	//
+	// The first is that these endpoints are not tenant-scoped upstream. Mimir
+	// registers each of them with auth=false, which is what decides whether its
+	// tenant middleware wraps the handler at all, and Loki and Tempo serve
+	// theirs outside the tenant path in the same way. A read grant is a
+	// statement about a tenant's data; there is no tenant here for it to be a
+	// statement about, so the gateway sends no X-Scope-OrgID (see
+	// CopyHeadersUntenanted) and the grant's tenant IDs decide only which
+	// instances the caller may address.
+	//
+	// The second is that they are not equally sensitive, which is why there are
+	// three of them rather than one:
+	//
+	//   - status is process liveness and build metadata. Harmless.
+	//   - config is the running configuration, including the runtime overrides
+	//     file -- which is a map keyed by tenant ID, so it enumerates every
+	//     tenant on the cluster and their limits.
+	//   - metrics is the raw /metrics exposition. It is per-tenant data
+	//     flattened into one document: loki_discarded_bytes_total carries a
+	//     "tenant" label, cortex_distributor_received_samples_total carries
+	//     "user", and tempo_distributor_debug_spans_received_total carries
+	//     "tenant", "name" and "service" together. Granting it to one tenant
+	//     shows them every other tenant's ingest volume and error profile.
+	//
+	// ActionMetrics is therefore excluded from the "*" action wildcard, the
+	// same carve-out and for the same reason as ObjectAdmin on the object
+	// wildcard: no grant should confer cross-tenant visibility by breadth
+	// alone. It has to be asked for by name.
+	ActionStatus  = "status"
+	ActionConfig  = "config"
+	ActionMetrics = "metrics"
+	ActionAny     = "*"
 
 	// ObjectAdmin / ActionAccess gate the admin listener.
 	ObjectAdmin  = "admin"
@@ -69,6 +112,9 @@ var (
 		ActionAlertsWrite: true,
 		ActionTail:        true,
 		ActionDelete:      true,
+		ActionStatus:      true,
+		ActionConfig:      true,
+		ActionMetrics:     true,
 		ActionAny:         true,
 	}
 )
@@ -111,7 +157,7 @@ func (g Grant) Validate() error {
 		return fmt.Errorf("unknown backend %q (must be loki, mimir, tempo, admin or *)", g.Backend)
 	}
 	if !validActions[g.Action] {
-		return fmt.Errorf("unknown action %q (must be read, write, rules:read, rules:write, alerts:read, alerts:write, tail, delete or *)", g.Action)
+		return fmt.Errorf("unknown action %q (must be read, write, rules:read, rules:write, alerts:read, alerts:write, tail, delete, status, config, metrics or *)", g.Action)
 	}
 	if g.Action == ActionTail && g.Backend != "loki" {
 		return fmt.Errorf("action %q is only supported on the loki backend, got %q", g.Action, g.Backend)
@@ -119,7 +165,7 @@ func (g Grant) Validate() error {
 	if IsControlAction(g.Action) {
 		supported, ok := controlActionBackends[g.Backend]
 		if !ok {
-			return fmt.Errorf("action %q is only supported on the mimir and loki backends, got %q", g.Action, g.Backend)
+			return fmt.Errorf("action %q is not supported on backend %q", g.Action, g.Backend)
 		}
 		if !supported[g.Action] {
 			return fmt.Errorf("action %q is not supported on the %s backend: %s", g.Action, g.Backend, controlActionGaps[g.Backend])
@@ -249,15 +295,26 @@ func objectMatches(policyObj, requested string) bool {
 	return policyObj == BackendAny && requested != ObjectAdmin
 }
 
+// actionMatches reports whether a policy action covers the requested action.
+// The "*" wildcard deliberately excludes ActionMetrics, which is the only
+// data-plane action that shows a caller other tenants' data; it mirrors the
+// admin carve-out in objectMatches and must stay in step with the Casbin
+// matcher in service.go, which encodes the same rule.
 func actionMatches(policyAct, requested string) bool {
-	return policyAct == ActionAny || policyAct == requested
+	if policyAct == requested {
+		return true
+	}
+	return policyAct == ActionAny && requested != ActionMetrics
 }
 
 func ActionIsRead(action string) bool {
 	return action == ActionRead ||
 		action == ActionRulesRead ||
 		action == ActionAlertsRead ||
-		action == ActionTail
+		action == ActionTail ||
+		action == ActionStatus ||
+		action == ActionConfig ||
+		action == ActionMetrics
 }
 
 func ActionIsWrite(action string) bool {
@@ -288,7 +345,10 @@ func IsControlAction(action string) bool {
 		action == ActionAlertsRead ||
 		action == ActionAlertsWrite ||
 		action == ActionTail ||
-		action == ActionDelete
+		action == ActionDelete ||
+		action == ActionStatus ||
+		action == ActionConfig ||
+		action == ActionMetrics
 }
 
 // controlActionBackends records which control actions each backend actually
@@ -304,6 +364,9 @@ var controlActionBackends = map[string]map[string]bool{
 		ActionRulesWrite:  true,
 		ActionAlertsRead:  true,
 		ActionAlertsWrite: true,
+		ActionStatus:      true,
+		ActionConfig:      true,
+		ActionMetrics:     true,
 	},
 	"loki": {
 		ActionRulesRead:  true,
@@ -313,7 +376,17 @@ var controlActionBackends = map[string]map[string]bool{
 		// Loki's log deletion API: request, list and cancel deletions of log
 		// lines matching a selector and time range. Separate from write so a
 		// log shipper cannot delete what it ships.
-		ActionDelete: true,
+		ActionDelete:  true,
+		ActionStatus:  true,
+		ActionConfig:  true,
+		ActionMetrics: true,
+	},
+	// Tempo has none of the discrete data APIs, but it serves the same three
+	// operational surfaces as the other two, so it is no longer absent here.
+	"tempo": {
+		ActionStatus:  true,
+		ActionConfig:  true,
+		ActionMetrics: true,
 	},
 }
 
@@ -321,7 +394,8 @@ var controlActionBackends = map[string]map[string]bool{
 // does not support the one being requested, so the API error says more than
 // "not supported".
 var controlActionGaps = map[string]string{
-	"loki": "Loki has a ruler but no alertmanager, so it exposes no alert configuration to write",
+	"loki":  "Loki has a ruler but no alertmanager, so it exposes no alert configuration to write",
+	"tempo": "Tempo has no ruler, alertmanager, live tail or deletion API; it supports only status, config and metrics",
 }
 
 // mergeTenants returns the sorted, deduplicated union of ids.
