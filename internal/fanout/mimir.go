@@ -66,8 +66,8 @@ func MimirDSRoutes(mux Registrar, mount string, h *config.ConfigHolder, p *proxy
 	registerMimirRead(mux, "POST "+mount+"/api/v1/cardinality/label_names", h, p, "cardinality", "/prometheus/api/v1/cardinality/label_names")
 	registerMimirRead(mux, "GET "+mount+"/api/v1/cardinality/label_values", h, p, "cardinality", "/prometheus/api/v1/cardinality/label_values")
 	registerMimirRead(mux, "POST "+mount+"/api/v1/cardinality/label_values", h, p, "cardinality", "/prometheus/api/v1/cardinality/label_values")
-	registerMimirRead(mux, "GET "+mount+"/ready", h, p, "", "/ready")
-	registerMimirRead(mux, "GET "+mount+"/api/v1/status/buildinfo", h, p, "", "/prometheus/api/v1/status/buildinfo")
+	registerMimirHealth(mux, "GET "+mount+"/ready", h, p, "/ready")
+	registerMimirHealth(mux, "GET "+mount+"/api/v1/status/buildinfo", h, p, "/prometheus/api/v1/status/buildinfo")
 	// The two configuration dumps are Prometheus-compatible paths carrying
 	// operational answers, so they keep their passthrough contract and are
 	// forwarded operationally rather than as reads. See registerMimirLegacyOperational.
@@ -116,6 +116,25 @@ func forwardMimirPush(w http.ResponseWriter, r *http.Request, h *config.ConfigHo
 		}
 	}
 	handlePush(w, r, inst, upstreamPath, rewriteFn, maxBytes, p, m)
+}
+
+// registerMimirHealth mounts one of the health checks Grafana's Prometheus and
+// Alertmanager data sources call unprompted -- /prometheus/ready and build info
+// on both mounts.
+//
+// It is registerMimirRead's shape without two things a health check has no use
+// for. There is no read-policy endpoint, because these carry no selector to
+// rewrite. And the instance is chosen by getHealthInstance rather than by the
+// caller's tenants, forwarded by ForwardHealth so no X-Scope-OrgID goes with
+// it: "is this process up" and "what version is it" are the same answer for
+// every tenant, and matching on tenancy only produced a 404 or a 409 for
+// callers whose grants did not happen to line up with an instance.
+func registerMimirHealth(mux Registrar, pattern string, h *config.ConfigHolder, p *proxy.Proxy, upstreamPath string) {
+	mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+		if inst := getHealthInstance(h, w, "mimir"); inst != nil {
+			p.ForwardHealth(w, r, inst, upstreamPath)
+		}
+	})
 }
 
 func registerMimirRead(mux Registrar, pattern string, h *config.ConfigHolder, p *proxy.Proxy, endpoint, upstreamPath string) {

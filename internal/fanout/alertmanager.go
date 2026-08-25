@@ -137,5 +137,5 @@ func AlertmanagerDSRoutes(mux Registrar, mount string, h *config.ConfigHolder, p
 	// it through the tenant-config path would apply requireSingleTenant and
 	// refuse feature discovery outright for a caller whose grant spans several
 	// tenants.
-	registerMimirRead(mux, "GET "+mount+"/api/v1/status/buildinfo", h, p, "", "/alertmanager/api/v1/status/buildinfo")
+	registerMimirHealth(mux, "GET "+mount+"/api/v1/status/buildinfo", h, p, "/alertmanager/api/v1/status/buildinfo")
 }

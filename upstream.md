@@ -223,11 +223,21 @@ to the next target, a 4xx is relayed). The one difference is that the body is
 collected rather than streamed and therefore capped at 1 MiB, with an oversize
 response refused rather than truncated.
 
-`/prometheus/ready` and `/prometheus/api/v1/status/buildinfo` stay on `read` and
-stay ordinary reads — they are what a client calls to decide whether the backend
-is usable, and Grafana's Prometheus data source reads build info itself for
-feature detection, so reclassifying either would break every existing read-only
-data source.
+`/prometheus/ready` and `/prometheus/api/v1/status/buildinfo` stay on `read` —
+they are what a client calls to decide whether the backend is usable, and
+Grafana's Prometheus data source reads build info itself for feature detection,
+so reclassifying either would break every existing read-only data source. The
+Alertmanager mount's `/alertmanager/api/v1/status/buildinfo` is the same case.
+
+They are forwarded as health checks rather than as queries. That changes two
+things and nothing else. The instance is the first one configured for the
+backend, chosen without reference to the caller's tenants, because a liveness
+probe has no tenant to match on and matching anyway made a tenant-dedicated
+instance answer `404 no matching instance` — or, with two dedicated instances,
+`409 ambiguous backend instances` — to a caller whose grant did not line up. And
+no `X-Scope-OrgID` is sent, for the reason the table above gives: these
+endpoints are not registered behind the tenant middleware. Target order, retry
+rule, failover and read cool-off are the ordinary read path's.
 
 ### Operational — not proxied
 
@@ -346,7 +356,9 @@ carries the runtime overrides section, so it is `config`.
 
 `/loki/api/v1/status/buildinfo` also remains reachable at its Loki path under
 the `/loki` mount on a plain `read` grant, because Grafana's Loki data source
-reads it for feature detection.
+reads it for feature detection. It is forwarded there as a health check: first
+configured Loki instance regardless of the caller's tenants, first working
+target within it, and no `X-Scope-OrgID` — see the Mimir section for why.
 
 ### Operational — not proxied
 
@@ -427,8 +439,13 @@ through `base.Wrap(...)`, which is where the tenant middleware lives — so echo
 like the rest of this table, is untenanted upstream.
 
 `/api/echo` also remains reachable at its Tempo path under the `/tempo` mount on
-a plain `read` grant, because it is what Grafana's Tempo data source uses for
-its health check.
+a plain `read` grant, together with `/api/status/buildinfo`, because `/api/echo`
+is what Grafana's Tempo data source uses for its health check. Both are
+forwarded as health checks: first configured Tempo instance regardless of the
+caller's tenants, first working target within it, and no `X-Scope-OrgID` — see
+the Mimir section for why. Routing echo by tenant is what produced "Tempo echo
+endpoint returned status 404" against a tenant-dedicated Tempo whose tenant the
+data source's grant did not name.
 
 ### Operational — not proxied
 

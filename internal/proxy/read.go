@@ -62,6 +62,14 @@ func (a *readAttempt) release() {
 	}
 }
 
+// headerCopier fills in an upstream request's headers. The forwarding walk
+// takes one rather than a "send a tenant header?" flag so that the untenanted
+// case stays structural: ForwardHealth hands over CopyHeadersUntenanted, which
+// contains no code to set X-Scope-OrgID, and so no combination of arguments to
+// this path can reintroduce one. A boolean would put the guarantee in a branch
+// that a later caller could get wrong.
+type headerCopier func(req *http.Request, inbound http.Header, target config.PushTarget)
+
 // ForwardQuery forwards a read, trying each target in turn until one answers.
 //
 // A fan-out instance pushes to every target, so the targets are replicas and
@@ -74,6 +82,34 @@ func (a *readAttempt) release() {
 // same answer while doubling the work, and a 404 from a query endpoint is a
 // legitimate result, not an outage.
 func (p *Proxy) ForwardQuery(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, upstreamPath string) {
+	p.forwardRead(w, r, inst, upstreamPath, CopyHeadersForUpstream)
+}
+
+// ForwardHealth forwards one of the health checks a Grafana data source calls
+// unprompted -- Tempo's /api/echo, /prometheus/ready, build info on every
+// mount. It is ForwardQuery's walk in every respect a caller can observe:
+// targets in preference order, the first one that answers wins, the same retry
+// rule, the same read health and failover accounting.
+//
+// The single difference is that it sends no X-Scope-OrgID. These endpoints
+// answer for the process, not for a tenant, and upstream they are registered
+// outside their backend's tenant middleware, so a tenant assertion on them is
+// at best ignored and at worst a scope the answer does not honour. It is the
+// same reason FetchOperational sends none, expressed the same way: this path
+// passes CopyHeadersUntenanted and has no other copier to choose from.
+//
+// Keeping the read accounting is deliberate, and is where this parts company
+// with FetchOperational. That fetches one named target precisely because the
+// caller wants to know whether that target is sick, so letting the answer feed
+// the read cool-off would park a replica for asking after it. A health check
+// is the opposite: it is a real request to whichever target reads would have
+// gone to, and a failure it discovers is exactly the signal cool-off exists to
+// act on.
+func (p *Proxy) ForwardHealth(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, upstreamPath string) {
+	p.forwardRead(w, r, inst, upstreamPath, CopyHeadersUntenanted)
+}
+
+func (p *Proxy) forwardRead(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, upstreamPath string, copyHeaders headerCopier) {
 	targets := inst.GetReadTargets()
 	if len(targets) == 0 {
 		WriteJSONError(w, http.StatusInternalServerError, map[string]string{
@@ -140,7 +176,7 @@ func (p *Proxy) ForwardQuery(w http.ResponseWriter, r *http.Request, inst *confi
 		if last != nil {
 			last.discard()
 		}
-		attempt := p.attemptRead(ctx, target.Timeout(defaultTimeout), r, bodyFor, inst, target, upstreamPath, client)
+		attempt := p.attemptRead(ctx, target.Timeout(defaultTimeout), r, bodyFor, inst, target, upstreamPath, client, copyHeaders)
 		if !attempt.retryable {
 			p.health.recordSuccess(target.URL)
 			p.recordRead(inst.Name, target.URL, true)
@@ -186,6 +222,7 @@ func (p *Proxy) attemptRead(
 	target config.PushTarget,
 	upstreamPath string,
 	client *http.Client,
+	copyHeaders headerCopier,
 ) *readAttempt {
 
 	upstreamURL := target.URL + upstreamPath
@@ -209,7 +246,7 @@ func (p *Proxy) attemptRead(
 		cancel()
 		return &readAttempt{url: upstreamURL, target: target.URL, err: err}
 	}
-	CopyHeadersForUpstream(req, r.Header, target)
+	copyHeaders(req, r.Header, target)
 
 	slog.Debug("forwarding upstream",
 		"instance", inst.Name, "method", r.Method, "url", upstreamURL,

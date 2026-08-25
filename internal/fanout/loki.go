@@ -61,7 +61,17 @@ func LokiDSRoutes(mux Registrar, mount string, h *config.ConfigHolder, p *proxy.
 	read("POST", "/loki/api/v1/detected_field/{name}/values")
 	read("GET", "/loki/api/v1/format_query")
 	read("POST", "/loki/api/v1/format_query")
-	read("GET", "/loki/api/v1/status/buildinfo")
+
+	// Build info is a health check, not a query: Grafana's Loki data source
+	// calls it unprompted to discover features. It picks its instance without
+	// reference to the caller's tenants and sends no X-Scope-OrgID -- see
+	// getHealthInstance and ForwardHealth -- so a tenant-dedicated instance
+	// cannot turn feature discovery into a 404.
+	mux.HandleFunc("GET "+mount+"/loki/api/v1/status/buildinfo", func(w http.ResponseWriter, r *http.Request) {
+		if inst := getHealthInstance(h, w, "loki"); inst != nil {
+			p.ForwardHealth(w, r, inst, "/loki/api/v1/status/buildinfo")
+		}
+	})
 
 	// Log deletion. Tenant-scoped and irreversible, so it sits behind its own
 	// delete:read / delete:write actions rather than the ordinary write grant:

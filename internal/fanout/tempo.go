@@ -46,8 +46,21 @@ func TempoDSRoutes(mux Registrar, mount string, h *config.ConfigHolder, p *proxy
 	read("/api/v2/search/tag/{name}/values")
 	read("/api/metrics/query_range")
 	read("/api/metrics/query")
-	read("/api/echo")
-	read("/api/status/buildinfo")
+
+	// Health checks, not queries. See getHealthInstance and ForwardHealth: the
+	// instance is chosen without reference to the caller's tenants and no
+	// X-Scope-OrgID is sent, because neither endpoint answers for a tenant.
+	// /api/echo is what Grafana's Tempo data source calls to test the
+	// connection, so a tenant-dedicated instance must not make it 404.
+	health := func(upstream string) {
+		mux.HandleFunc("GET "+mount+upstream, func(w http.ResponseWriter, r *http.Request) {
+			if inst := getHealthInstance(h, w, "tempo"); inst != nil {
+				p.ForwardHealth(w, r, inst, upstream)
+			}
+		})
+	}
+	health("/api/echo")
+	health("/api/status/buildinfo")
 
 	// Per-tenant overrides. Tempo serves all four methods on one path.
 	for _, method := range []string{"GET", "POST", "PATCH", "DELETE"} {

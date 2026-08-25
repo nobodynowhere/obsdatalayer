@@ -307,3 +307,96 @@ func TestTempoPushFansOutToAllTargets(t *testing.T) {
 		t.Errorf("expected both Tempo targets to receive the trace body, got %v", got)
 	}
 }
+
+// TestHealthChecksIgnoreTenantBinding covers the failure that sent Grafana's
+// data source test to "Tempo echo endpoint returned status 404".
+//
+// These endpoints answer for the process, not for a tenant, but they used to be
+// routed by getInstance, which picks the instance holding a tenant's data. On
+// any deployment where the Tempo instance is bound to a tenant the calling
+// grant does not name, that resolved to nothing and the probe 404'd -- and with
+// two bound instances, or a grant naming two tenants, it 409'd instead. Neither
+// answer had anything to do with whether Tempo was up.
+//
+// Each case here returned 404 or 409 before getHealthInstance; all of them must
+// now reach the backend and return its answer.
+func TestHealthChecksIgnoreTenantBinding(t *testing.T) {
+	var gotOrgID string
+	var reached bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		gotOrgID = r.Header.Get("X-Scope-OrgID")
+		w.Write([]byte("echo"))
+	}))
+	t.Cleanup(upstream.Close)
+
+	bound := func(name, tenant string) *config.InstanceConfig {
+		inst := tempoInst(name, upstream.URL)
+		inst.TenantID = tenant
+		return inst
+	}
+
+	cases := []struct {
+		name      string
+		instances []*config.InstanceConfig
+		tenants   []string
+	}{
+		{"bound instance, grant names another tenant", []*config.InstanceConfig{bound("tempo-acme", "acme")}, []string{"beta"}},
+		{"bound instance, grant names two tenants", []*config.InstanceConfig{bound("tempo-acme", "acme")}, []string{"acme", "beta"}},
+		{"two bound instances, both granted", []*config.InstanceConfig{bound("tempo-acme", "acme"), bound("tempo-beta", "beta")}, []string{"acme", "beta"}},
+		{"shared instance", []*config.InstanceConfig{tempoInst("tempo-prod", upstream.URL)}, []string{"acme"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reached, gotOrgID = false, ""
+			previous := append([]string(nil), testAuth.Tenants...)
+			testAuth.Tenants = append([]string(nil), tc.tenants...)
+			t.Cleanup(func() { testAuth.Tenants = previous })
+
+			client := &http.Client{Timeout: 5 * time.Second}
+			p := proxy.New(client, client)
+			h := newTempoTestMux(newTestConfig(tc.instances), p)
+
+			req := httptest.NewRequest(http.MethodGet, "/tempo/api/echo", nil)
+			req.Header.Set("Authorization", authHeader())
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", rec.Code, strings.TrimSpace(rec.Body.String()))
+			}
+			if !reached {
+				t.Fatal("the probe never reached the backend")
+			}
+			if body := strings.TrimSpace(rec.Body.String()); body != "echo" {
+				t.Errorf("expected the backend's answer %q, got %q", "echo", body)
+			}
+			// The instance carries a tenant ID, and on a query that would be
+			// injected. A health check must assert no tenant whatever the
+			// instance is bound to; see ForwardHealth.
+			if gotOrgID != "" {
+				t.Errorf("health check carried X-Scope-OrgID %q; it must carry none", gotOrgID)
+			}
+		})
+	}
+}
+
+// TestHealthCheckWithoutBackendIs404 keeps the one 404 that is a real answer.
+// Dropping the tenant from instance selection must not turn "no Tempo is
+// configured at all" into a success, or the data source test would pass against
+// a gateway with nothing behind it.
+func TestHealthCheckWithoutBackendIs404(t *testing.T) {
+	client := &http.Client{Timeout: 5 * time.Second}
+	p := proxy.New(client, client)
+	h := newTempoTestMux(newTestConfig([]*config.InstanceConfig{lokiInst("loki-prod", "http://upstream.local")}), p)
+
+	req := httptest.NewRequest(http.MethodGet, "/tempo/api/echo", nil)
+	req.Header.Set("Authorization", authHeader())
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+}

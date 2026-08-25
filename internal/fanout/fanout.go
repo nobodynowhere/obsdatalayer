@@ -84,6 +84,52 @@ func getInstance(h *config.ConfigHolder, r *http.Request, w http.ResponseWriter,
 	return inst
 }
 
+// getHealthInstance selects an instance for one of the health checks a Grafana
+// data source calls unprompted: Tempo's /api/echo, /prometheus/ready, build
+// info on every mount.
+//
+// It deliberately does not use getInstance. That resolves the instance holding
+// a particular tenant's data, which is the right question for a query and the
+// wrong one for a liveness probe -- a probe carries no tenant to match on, and
+// making it match anyway produced two failures that had nothing to do with
+// whether the backend was up:
+//
+//   - A tenant-dedicated instance answered 404 "no matching instance" to a
+//     caller whose grant named a different tenant, which reads to Grafana as
+//     "this endpoint does not exist" rather than "not your data".
+//   - A second dedicated instance, or a grant naming two tenants, answered 409
+//     "ambiguous backend instances" -- the gateway declining to guess which
+//     tenant's copy of a tenant-independent answer was wanted.
+//
+// So the tenant is dropped from the selection and the first instance
+// configured for the backend answers. Configuration order rather than any
+// preference ranking: these instances are alternative deployments of the same
+// system, the answer is the same shape from any of them, and an operator who
+// cares which one is asked can say so by ordering the list. Within that
+// instance ForwardHealth walks the targets and the first working one wins, so
+// the reply survives the chosen instance's first replica being down.
+//
+// What this does not relax is the grant. The caller still needs read on the
+// backend to get here at all; the grant's tenant IDs simply no longer decide
+// which instance is asked, because the answer belongs to no tenant. Nor does it
+// scope the request to the instance the way scopeRequestToInstance does for a
+// query -- there is no tenant assertion to narrow, and ForwardHealth sends
+// none.
+func getHealthInstance(h *config.ConfigHolder, w http.ResponseWriter, backend string) *config.InstanceConfig {
+	cfg := h.Get()
+	if cfg == nil {
+		proxy.WriteJSONError(w, http.StatusServiceUnavailable, map[string]string{"error": "no configuration loaded"})
+		return nil
+	}
+	for _, inst := range cfg.Instances {
+		if inst.Backend == backend {
+			return inst
+		}
+	}
+	proxy.WriteJSONError(w, http.StatusNotFound, map[string]string{"error": "no matching instance"})
+	return nil
+}
+
 func selectInstance(cfg *config.Config, ra *auth.RequestAuth, backend string) (*config.InstanceConfig, error) {
 	var shared []*config.InstanceConfig
 	var dedicated []*config.InstanceConfig

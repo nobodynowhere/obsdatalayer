@@ -58,8 +58,6 @@ var tenantedRoutes = []struct{ method, path string }{
 	{"GET", "/prometheus/api/v1/metadata"},
 	{"POST", "/prometheus/api/v1/metadata"},
 	{"POST", "/prometheus/api/v1/read"},
-	{"GET", "/prometheus/ready"},
-	{"GET", "/prometheus/api/v1/status/buildinfo"},
 	{"GET", "/prometheus/api/v1/format_query"},
 	{"POST", "/prometheus/api/v1/format_query"},
 	{"GET", "/prometheus/api/v1/rules"},
@@ -100,7 +98,6 @@ var tenantedRoutes = []struct{ method, path string }{
 	{"POST", "/loki/loki/api/v1/detected_field/level/values"},
 	{"GET", "/loki/loki/api/v1/format_query"},
 	{"POST", "/loki/loki/api/v1/format_query"},
-	{"GET", "/loki/loki/api/v1/status/buildinfo"},
 	{"GET", "/loki/loki/api/v1/tail"},
 	{"GET", "/loki/loki/api/v1/delete"},
 	{"POST", "/loki/loki/api/v1/delete"},
@@ -131,8 +128,6 @@ var tenantedRoutes = []struct{ method, path string }{
 	{"GET", "/tempo/api/v2/search/tag/svc/values"},
 	{"GET", "/tempo/api/metrics/query_range"},
 	{"GET", "/tempo/api/metrics/query"},
-	{"GET", "/tempo/api/echo"},
-	{"GET", "/tempo/api/status/buildinfo"},
 	{"GET", "/tempo/api/overrides"},
 	{"POST", "/tempo/api/overrides"},
 	{"PATCH", "/tempo/api/overrides"},
@@ -146,7 +141,6 @@ var tenantedRoutes = []struct{ method, path string }{
 	{"GET", "/alertmanager/alertmanager/api/v2/alerts/groups"},
 	{"GET", "/alertmanager/alertmanager/api/v2/alerts"},
 	{"POST", "/alertmanager/alertmanager/api/v2/alerts"},
-	{"GET", "/alertmanager/api/v1/status/buildinfo"},
 	{"GET", "/alertmanager/api/v1/alerts"},
 	{"POST", "/alertmanager/api/v1/alerts"},
 	{"DELETE", "/alertmanager/api/v1/alerts"},
@@ -164,6 +158,18 @@ func untenantedRoutes() []struct{ method, path string } {
 	out := []struct{ method, path string }{
 		{"GET", "/prometheus/api/v1/status/config"},
 		{"GET", "/prometheus/api/v1/status/flags"},
+
+		// The health checks a Grafana data source calls unprompted. They stay
+		// on a read grant and keep answering at the paths Grafana expects, but
+		// they are forwarded by ForwardHealth, which sends no tenant
+		// assertion -- so the untenanted guarantee is the one that applies to
+		// them, not the tenanted one. See getHealthInstance.
+		{"GET", "/prometheus/ready"},
+		{"GET", "/prometheus/api/v1/status/buildinfo"},
+		{"GET", "/alertmanager/api/v1/status/buildinfo"},
+		{"GET", "/loki/loki/api/v1/status/buildinfo"},
+		{"GET", "/tempo/api/echo"},
+		{"GET", "/tempo/api/status/buildinfo"},
 	}
 	for backend, mount := range fanout.BackendMounts {
 		for _, e := range fanout.OperationalEndpoints(backend) {

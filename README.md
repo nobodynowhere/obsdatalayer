@@ -150,6 +150,28 @@ existing read-only data source for no gain, since "is it up" is not a
 disclosure. The per-target aliases are how you ask the same question of every
 target rather than of whichever replica answered.
 
+These six are forwarded as *health checks* rather than as queries, which is a
+narrower thing than it sounds and matters on exactly one point: the instance is
+chosen without reference to the caller's tenants. A query has to reach the
+instance holding a particular tenant's data; a liveness probe carries no tenant
+to match on, and matching anyway made the answer depend on how the grants
+happened to line up. A tenant-dedicated instance answered `404 no matching
+instance` to a caller granted a different tenant — which Grafana reports as
+"Tempo echo endpoint returned status 404", indistinguishable from the endpoint
+not existing — and a second dedicated instance, or a grant naming two tenants,
+answered `409 ambiguous backend instances`. Neither said anything about whether
+the backend was up.
+
+So the first instance configured for the backend answers, targets within it are
+tried in order, and the first that responds wins. The grant still gates access —
+`read` on the backend is required — it just no longer picks the instance. For
+the same reason these requests carry no `X-Scope-OrgID`: the endpoints sit
+outside their backend's tenant middleware upstream, so the assertion would be a
+scope the answer does not honour. Everything else is the ordinary read path,
+including read failover and cool-off: a health check is a real request to
+whichever target reads would have used, so a failure it finds is a signal worth
+acting on.
+
 ### MIMIR
 
 Mimir needs to be configured to enable multitenancy, especially for queries. 
