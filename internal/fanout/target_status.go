@@ -379,20 +379,12 @@ func operationalInstance(w http.ResponseWriter, r *http.Request, cfg *config.Con
 // whole instance, so a caller who may not see one of its targets may not see
 // any of it.
 func instanceTenantIDs(inst *config.InstanceConfig) []string {
-	seen := make(map[string]struct{})
-	var ids []string
-	// Both read and write surfaces. A tenant ID declared only on a
-	// receiver-specific group must still be counted here.
-	both := append(inst.WriteTargets(), inst.GetReadTargets()...)
-	for _, target := range both {
-		if target.TenantID == "" {
-			continue
-		}
-		if _, dup := seen[target.TenantID]; dup {
-			continue
-		}
-		seen[target.TenantID] = struct{}{}
-		ids = append(ids, target.TenantID)
+	// One tenant or none. This walked every target of both surfaces while
+	// tenants were configurable per target, and a tenant declared on only one
+	// of them could be missed -- which is what gated access to the instance.
+	// The instance carries it now, so there is nothing to miss.
+	if inst.TenantID == "" {
+		return nil
 	}
-	return ids
+	return []string{inst.TenantID}
 }

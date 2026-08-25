@@ -653,9 +653,10 @@ func TestFanOutPresentsEachTargetsOwnCredential(t *testing.T) {
 	}
 }
 
-// A per-target tenant must travel with the same target as its credential, so a
-// target scoped to its own tenant is addressed correctly on both counts.
-func TestFanOutPairsCredentialWithTargetTenant(t *testing.T) {
+// Credentials are per target; the tenant is not. Each target presents its own
+// upstream credential, and every target of the instance asserts the instance's
+// tenant -- there is no per-target tenant to disagree with it.
+func TestFanOutPairsCredentialWithInstanceTenant(t *testing.T) {
 	type seen struct{ cred, org string }
 	got := map[string]seen{}
 	var mu sync.Mutex
@@ -675,9 +676,10 @@ func TestFanOutPairsCredentialWithTargetTenant(t *testing.T) {
 	defer b.Close()
 
 	inst := newInstance("mimir-split", "mimir", "all")
+	inst.TenantID = "inst-tenant"
 	inst.PushURLs = []config.PushTarget{
-		{URL: a.URL, BasicAuth: "user-a:password-a", TenantID: "tenant-a"},
-		{URL: b.URL, BasicAuth: "user-b:password-b", TenantID: "tenant-b"},
+		{URL: a.URL, BasicAuth: "user-a:password-a"},
+		{URL: b.URL, BasicAuth: "user-b:password-b"},
 	}
 
 	if status, _, _, _ := fanout.Do(context.Background(), inst, inst.GetPushTargets(),
@@ -687,10 +689,10 @@ func TestFanOutPairsCredentialWithTargetTenant(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if got["a"].cred != "user-a:password-a" || got["a"].org != "tenant-a" {
-		t.Errorf("target a saw %+v, want its own credential and tenant", got["a"])
+	if got["a"].cred != "user-a:password-a" || got["a"].org != "inst-tenant" {
+		t.Errorf("target a saw %+v, want its own credential and the instance tenant", got["a"])
 	}
-	if got["b"].cred != "user-b:password-b" || got["b"].org != "tenant-b" {
-		t.Errorf("target b saw %+v, want its own credential and tenant", got["b"])
+	if got["b"].cred != "user-b:password-b" || got["b"].org != "inst-tenant" {
+		t.Errorf("target b saw %+v, want its own credential and the instance tenant", got["b"])
 	}
 }

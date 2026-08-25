@@ -75,7 +75,6 @@ type PushTarget struct {
 	Position      int
 	URL           string
 	BasicAuth     string
-	TenantID      string
 	SkipTLSVerify bool
 	// TargetGroup names the upstream surface this target serves. Empty is the
 	// legacy group used as a fallback for every HTTP surface.

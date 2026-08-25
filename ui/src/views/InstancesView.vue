@@ -39,14 +39,20 @@ const fanOutModes = [
   { label: 'any — succeed if one target accepts', value: 'any' },
   { label: 'all — every target must accept', value: 'all' },
 ]
-const targetGroups = [
-  { label: 'Legacy fallback', value: '' },
-  { label: 'Generic ingest', value: 'push' },
-  { label: 'Query API', value: 'query' },
-  { label: 'OTLP HTTP', value: 'otlp_http' },
-  { label: 'Jaeger HTTP', value: 'jaeger' },
-  { label: 'Zipkin', value: 'zipkin' },
-]
+const groupLabels = {
+  '': 'Legacy fallback',
+  push: 'Generic ingest',
+  query: 'Query API',
+  otlp_http: 'OTLP HTTP',
+  jaeger: 'Jaeger HTTP',
+  zipkin: 'Zipkin',
+}
+// Which groups a backend accepts comes from the gateway
+// (GET /api/operational-endpoints), not from a copy here. The rule lives in
+// config.groupsByBackend, and a second copy in the SPA would drift the moment a
+// backend gains or loses a receiver surface -- offering a group the gateway
+// then rejects on save, or hiding one it would accept.
+const groupsForBackend = (backend) => operationalCatalog.value.target_groups?.[backend] ?? []
 const filterModes = [
   { label: 'allowlist', value: 'allowlist' },
   { label: 'denylist', value: 'denylist' },
@@ -54,7 +60,7 @@ const filterModes = [
 // The endpoint catalog is served by the gateway (GET /api/operational-endpoints)
 // rather than restated here, so a button can only ever offer an alias the
 // gateway actually registers, under the grant it actually requires.
-const operationalCatalog = ref({ mounts: {}, endpoints: {} })
+const operationalCatalog = ref({ mounts: {}, endpoints: {}, target_groups: {} })
 
 // Aliases are snake_case identifiers; the button label is derived rather than
 // carried, so the backend table stays free of presentation.
@@ -124,7 +130,7 @@ async function load() {
       tenantSvc.list(),
       // A failure here costs the status buttons, not the page, so it does not
       // take the instance list down with it.
-      svc.operationalCatalog().catch(() => ({ mounts: {}, endpoints: {} })),
+      svc.operationalCatalog().catch(() => ({ mounts: {}, endpoints: {}, target_groups: {} })),
     ])
     instances.value = i
     tenants.value = t
@@ -183,7 +189,6 @@ function toPayload() {
       url: t.url,
       group: t.group || undefined,
       basic_auth: t.basic_auth || undefined,
-      tenant_id: t.tenant_id || undefined,
       skip_tls_verify: t.skip_tls_verify || undefined,
       // 0 means "use the gateway default", which the API omits.
       timeout_seconds: Number(t.timeout_seconds) > 0 ? Number(t.timeout_seconds) : undefined,
@@ -204,6 +209,15 @@ function toPayload() {
 }
 
 async function save() {
+  if (strandedTargets.value.length) {
+    const detail = strandedTargets.value
+      .map((t) => `target ${t.index + 1} (${t.url || 'no URL'}) is set to ${groupLabels[t.group] ?? t.group}`)
+      .join('; ')
+    formError.value =
+      `${form.value.backend} does not serve those target groups: ${detail}. ` +
+      'Choose a group this backend serves before saving.'
+    return
+  }
   saving.value = true
   formError.value = ''
   try {
@@ -275,7 +289,6 @@ const newTarget = (url = '') => ({
   url,
   group: '',
   basic_auth: '',
-  tenant_id: '',
   skip_tls_verify: false,
   timeout_seconds: 0,
 })
@@ -307,6 +320,30 @@ const removeTarget = (i) => form.value.push_urls.splice(i, 1)
 // instance declares one, then the generic push group, then legacy ungrouped
 // targets. Null when the instance declares only receiver groups and so has
 // nothing to answer a read with.
+// The options offered depend on the backend chosen above, so switching an
+// instance from tempo to mimir must not leave a jaeger target selected -- the
+// backend would refuse the save with a message about a group it no longer
+// serves. Clear those rather than let the operator discover it on submit.
+const targetGroupOptions = computed(() =>
+  ['', ...groupsForBackend(form.value.backend)].map((value) => ({
+    label: groupLabels[value] ?? value,
+    value,
+  })),
+)
+
+// Changing the backend can strand a group the new backend does not serve --
+// jaeger on an instance moved from tempo to mimir. These are reported rather
+// than cleared: clearing looks like a tidy-up but silently changes where the
+// target's traffic goes, from a named receiver to the legacy every-surface
+// fallback. The operator picks the replacement.
+const strandedTargets = computed(() => {
+  const allowed = groupsForBackend(form.value.backend)
+  if (!allowed.length) return []
+  return form.value.push_urls
+    .map((t, i) => ({ index: i, group: t.group, url: t.url }))
+    .filter((t) => t.group && !allowed.includes(t.group))
+})
+
 const readGroup = computed(() => {
   const groups = form.value.push_urls.map((t) => t.group || '')
   for (const candidate of ['query', 'push', '']) {
@@ -315,7 +352,7 @@ const readGroup = computed(() => {
   return null
 })
 
-const groupLabel = (group) => targetGroups.find((g) => g.value === (group || ''))?.label ?? group
+const groupLabel = (group) => groupLabels[group || ''] ?? group
 
 // Position among the targets sharing this one's group, which is the only
 // position that decides anything.
@@ -536,18 +573,10 @@ onMounted(load)
             <PrimeInputText v-model="t.url" placeholder="http://target.local" class="mono" />
             <PrimeSelect
               v-model="t.group"
-              :options="targetGroups"
+              :options="targetGroupOptions"
               option-label="label"
               option-value="value"
               placeholder="Group"
-            />
-            <PrimeSelect
-              v-model="t.tenant_id"
-              :options="tenantOptions"
-              option-label="label"
-              option-value="value"
-              placeholder="Tenant (optional)"
-              show-clear
             />
             <PrimeSelect
               v-model="t.skip_tls_verify"
@@ -587,6 +616,14 @@ onMounted(load)
             />
             <PrimeButton icon="pi pi-times" text rounded severity="danger" @click="removeTarget(i)" />
           </div>
+          <PrimeMessage v-if="strandedTargets.length" severity="error" :closable="false" style="margin-top: 0.5rem">
+            {{ form.backend }} does not serve
+            {{ strandedTargets.map((t) => groupLabels[t.group] ?? t.group).join(', ') }}.
+            Reassign
+            {{ strandedTargets.map((t) => `target ${t.index + 1}`).join(', ') }}
+            to a group this backend serves — the routing a receiver group selects has no equivalent
+            here, so it is not something the form can pick for you.
+          </PrimeMessage>
           <small v-if="form.push_urls.length > 1" style="display: block; margin-top: 0.5rem">
             Every target in an ingest group receives every write. Reads use one group only — the
             Query API group when you define one, otherwise generic ingest and then legacy fallback

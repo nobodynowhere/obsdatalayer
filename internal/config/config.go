@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/url"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/goccy/go-yaml"
@@ -68,11 +69,6 @@ func (c *Config) tenantRefs() []string {
 	for _, inst := range c.Instances {
 		if inst.TenantID != "" {
 			refs = append(refs, inst.TenantID)
-		}
-		for _, pt := range inst.PushURLs {
-			if pt.TenantID != "" {
-				refs = append(refs, pt.TenantID)
-			}
 		}
 	}
 	return refs
@@ -180,10 +176,17 @@ type InstanceConfig struct {
 type PushTarget struct {
 	URL       string `yaml:"url"`
 	BasicAuth string `yaml:"basic_auth"`
-	TenantID  string `yaml:"tenant_id"`
+	// TenantID is derived, not configured: resolveTarget fills it from the
+	// instance, and it has no yaml tag because there is nothing for an operator
+	// to set here. Tenancy is a property of the instance -- every target of an
+	// instance addresses the same backend, and with target groups they may be
+	// different surfaces of the same process, where two tenants would mean
+	// writing as one and reading as the other.
+	TenantID string `yaml:"-"`
 	// Group selects the upstream surface this target serves. Empty means a
 	// legacy target that can serve every HTTP surface unless a more specific
-	// group is declared.
+	// group is declared. Which groups are meaningful depends on the backend;
+	// see GroupsForBackend.
 	Group         string `yaml:"group"`
 	SkipTLSVerify bool   `yaml:"skip_tls_verify"`
 
@@ -384,10 +387,11 @@ func validate(cfg *Config) error {
 			}
 		}
 
-		// 12b. push_urls target group
+		// 12b. push_urls target group, which is backend-specific
 		for i, pt := range inst.PushURLs {
-			if !KnownTargetGroup(pt.Group) {
-				return fmt.Errorf("config: instance %q push_urls[%d] has unknown group %q (must be push, query, otlp_http, jaeger or zipkin)", inst.Name, i, pt.Group)
+			if !BackendAllowsGroup(inst.Backend, pt.Group) {
+				return fmt.Errorf("config: instance %q push_urls[%d] has group %q, which %s does not serve (must be one of: %s)",
+					inst.Name, i, pt.Group, inst.Backend, strings.Join(GroupsForBackend(inst.Backend), ", "))
 			}
 		}
 
@@ -439,16 +443,19 @@ func validateUpstreamURL(raw string) error {
 	return nil
 }
 
-// resolveTarget merges per-target auth with instance-level defaults.
+// resolveTarget merges per-target auth with instance-level defaults and stamps
+// the instance's tenant onto the target.
+//
+// The tenant is stamped rather than merged because there is no per-target
+// tenant to merge with: every target of an instance carries the instance's,
+// unconditionally. That is what makes a mismatch between an instance's ingest
+// and query surfaces unrepresentable rather than merely discouraged.
 func resolveTarget(pt PushTarget, instBasicAuth, instTenantID string, instSkipTLSVerify bool) PushTarget {
 	basicAuth := pt.BasicAuth
 	if basicAuth == "" {
 		basicAuth = instBasicAuth
 	}
-	tenantID := pt.TenantID
-	if tenantID == "" {
-		tenantID = instTenantID
-	}
+	tenantID := instTenantID
 	return PushTarget{
 		URL:            pt.URL,
 		BasicAuth:      basicAuth,
@@ -470,15 +477,44 @@ const (
 	TargetGroupZipkin   = "zipkin"
 )
 
-// KnownTargetGroup reports whether group is one of the gateway's named HTTP
-// surfaces. The empty group is valid and means legacy fallback.
-func KnownTargetGroup(group string) bool {
-	switch group {
-	case "", TargetGroupPush, TargetGroupQuery, TargetGroupOTLPHTTP, TargetGroupJaeger, TargetGroupZipkin:
+// groupsByBackend is which groups mean anything for each backend, and the one
+// place that mapping lives.
+//
+// It is not the same list for all three, because the receivers are not. Tempo's
+// distributor is a set of OpenTelemetry receivers on their own ports, so OTLP
+// HTTP, Jaeger and Zipkin are separately addressable there. Mimir and Loki
+// serve their OTLP paths on the same distributor listener as their native push
+// paths, so there is no second surface to name -- forwardMimirPush and
+// forwardLokiPush always ask for the push group, and an otlp_http target on
+// either backend would be a target no request ever reaches.
+//
+// Rejecting those is the point. A group that validates but is never routed to
+// is worse than an error: the operator sees a saved configuration and no data.
+var groupsByBackend = map[string][]string{
+	"loki":  {TargetGroupPush, TargetGroupQuery},
+	"mimir": {TargetGroupPush, TargetGroupQuery},
+	"tempo": {TargetGroupPush, TargetGroupQuery, TargetGroupOTLPHTTP, TargetGroupJaeger, TargetGroupZipkin},
+}
+
+// GroupsForBackend returns the groups an operator may assign to a target of
+// this backend, in menu order. The empty group is always allowed and is not
+// listed: it is the legacy fallback rather than a choice.
+func GroupsForBackend(backend string) []string {
+	return append([]string(nil), groupsByBackend[backend]...)
+}
+
+// BackendAllowsGroup reports whether group is meaningful for backend. The empty
+// group is valid everywhere and means legacy fallback.
+func BackendAllowsGroup(backend, group string) bool {
+	if group == "" {
 		return true
-	default:
-		return false
 	}
+	for _, g := range groupsByBackend[backend] {
+		if g == group {
+			return true
+		}
+	}
+	return false
 }
 
 // targetsForExactGroup returns resolved targets carrying exactly group, in
@@ -520,30 +556,6 @@ func (inst *InstanceConfig) GetTargets(group string) []PushTarget {
 // GetPushTargets returns resolved generic push targets with effective auth.
 func (inst *InstanceConfig) GetPushTargets() []PushTarget {
 	return inst.GetTargets(TargetGroupPush)
-}
-
-// WriteTargets returns every configured write-side target, resolved with
-// effective auth and de-duplicated by URL and group. It is used for tenant
-// scoping, not forwarding a request to a specific receiver.
-func (inst *InstanceConfig) WriteTargets() []PushTarget {
-	if len(inst.PushURLs) == 0 {
-		return inst.GetPushTargets()
-	}
-	seen := make(map[string]struct{}, len(inst.PushURLs))
-	targets := make([]PushTarget, 0, len(inst.PushURLs))
-	for _, pt := range inst.PushURLs {
-		if pt.Group == TargetGroupQuery {
-			continue
-		}
-		resolved := resolveTarget(pt, inst.BasicAuth, inst.TenantID, inst.SkipTLSVerify)
-		key := resolved.Group + "\x00" + resolved.URL
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		targets = append(targets, resolved)
-	}
-	return targets
 }
 
 // GetReadTargets returns the candidates for a read, in preference order.

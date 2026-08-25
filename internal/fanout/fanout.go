@@ -133,13 +133,12 @@ func getHealthInstance(h *config.ConfigHolder, w http.ResponseWriter, backend st
 func selectInstance(cfg *config.Config, ra *auth.RequestAuth, backend string) (*config.InstanceConfig, error) {
 	var shared []*config.InstanceConfig
 	var dedicated []*config.InstanceConfig
-	write := ra == nil || !ra.IsRead
 
 	for _, inst := range cfg.Instances {
 		if inst.Backend != backend {
 			continue
 		}
-		wanted := targetTenantIDs(inst, write)
+		wanted := targetTenantIDs(inst)
 		if len(wanted) == 0 {
 			shared = append(shared, inst)
 			continue
@@ -247,7 +246,7 @@ func scopeRequestToInstance(w http.ResponseWriter, r *http.Request, inst *config
 		return true
 	}
 
-	wanted := targetTenantIDs(inst, !ra.IsRead)
+	wanted := targetTenantIDs(inst)
 	if len(wanted) == 0 {
 		if !ra.IsRead && len(ra.TenantIDs) > 1 {
 			proxy.WriteJSONError(w, http.StatusForbidden, map[string]string{
@@ -278,36 +277,23 @@ func scopeRequestToInstance(w http.ResponseWriter, r *http.Request, inst *config
 	return true
 }
 
-func targetTenantIDs(inst *config.InstanceConfig, write bool) []string {
-	var targets []config.PushTarget
-	if write {
-		targets = inst.WriteTargets()
-	} else {
-		targets = []config.PushTarget{inst.GetQueryTarget()}
+// targetTenantIDs is the tenant an instance is bound to, as a set, or empty when
+// it is shared.
+//
+// It walked each target's tenant once, because tenants were configurable per
+// target. They are not: every target of an instance carries the instance's, so
+// the set has at most one member and the direction of the request no longer
+// changes the answer. The signature keeps its shape because the callers below
+// still read a set.
+func targetTenantIDs(inst *config.InstanceConfig) []string {
+	if inst.TenantID == "" {
+		return nil
 	}
-
-	seen := make(map[string]struct{})
-	ids := make([]string, 0, len(targets))
-	for _, target := range targets {
-		if target.TenantID == "" {
-			continue
-		}
-		if _, ok := seen[target.TenantID]; ok {
-			continue
-		}
-		seen[target.TenantID] = struct{}{}
-		ids = append(ids, target.TenantID)
-	}
-	return ids
+	return []string{inst.TenantID}
 }
 
 func hasUnscopedPushTarget(inst *config.InstanceConfig) bool {
-	for _, target := range inst.WriteTargets() {
-		if target.TenantID == "" {
-			return true
-		}
-	}
-	return false
+	return inst.TenantID == ""
 }
 
 // Do fans out a push request to all targets in parallel and returns the aggregated result.

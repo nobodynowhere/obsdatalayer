@@ -61,8 +61,7 @@ func (h *handler) selectTenantMimirInstance(tenantID string) (*config.InstanceCo
 		if inst.Backend != "mimir" {
 			continue
 		}
-		target := inst.GetQueryTarget()
-		switch target.TenantID {
+		switch inst.TenantID {
 		case tenantID:
 			dedicated = append(dedicated, inst)
 		case "":

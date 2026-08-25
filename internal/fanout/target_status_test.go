@@ -278,8 +278,8 @@ func TestOperationalActionsAreDiscrete(t *testing.T) {
 func TestOperationalTenantScoping(t *testing.T) {
 	instances := []*config.InstanceConfig{
 		{Name: "shared", Backend: "loki", URL: "http://shared.local"},
-		{Name: "dedicated-a", Backend: "loki", PushURLs: []config.PushTarget{{URL: "http://a.local", TenantID: "tenant-a"}}},
-		{Name: "dedicated-b", Backend: "loki", PushURLs: []config.PushTarget{{URL: "http://b.local", TenantID: "tenant-b"}}},
+		{Name: "dedicated-a", Backend: "loki", TenantID: "tenant-a", PushURLs: []config.PushTarget{{URL: "http://a.local"}}},
+		{Name: "dedicated-b", Backend: "loki", TenantID: "tenant-b", PushURLs: []config.PushTarget{{URL: "http://b.local"}}},
 	}
 
 	for _, tc := range []struct {
@@ -455,15 +455,15 @@ func TestOperationalHidesTargetURLsFromTheDataPlane(t *testing.T) {
 // TestAdminPlaneSeesTenantDedicatedInstances is a regression test. AdminAuth
 // puts a RequestAuth with no tenant IDs into the context -- it is not nil -- so
 // an admin-listener request that went through the data plane's instance scoping
-// would be checked against an empty tenant set and 404 on every instance whose
-// targets carry a tenant_id. That is precisely the set of instances an operator
-// most needs to inspect, and the admin UI's status buttons are the caller.
+// would be checked against an empty tenant set and 404 on every tenant-dedicated
+// instance. That is precisely the set of instances an operator most needs to
+// inspect, and the admin UI's status buttons are the caller.
 func TestAdminPlaneSeesTenantDedicatedInstances(t *testing.T) {
 	cfg := newTestConfig([]*config.InstanceConfig{{
-		Name: "loki-ha", Backend: "loki",
+		Name: "loki-ha", Backend: "loki", TenantID: "tenant-a",
 		PushURLs: []config.PushTarget{
-			{URL: "http://a.local", TenantID: "tenant-a"},
-			{URL: "http://b.local", TenantID: "tenant-b"},
+			{URL: "http://a.local"},
+			{URL: "http://b.local"},
 		},
 	}})
 	h := config.NewHolder(cfg, "")

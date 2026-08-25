@@ -26,9 +26,11 @@ type targetDoc struct {
 	URL            string `json:"url"`
 	BasicAuth      string `json:"basic_auth,omitempty"`
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
-	TenantID       string `json:"tenant_id,omitempty"`
-	Group          string `json:"group,omitempty"`
-	SkipTLSVerify  bool   `json:"skip_tls_verify,omitempty"`
+	// Group names the upstream surface this target serves. Which values are
+	// accepted depends on the instance's backend; GET /api/operational-endpoints
+	// is not the source for this -- see config.GroupsForBackend.
+	Group         string `json:"group,omitempty"`
+	SkipTLSVerify bool   `json:"skip_tls_verify,omitempty"`
 }
 
 type labelsDoc struct {
@@ -59,7 +61,7 @@ func toDoc(inst *config.InstanceConfig) instanceDoc {
 		d.BasicAuth = redacted
 	}
 	for _, pt := range inst.PushURLs {
-		t := targetDoc{URL: pt.URL, TenantID: pt.TenantID, Group: pt.Group, SkipTLSVerify: pt.SkipTLSVerify}
+		t := targetDoc{URL: pt.URL, Group: pt.Group, SkipTLSVerify: pt.SkipTLSVerify}
 		t.TimeoutSeconds = pt.TimeoutSeconds
 		if pt.BasicAuth != "" {
 			t.BasicAuth = redacted
@@ -140,7 +142,6 @@ func fromDoc(d instanceDoc, prev *config.InstanceConfig) (*config.InstanceConfig
 		target := config.PushTarget{
 			URL:            t.URL,
 			BasicAuth:      t.BasicAuth,
-			TenantID:       t.TenantID,
 			Group:          t.Group,
 			SkipTLSVerify:  t.SkipTLSVerify,
 			TimeoutSeconds: t.TimeoutSeconds,

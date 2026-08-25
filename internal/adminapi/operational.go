@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"sort"
 
+	"obsdatalayer/internal/config"
 	"obsdatalayer/internal/fanout"
 )
 
@@ -22,6 +23,16 @@ type operationalCatalogDoc struct {
 	Mounts map[string]string `json:"mounts"`
 	// Endpoints maps a backend to its allowlisted endpoints, in table order.
 	Endpoints map[string][]operationalEndpointDoc `json:"endpoints"`
+	// TargetGroups maps a backend to the groups an operator may assign to its
+	// targets, mirroring config.GroupsForBackend. It rides along here for the
+	// reason above: the instance editor needs the list to populate a dropdown,
+	// and a second copy in the SPA would drift the moment a backend gains or
+	// loses a receiver surface -- offering a group the gateway then rejects on
+	// save, or hiding one it would accept.
+	//
+	// The empty group is deliberately absent. It is the legacy fallback, not a
+	// surface, and the UI presents it separately.
+	TargetGroups map[string][]string `json:"target_groups"`
 }
 
 type operationalEndpointDoc struct {
@@ -34,8 +45,9 @@ type operationalEndpointDoc struct {
 
 func (h *handler) getOperationalCatalog(w http.ResponseWriter, r *http.Request) {
 	doc := operationalCatalogDoc{
-		Mounts:    make(map[string]string, len(fanout.BackendMounts)),
-		Endpoints: make(map[string][]operationalEndpointDoc, len(fanout.BackendMounts)),
+		Mounts:       make(map[string]string, len(fanout.BackendMounts)),
+		Endpoints:    make(map[string][]operationalEndpointDoc, len(fanout.BackendMounts)),
+		TargetGroups: make(map[string][]string, len(fanout.BackendMounts)),
 	}
 
 	backends := make([]string, 0, len(fanout.BackendMounts))
@@ -52,6 +64,7 @@ func (h *handler) getOperationalCatalog(w http.ResponseWriter, r *http.Request) 
 			out = append(out, operationalEndpointDoc{Alias: e.Alias, Action: e.Action})
 		}
 		doc.Endpoints[backend] = out
+		doc.TargetGroups[backend] = config.GroupsForBackend(backend)
 	}
 
 	writeJSON(w, http.StatusOK, doc)

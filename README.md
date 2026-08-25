@@ -279,21 +279,25 @@ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://gateway:8080/v1/traces
 Note that Tempo serves OTLP HTTP on a dedicated receiver port (4318 by
 default), separate from its query API port (3200). Jaeger Thrift HTTP and
 Zipkin can be separate receiver ports too. Give the instance one target group
-per surface:
+per surface.
 
-```yaml
-instances:
-  - name: tempo-prod
-    backend: tempo
-    push_urls:
-      - url: http://tempo-distributor:4318
-        group: otlp_http
-      - url: http://tempo-distributor:14268
-        group: jaeger
-      - url: http://tempo-distributor:9411
-        group: zipkin
-      - url: http://tempo-query-frontend:3200
-        group: query
+Instances live in the database, not in this file — create them through the
+admin API or the Instances page of the admin UI:
+
+```bash
+curl -u "$ADMIN_USER:$ADMIN_PASS" -X POST http://127.0.0.1:9091/api/instances \
+  -H 'Content-Type: application/json' -d '{
+    "name": "tempo-prod",
+    "backend": "tempo",
+    "tenant_id": "acme",
+    "fan_out_mode": "any",
+    "push_urls": [
+      {"url": "http://tempo-distributor:4318",   "group": "otlp_http"},
+      {"url": "http://tempo-distributor:14268",  "group": "jaeger"},
+      {"url": "http://tempo-distributor:9411",   "group": "zipkin"},
+      {"url": "http://tempo-query-frontend:3200","group": "query"}
+    ]
+  }'
 ```
 
 `group: query` targets serve queries, health checks and per-target operational
@@ -301,23 +305,38 @@ endpoints. Writes to Tempo's own HTTP API — the overrides endpoint, and the
 ruler and Alertmanager equivalents on the other backends — also follow the query
 group, because they address the API surface rather than the receivers.
 
-`group: otlp_http`, `group: jaeger` and `group: zipkin` targets receive their
-matching HTTP ingest routes. These receiver-specific groups mainly matter for
-Tempo, where those routes can live on separate receiver ports. Mimir and Loki
-serve their OTLP HTTP paths on the same distributor listener as their other
-ingest paths, so they normally use `group: push` for all ingest. `group: push`
-is the generic ingest fallback, useful when every receiver for an instance is
-already merged behind one upstream origin.
+`otlp_http`, `jaeger` and `zipkin` targets receive their matching HTTP ingest
+routes. **Which groups exist depends on the backend**, and the gateway refuses a
+target that names one its backend does not serve:
 
-A target with no `group` is a legacy fallback target. Every instance configured
-before target groups existed behaves exactly as it did: one list, every HTTP
-surface. Groups do not apply to the single-`url` form at all, which names one
-origin serving every surface.
+| Backend | Groups |
+| --- | --- |
+| `tempo` | `push`, `query`, `otlp_http`, `jaeger`, `zipkin` |
+| `mimir` | `push`, `query` |
+| `loki` | `push`, `query` |
+
+Mimir and Loki serve their OTLP paths on the same distributor listener as their
+native push paths, so there is no second receiver surface to name there — the
+gateway always routes their ingest to the `push` group. A group that validated
+but was never routed to would be worse than an error: a saved configuration and
+no data.
+
+`push` is the generic ingest group, and also the fallback for any receiver group
+an instance does not declare. A target with no `group` at all is a legacy
+fallback serving every surface, which is how every instance configured before
+target groups behaves. Groups do not apply to the single-`url` form, which names
+one origin serving every surface.
 
 Each group is an independent target list, so groups can differ in host as well
-as port. Each target keeps its own `basic_auth`, `tenant_id`, `skip_tls_verify`
-and `timeout_seconds`. Receiver groups are fanned out within the group; query
-targets are tried in order and the first that answers wins.
+as port, and each target keeps its own `basic_auth`, `skip_tls_verify` and
+`timeout_seconds`. **Tenancy is not among them**: `tenant_id` is a property of
+the instance and every one of its targets asserts it. Targets of one instance
+address one backend — with groups, often two surfaces of the same process — so a
+per-target tenant could only ever mean writing as one tenant and reading as
+another. Fan out to two tenants by configuring two instances.
+
+Receiver groups are fanned out within the group; query targets are tried in
+order and the first that answers wins.
 
 ## Building
 

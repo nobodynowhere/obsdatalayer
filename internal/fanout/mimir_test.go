@@ -81,10 +81,11 @@ func TestMimirPushInjectsConfiguredTenantWhenGranted(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	inst := &config.InstanceConfig{
-		Name:    "mimir-prod",
-		Backend: "mimir",
+		Name:     "mimir-prod",
+		Backend:  "mimir",
+		TenantID: "tenant-b",
 		PushURLs: []config.PushTarget{
-			{URL: upstream.URL, TenantID: "tenant-b"},
+			{URL: upstream.URL},
 		},
 	}
 	cfg := newTestConfig([]*config.InstanceConfig{inst})
@@ -118,10 +119,11 @@ func TestMimirPushRejectsConfiguredTenantWithoutGrant(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	inst := &config.InstanceConfig{
-		Name:    "mimir-prod",
-		Backend: "mimir",
+		Name:     "mimir-prod",
+		Backend:  "mimir",
+		TenantID: "tenant-b",
 		PushURLs: []config.PushTarget{
-			{URL: upstream.URL, TenantID: "tenant-b"},
+			{URL: upstream.URL},
 		},
 	}
 	cfg := newTestConfig([]*config.InstanceConfig{inst})

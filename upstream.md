@@ -399,9 +399,15 @@ Ingest runs on **separate receiver ports** from the query API. Express this by
 giving the instance grouped targets: `group: query` for the HTTP API and
 receiver groups such as `group: otlp_http`, `group: jaeger` and `group: zipkin`
 for the matching HTTP ingest routes; see the OTLP exporters section of the
-README. These receiver-specific groups mainly matter for Tempo; Mimir and Loki
-serve OTLP HTTP on the same distributor listener as their other ingest paths,
-so they normally use the generic `group: push` for ingest.
+README. The receiver groups exist **only for Tempo**: Mimir and Loki serve OTLP
+HTTP on the same distributor listener as their other ingest paths, so the
+gateway always routes their ingest to `group: push` and rejects a target on
+either backend that names a receiver group it does not serve.
+
+Tenancy is not a target property. `tenant_id` belongs to the instance and every
+target asserts it, because an instance's targets address one backend -- with
+groups, often two surfaces of one process -- where two tenants would mean
+writing as one and reading as the other. Two tenants means two instances.
 
 A target with no group is a legacy fallback for every HTTP surface, and reads
 fall back to generic push or ungrouped targets when an instance declares no

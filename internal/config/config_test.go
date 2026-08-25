@@ -264,7 +264,7 @@ func TestGetPushTargetsPerTargetOverride(t *testing.T) {
 		Name: "loki-prod", Backend: "loki",
 		BasicAuth: "default:pass", TenantID: "default-tenant", SkipTLSVerify: true,
 		PushURLs: []config.PushTarget{
-			{URL: "http://a.local", BasicAuth: "override:secret", TenantID: "tenant-a"},
+			{URL: "http://a.local", BasicAuth: "override:secret"},
 			{URL: "http://b.local"},
 		},
 	}
@@ -272,7 +272,9 @@ func TestGetPushTargetsPerTargetOverride(t *testing.T) {
 	if len(targets) != 2 {
 		t.Fatalf("expected 2 targets, got %d", len(targets))
 	}
-	if targets[0].BasicAuth != "override:secret" || targets[0].TenantID != "tenant-a" || !targets[0].SkipTLSVerify {
+	// The credential is a per-target override; the tenant is the instance's on
+	// every target, because a target has no tenant of its own to override with.
+	if targets[0].BasicAuth != "override:secret" || targets[0].TenantID != "default-tenant" || !targets[0].SkipTLSVerify {
 		t.Errorf("expected per-target override, got %+v", targets[0])
 	}
 	if targets[1].BasicAuth != "default:pass" || targets[1].TenantID != "default-tenant" || !targets[1].SkipTLSVerify {
@@ -337,11 +339,17 @@ func TestValidateTenantsRejectsUnknownReference(t *testing.T) {
 	}
 }
 
-func TestValidateTenantsCoversPushTargets(t *testing.T) {
+// This once asserted that a tenant declared on a push target was validated too.
+// Targets no longer carry one, so what has to stay covered is the fan-out form
+// itself: an instance configured with push_urls rather than a single url still
+// has its own tenant reference checked against the registry.
+func TestValidateTenantsCoversFanOutInstances(t *testing.T) {
 	i := &config.InstanceConfig{
 		Name: "mimir-prod", Backend: "mimir",
+		TenantID: "6f1d2c9e-9d3a-4c1b-8f47-2b0a5e7c1d34",
 		PushURLs: []config.PushTarget{
-			{URL: "http://mimir-a.local", TenantID: "6f1d2c9e-9d3a-4c1b-8f47-2b0a5e7c1d34"},
+			{URL: "http://mimir-a.local"},
+			{URL: "http://mimir-b.local"},
 		},
 	}
 	cfg, err := loadInstances(i)
@@ -349,7 +357,11 @@ func TestValidateTenantsCoversPushTargets(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 	if err := cfg.ValidateTenants(fakeRegistry{}); err == nil {
-		t.Error("expected push target tenant references to be validated too")
+		t.Error("expected the instance tenant reference to be validated")
+	}
+	known := fakeRegistry{"6f1d2c9e-9d3a-4c1b-8f47-2b0a5e7c1d34": true}
+	if err := cfg.ValidateTenants(known); err != nil {
+		t.Errorf("a known tenant should validate, got: %v", err)
 	}
 }
 
@@ -466,5 +478,83 @@ func TestUnknownTargetGroupIsRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "push_urls[0]") || !strings.Contains(err.Error(), "ingest") {
 		t.Errorf("expected the error to identify the target and the bad group, got: %v", err)
+	}
+}
+
+// ---- backend-specific groups ------------------------------------------------
+
+// Groups name receiver surfaces, and the three backends do not have the same
+// ones. Tempo's distributor is a set of OpenTelemetry receivers on their own
+// ports; Mimir and Loki serve their OTLP paths on the same listener as their
+// native push paths, so a receiver-specific group there names a surface that
+// does not exist and would never be routed to.
+func TestGroupsAreBackendSpecific(t *testing.T) {
+	cases := []struct {
+		backend, group string
+		allowed        bool
+	}{
+		{"tempo", config.TargetGroupOTLPHTTP, true},
+		{"tempo", config.TargetGroupJaeger, true},
+		{"tempo", config.TargetGroupZipkin, true},
+		{"tempo", config.TargetGroupQuery, true},
+		{"mimir", config.TargetGroupQuery, true},
+		{"mimir", config.TargetGroupPush, true},
+		{"mimir", config.TargetGroupOTLPHTTP, false},
+		{"mimir", config.TargetGroupJaeger, false},
+		{"loki", config.TargetGroupOTLPHTTP, false},
+		{"loki", config.TargetGroupZipkin, false},
+		// The legacy fallback is valid everywhere and is not a choice.
+		{"loki", "", true},
+		{"mimir", "", true},
+		{"tempo", "", true},
+	}
+	for _, tc := range cases {
+		if got := config.BackendAllowsGroup(tc.backend, tc.group); got != tc.allowed {
+			t.Errorf("BackendAllowsGroup(%q, %q) = %v, want %v", tc.backend, tc.group, got, tc.allowed)
+		}
+	}
+}
+
+func TestReceiverGroupOnMimirIsRejected(t *testing.T) {
+	i := &config.InstanceConfig{
+		Name: "mimir-prod", Backend: "mimir",
+		PushURLs: []config.PushTarget{{URL: "http://mimir.local", Group: config.TargetGroupJaeger}},
+	}
+	_, err := loadInstances(i)
+	if err == nil {
+		t.Fatal("expected a Jaeger group on a Mimir instance to be rejected")
+	}
+	// The message has to name the offending target and what is allowed, or an
+	// operator cannot tell a typo from an unsupported surface.
+	for _, want := range []string{"push_urls[0]", "jaeger", "mimir", "query"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should mention %q, got: %v", want, err)
+		}
+	}
+}
+
+// ---- tenancy is an instance property ----------------------------------------
+
+// Targets carry the instance's tenant, always. With target groups an instance's
+// targets can be different surfaces of one backend, where two tenants would
+// mean writing as one and reading as the other -- so the config has no way to
+// say it.
+func TestEveryTargetCarriesTheInstanceTenant(t *testing.T) {
+	i := &config.InstanceConfig{
+		Name: "tempo-prod", Backend: "tempo", TenantID: "acme",
+		PushURLs: []config.PushTarget{
+			{URL: "http://tempo.local:4318", Group: config.TargetGroupOTLPHTTP},
+			{URL: "http://tempo.local:3200", Group: config.TargetGroupQuery},
+		},
+	}
+	for _, group := range []string{config.TargetGroupOTLPHTTP, config.TargetGroupQuery} {
+		for _, target := range i.GetTargets(group) {
+			if target.TenantID != "acme" {
+				t.Errorf("group %q target %q carried tenant %q, want the instance's", group, target.URL, target.TenantID)
+			}
+		}
+	}
+	if q := i.GetQueryTarget(); q.TenantID != "acme" {
+		t.Errorf("query target carried tenant %q, want the instance's", q.TenantID)
 	}
 }

@@ -108,8 +108,9 @@ decryption key so the rotation can be staged across a restart.
 ## P2 - A tenant can be deleted while instances still reference it
 
 `deleteTenant` refuses to remove a tenant that any user or role grant references,
-but it does not consult instance configuration. An instance `tenant_id` or push
-target `tenant_id` pointing at the tenant is not checked.
+but it does not consult instance configuration. An instance `tenant_id` pointing
+at the tenant is not checked. (Targets no longer carry a `tenant_id` of their
+own; tenancy is an instance property.)
 
 References:
 - `deleteTenant`, `internal/adminapi/adminapi.go:449`, inspects `ListUsers` and
