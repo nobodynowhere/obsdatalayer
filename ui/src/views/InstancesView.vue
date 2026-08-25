@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useToast } from 'primevue/usetoast'
 import { useConfirm } from 'primevue/useconfirm'
 import { InstanceService, TenantService } from '@/services'
@@ -26,6 +26,14 @@ const backends = [
   { label: 'loki', value: 'loki' },
   { label: 'mimir', value: 'mimir' },
   { label: 'tempo', value: 'tempo' },
+]
+// "Fan out" named the replication case and hid the surface-routing one, which
+// is the case target groups exist for: a Tempo instance addressing 4318 and
+// 3200 is not replicating anything. The label has to cover both, because it is
+// the only route to the per-target Group control.
+const targetModes = [
+  { label: 'Single URL — one origin serves every surface', value: 'single' },
+  { label: 'Several targets — replicas, or separate ingest and query surfaces', value: 'fanout' },
 ]
 const fanOutModes = [
   { label: 'any — succeed if one target accepts', value: 'any' },
@@ -263,8 +271,30 @@ async function openTargetStatus(inst, check) {
   }
 }
 
-const addTarget = () =>
-  form.value.push_urls.push({ url: '', group: '', basic_auth: '', tenant_id: '', skip_tls_verify: false, timeout_seconds: 0 })
+const newTarget = (url = '') => ({
+  url,
+  group: '',
+  basic_auth: '',
+  tenant_id: '',
+  skip_tls_verify: false,
+  timeout_seconds: 0,
+})
+
+const addTarget = () => form.value.push_urls.push(newTarget())
+
+// Converting an existing single-URL instance to several targets is the main
+// reason anyone touches the mode control -- it is how a Tempo instance grows a
+// separate receiver and query surface. Starting that from an empty list meant
+// the URL already configured was silently dropped on save, because the payload
+// carries push_urls instead of url in this mode. Seed the first target from it.
+watch(
+  () => form.value.mode,
+  (mode, previous) => {
+    if (mode !== 'fanout' || previous !== 'single') return
+    if (form.value.push_urls.length || !form.value.url) return
+    form.value.push_urls.push(newTarget(form.value.url))
+  },
+)
 const removeTarget = (i) => form.value.push_urls.splice(i, 1)
 
 // Order is meaningful within a group, and only there. Every target in an ingest
@@ -463,13 +493,16 @@ onMounted(load)
         <label>Targets</label>
         <PrimeSelect
           v-model="form.mode"
-          :options="[
-            { label: 'Single URL', value: 'single' },
-            { label: 'Fan out to several targets', value: 'fanout' },
-          ]"
+          :options="targetModes"
           option-label="label"
           option-value="value"
         />
+        <small>
+          Choose several targets to replicate writes across backends, to give reads a fallback, or
+          to address a backend whose ingest and query APIs listen on different ports — Tempo serves
+          its OTLP, Jaeger and Zipkin receivers separately from its HTTP API, so reaching both needs
+          one target per surface.
+        </small>
       </div>
 
       <div class="form-field" v-if="form.mode === 'single'">
@@ -482,6 +515,11 @@ onMounted(load)
         <div class="form-field">
           <label>Fan-out mode</label>
           <PrimeSelect v-model="form.fan_out_mode" :options="fanOutModes" option-label="label" option-value="value" />
+          <small>
+            How the responses from one group's targets are aggregated. It decides nothing when a
+            group holds a single target, which is the usual shape when the groups address different
+            surfaces rather than replicas.
+          </small>
         </div>
         <div class="form-field">
           <label>Push targets</label>
