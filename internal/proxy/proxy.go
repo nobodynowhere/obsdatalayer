@@ -204,6 +204,9 @@ type OperationalResponse struct {
 //     to every target and answers with all of them at once. maxBody caps what
 //     is held per target; a body that hits the cap is returned truncated and
 //     says so, rather than being dropped or held whole. Pass 0 for no cap.
+//   - It drops the caller's Accept-Encoding, so that the body it returns is
+//     decoded text rather than whatever the caller happened to negotiate. See
+//     the comment at the call site for why this follows from the point above.
 //
 // A transport failure is returned as an error. An upstream that answers is not
 // an error however it answered: a 503 from /ready is a successful observation.
@@ -227,6 +230,26 @@ func (p *Proxy) FetchOperational(ctx context.Context, inst *config.InstanceConfi
 		return OperationalResponse{}, err
 	}
 	CopyHeadersUntenanted(req, inbound, target)
+
+	// The caller's Accept-Encoding is dropped rather than relayed. Go's
+	// transport adds its own gzip offer and decodes the answer transparently --
+	// but only when the request carries no Accept-Encoding of its own. Setting
+	// one explicitly is how a caller says "hand me the compressed bytes", and
+	// the body then arrives still encoded, with resp.Header keeping the
+	// Content-Encoding that describes it.
+	//
+	// That is right for a verbatim stream and wrong for every caller here.
+	// This fetch does not relay a stream: the fan-out puts the body in a JSON
+	// string field and the legacy passthrough rewrites nothing but still reads
+	// the bytes. A browser sends "gzip, deflate, br, zstd" on every request it
+	// makes, so /metrics -- served by promhttp, which honours the offer where
+	// the plainer /ready and /config handlers ignore it -- came back as gzip
+	// bytes stuffed into JSON and rendered as mojibake.
+	//
+	// Dropping it also puts the maxBody cap on the bytes it is meant to
+	// measure. Applied to a compressed body it capped roughly ten times the
+	// text it claimed to.
+	req.Header.Del("Accept-Encoding")
 
 	slog.Debug("fetching upstream operational endpoint",
 		"instance", inst.Name, "url", upstreamURL)

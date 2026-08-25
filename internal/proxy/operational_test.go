@@ -1,6 +1,7 @@
 package proxy_test
 
 import (
+	"compress/gzip"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -141,5 +142,56 @@ func TestFetchOperationalHonoursTheTargetTimeout(t *testing.T) {
 	}
 	if !proxy.IsTimeout(err) {
 		t.Fatalf("error = %v, want a timeout", err)
+	}
+}
+
+// TestFetchOperationalReturnsDecodedTextWhenTheCallerAcceptsGzip covers the
+// bug the operational /metrics view had: a browser offers "gzip, deflate, br,
+// zstd" on every request, Accept-Encoding is on the forwardable allowlist, and
+// promhttp takes the offer. The compressed bytes then reached the fan-out,
+// which put them in a JSON string, which the UI rendered as mojibake. Loki's
+// plainer handlers -- /ready, /config -- ignore the offer, which is why only
+// metrics looked corrupt.
+//
+// The assertion is on the returned body, not on the outbound header, because
+// what callers depend on is that this returns text: whether Go's transport
+// negotiates gzip underneath is its own business.
+func TestFetchOperationalReturnsDecodedTextWhenTheCallerAcceptsGzip(t *testing.T) {
+	const exposition = "# HELP loki_build_info Build information.\nloki_build_info{version=\"3.4.1\"} 1\n"
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+			_, _ = w.Write([]byte(exposition))
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+		w.Header().Set("Content-Encoding", "gzip")
+		gz := gzip.NewWriter(w)
+		_, _ = gz.Write([]byte(exposition))
+		_ = gz.Close()
+	}))
+	t.Cleanup(upstream.Close)
+
+	p := proxy.New(upstream.Client(), upstream.Client())
+	inst := &config.InstanceConfig{Name: "loki-prod", Backend: "loki", URL: upstream.URL}
+	inbound := http.Header{"Accept-Encoding": []string{"gzip, deflate, br, zstd"}}
+
+	got, err := p.FetchOperational(
+		context.Background(), inst, config.PushTarget{URL: upstream.URL},
+		"metrics", "/metrics", "", inbound, 1<<20,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(got.Body) != exposition {
+		t.Fatalf("body = %q, want the decoded exposition", string(got.Body))
+	}
+	// The relayed header must not keep describing an encoding the body no
+	// longer carries: the legacy passthrough copies this header verbatim onto
+	// its own response, and a Content-Encoding: gzip over plain text is a
+	// response no client can read.
+	if enc := got.Header.Get("Content-Encoding"); enc != "" {
+		t.Errorf("Content-Encoding = %q, want it absent once the body is decoded", enc)
 	}
 }
