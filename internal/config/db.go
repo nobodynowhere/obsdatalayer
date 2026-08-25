@@ -29,8 +29,9 @@ func LoadFromDB(db *gorm.DB, c *secret.Cipher) (*Config, error) {
 	var instances []dbstore.Instance
 	if err := db.
 		Preload("PushTargets", func(db *gorm.DB) *gorm.DB {
-			// Explicit: reads try targets in this order, so it has to be the
-			// order the operator configured, not the database's choice.
+			// Explicit: targets are tried in this order within their group,
+			// so it has to be the order the operator configured, not the
+			// database's choice.
 			return db.Order("position")
 		}).
 		Preload("LabelsGroup.Filter.Names").
@@ -396,6 +397,7 @@ func mapInstance(inst *dbstore.Instance, c *secret.Cipher) (*InstanceConfig, err
 				URL:            pt.URL,
 				BasicAuth:      ptAuth,
 				TenantID:       pt.TenantID,
+				Group:          pt.TargetGroup,
 				SkipTLSVerify:  pt.SkipTLSVerify,
 				TimeoutSeconds: pt.TimeoutSeconds,
 			})
@@ -486,6 +488,7 @@ func savePushTarget(tx *gorm.DB, instID uuid.UUID, position int, pt PushTarget, 
 		URL:            pt.URL,
 		BasicAuth:      basicAuth,
 		TenantID:       pt.TenantID,
+		TargetGroup:    pt.Group,
 		SkipTLSVerify:  pt.SkipTLSVerify,
 		TimeoutSeconds: pt.TimeoutSeconds,
 	}

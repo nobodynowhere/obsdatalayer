@@ -276,10 +276,48 @@ OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=https://gateway:8080/otlp/v1/logs
 OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://gateway:8080/v1/traces
 ```
 
-Note that Tempo serves OTLP on a dedicated receiver port (4318 by default),
-separate from its query API port. The gateway currently reaches an instance
-through a single configured URL, so a Tempo instance fronted for both ingestion
-and querying needs those two ports reconciled upstream.
+Note that Tempo serves OTLP HTTP on a dedicated receiver port (4318 by
+default), separate from its query API port (3200). Jaeger Thrift HTTP and
+Zipkin can be separate receiver ports too. Give the instance one target group
+per surface:
+
+```yaml
+instances:
+  - name: tempo-prod
+    backend: tempo
+    push_urls:
+      - url: http://tempo-distributor:4318
+        group: otlp_http
+      - url: http://tempo-distributor:14268
+        group: jaeger
+      - url: http://tempo-distributor:9411
+        group: zipkin
+      - url: http://tempo-query-frontend:3200
+        group: query
+```
+
+`group: query` targets serve queries, health checks and per-target operational
+endpoints. Writes to Tempo's own HTTP API — the overrides endpoint, and the
+ruler and Alertmanager equivalents on the other backends — also follow the query
+group, because they address the API surface rather than the receivers.
+
+`group: otlp_http`, `group: jaeger` and `group: zipkin` targets receive their
+matching HTTP ingest routes. These receiver-specific groups mainly matter for
+Tempo, where those routes can live on separate receiver ports. Mimir and Loki
+serve their OTLP HTTP paths on the same distributor listener as their other
+ingest paths, so they normally use `group: push` for all ingest. `group: push`
+is the generic ingest fallback, useful when every receiver for an instance is
+already merged behind one upstream origin.
+
+A target with no `group` is a legacy fallback target. Every instance configured
+before target groups existed behaves exactly as it did: one list, every HTTP
+surface. Groups do not apply to the single-`url` form at all, which names one
+origin serving every surface.
+
+Each group is an independent target list, so groups can differ in host as well
+as port. Each target keeps its own `basic_auth`, `tenant_id`, `skip_tls_verify`
+and `timeout_seconds`. Receiver groups are fanned out within the group; query
+targets are tried in order and the first that answers wins.
 
 ## Building
 
@@ -615,10 +653,16 @@ Both limits export counters: `gateway_auth_rejected_total{reason="throttled"}`,
 
 ### Fan-out reads
 
-A fan-out instance pushes to every target in `push_urls`; `fan_out_mode` decides
-only how the responses are aggregated (`any` succeeds if one target accepts,
-`all` requires them all). The targets are therefore replicas, and reads try them
-in the configured order until one answers.
+A fan-out instance pushes to every target in the ingest group a route maps to;
+`fan_out_mode` decides only how the responses are aggregated (`any` succeeds if
+one target accepts, `all` requires them all). The targets within a group are
+therefore replicas.
+
+Reads walk a single group — the `query` group when the instance declares one,
+otherwise `push` and then ungrouped legacy targets — and try its targets in the
+configured order until one answers. Order is preference inside a group and
+nowhere else: a target's position relative to targets in a *different* group
+decides nothing.
 
 - Transport failures and 5xx move on to the next target. A 4xx does not — that
   is the upstream answering, and a replica returns the same answer.

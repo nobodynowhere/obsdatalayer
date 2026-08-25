@@ -62,8 +62,13 @@ type Instance struct {
 // order rows come back in is whatever the database chooses, which is not the
 // order the operator wrote: the primary key is a random UUID, so ordering by it
 // is arbitrary, and nothing else in the row carries the sequence. That matters
-// now that reads try targets in order -- the first target is the preferred one,
-// and an operator reordering the list in the UI expects that to take effect.
+// because targets are tried in order within their group -- the first target of
+// a group is the preferred one for that surface -- and an operator reordering
+// the list in the UI expects that to take effect.
+//
+// Position is a single sequence over the whole list rather than one per group,
+// which is what keeps the UI's move-up and move-down honest: relative order
+// within each group is preserved however the groups are interleaved.
 type PushTarget struct {
 	ID            uuid.UUID `gorm:"type:text;primaryKey"`
 	InstanceID    uuid.UUID `gorm:"type:text;index"`
@@ -72,6 +77,9 @@ type PushTarget struct {
 	BasicAuth     string
 	TenantID      string
 	SkipTLSVerify bool
+	// TargetGroup names the upstream surface this target serves. Empty is the
+	// legacy group used as a fallback for every HTTP surface.
+	TargetGroup string `gorm:"column:target_group"`
 	// TimeoutSeconds is 0 when the target defers to default_target_timeout.
 	TimeoutSeconds int
 }

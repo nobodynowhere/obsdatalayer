@@ -249,7 +249,10 @@ func serveOperational(w http.ResponseWriter, r *http.Request, h *config.ConfigHo
 		return
 	}
 
-	targets := inst.GetPushTargets()
+	// The read targets, not the receiver targets. Every alias in these tables
+	// is served by the backend's HTTP API; asking a receiver port for /ready
+	// returns a 404 that looks like a gateway fault.
+	targets := inst.GetReadTargets()
 	results := make([]TargetResultDoc, len(targets))
 
 	// Every target is asked at once. Serially, one hung target would delay the
@@ -378,7 +381,10 @@ func operationalInstance(w http.ResponseWriter, r *http.Request, cfg *config.Con
 func instanceTenantIDs(inst *config.InstanceConfig) []string {
 	seen := make(map[string]struct{})
 	var ids []string
-	for _, target := range inst.GetPushTargets() {
+	// Both read and write surfaces. A tenant ID declared only on a
+	// receiver-specific group must still be counted here.
+	both := append(inst.WriteTargets(), inst.GetReadTargets()...)
+	for _, target := range both {
 		if target.TenantID == "" {
 			continue
 		}

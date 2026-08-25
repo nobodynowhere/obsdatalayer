@@ -115,7 +115,7 @@ func forwardMimirPush(w http.ResponseWriter, r *http.Request, h *config.ConfigHo
 			return rewrite.RewriteMimirWithStats(body, inst.Labels)
 		}
 	}
-	handlePush(w, r, inst, upstreamPath, rewriteFn, maxBytes, p, m)
+	handlePush(w, r, inst, upstreamPath, config.TargetGroupPush, rewriteFn, maxBytes, p, m)
 }
 
 // registerMimirHealth mounts one of the health checks Grafana's Prometheus and

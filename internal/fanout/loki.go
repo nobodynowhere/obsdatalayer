@@ -135,7 +135,7 @@ func forwardLokiPush(w http.ResponseWriter, r *http.Request, h *config.ConfigHol
 			return rewrite.RewriteLokiWithStats(ct, body, inst.Labels)
 		}
 	}
-	handlePush(w, r, inst, upstreamPath, rewriteFn, maxBytes, p, m)
+	handlePush(w, r, inst, upstreamPath, config.TargetGroupPush, rewriteFn, maxBytes, p, m)
 }
 
 func registerLokiQuery(mux Registrar, pattern string, h *config.ConfigHolder, p *proxy.Proxy, endpoint, upstreamPath string) {

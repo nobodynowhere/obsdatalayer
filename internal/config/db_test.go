@@ -444,6 +444,70 @@ func TestPushTargetOrderSurvivesRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPushTargetGroupSurvivesRoundTrip(t *testing.T) {
+	gormDB := openTestConfigDB(t)
+
+	inst := fanoutInst("tempo-prod", "http://tempo-otlp.local", "http://tempo-api.local")
+	inst.Backend = "tempo"
+	inst.PushURLs[0].Group = config.TargetGroupOTLPHTTP
+	inst.PushURLs[1].Group = config.TargetGroupQuery
+	if err := config.CreateInstance(gormDB, inst, nil, nil); err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+
+	cfg, err := config.LoadFromDB(gormDB, nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	targets := cfg.Instances[0].PushURLs
+	if targets[0].Group != config.TargetGroupOTLPHTTP || targets[1].Group != config.TargetGroupQuery {
+		t.Fatalf("target groups = %q, %q", targets[0].Group, targets[1].Group)
+	}
+	if read := cfg.Instances[0].GetReadTargets(); len(read) != 1 || read[0].URL != "http://tempo-api.local" {
+		t.Fatalf("read targets = %+v", read)
+	}
+	if otlp := cfg.Instances[0].GetTargets(config.TargetGroupOTLPHTTP); len(otlp) != 1 || otlp[0].URL != "http://tempo-otlp.local" {
+		t.Fatalf("OTLP targets = %+v", otlp)
+	}
+}
+
+func TestMigrateAddsTargetGroupToLegacyPushTargets(t *testing.T) {
+	gormDB := openTestConfigDB(t)
+
+	inst := fanoutInst("tempo-prod", "http://tempo.local")
+	inst.Backend = "tempo"
+	if err := config.CreateInstance(gormDB, inst, nil, nil); err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+	if err := gormDB.Migrator().DropColumn(&db.PushTarget{}, "target_group"); err != nil {
+		t.Fatalf("drop target_group: %v", err)
+	}
+	if gormDB.Migrator().HasColumn(&db.PushTarget{}, "target_group") {
+		t.Fatal("precondition failed: target_group column still exists")
+	}
+
+	if err := db.Migrate(gormDB); err != nil {
+		t.Fatalf("migrate legacy db: %v", err)
+	}
+	if !gormDB.Migrator().HasColumn(&db.PushTarget{}, "target_group") {
+		t.Fatal("target_group column was not added")
+	}
+	cfg, err := config.LoadFromDB(gormDB, nil)
+	if err != nil {
+		t.Fatalf("load migrated db: %v", err)
+	}
+	targets := cfg.Instances[0].PushURLs
+	if len(targets) != 1 || targets[0].Group != "" {
+		t.Fatalf("legacy target group = %+v", targets)
+	}
+	if read := cfg.Instances[0].GetReadTargets(); len(read) != 1 || read[0].URL != "http://tempo.local" {
+		t.Fatalf("legacy target should remain read fallback, got %+v", read)
+	}
+	if otlp := cfg.Instances[0].GetTargets(config.TargetGroupOTLPHTTP); len(otlp) != 1 || otlp[0].URL != "http://tempo.local" {
+		t.Fatalf("legacy target should remain ingest fallback, got %+v", otlp)
+	}
+}
+
 // Reordering through the admin API must actually change which target is first,
 // which is what decides where reads go.
 func TestPushTargetOrderCanBeChanged(t *testing.T) {

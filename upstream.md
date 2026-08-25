@@ -395,8 +395,18 @@ transcribed from Tempo's API reference.** Confirm them against the deployment's
 receiver configuration before relying on them. Note also that Tempo serves a
 bare `/v1/traces`, without the `/otlp` prefix that Mimir and Loki use.
 
-Ingest runs on **separate receiver ports** from the query API, which a gateway
-reaching an instance through a single configured URL cannot express.
+Ingest runs on **separate receiver ports** from the query API. Express this by
+giving the instance grouped targets: `group: query` for the HTTP API and
+receiver groups such as `group: otlp_http`, `group: jaeger` and `group: zipkin`
+for the matching HTTP ingest routes; see the OTLP exporters section of the
+README. These receiver-specific groups mainly matter for Tempo; Mimir and Loki
+serve OTLP HTTP on the same distributor listener as their other ingest paths,
+so they normally use the generic `group: push` for ingest.
+
+A target with no group is a legacy fallback for every HTTP surface, and reads
+fall back to generic push or ungrouped targets when an instance declares no
+query group — so this changes nothing for a configuration written before groups
+existed.
 
 ### Data source (query API)
 

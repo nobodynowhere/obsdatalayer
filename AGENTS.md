@@ -145,10 +145,12 @@
   never reach the threshold. It never returns an empty target list.
 - POST reads (form-encoded queries) are buffered up to `maxReplayableReadBody`
   so they can be replayed; a larger body is streamed to a single target.
-- Push-target order is load-bearing (target 1 is preferred for reads) and is
-  persisted as `push_targets.position`. The load must keep its `Order("position")`
-  — without it the row order is the database's choice and reordering in the UI
-  silently does nothing.
+- Push-target order is load-bearing *within a target group* (the group's first
+  target is preferred for reads) and is persisted as `push_targets.position`.
+  The load must keep its `Order("position")` — without it the row order is the
+  database's choice and reordering in the UI silently does nothing. Position is
+  one sequence over the whole list, not one per group, so relative order inside
+  each group survives however the groups are interleaved.
 - Reads are counted per target via `Proxy.recordRead` →
   `gateway_read_requests_total{instance,target,result}`, with
   `gateway_read_failovers_total` for reads that needed more than one target. The

@@ -422,10 +422,13 @@ Recorded so they are not re-reported as defects.
   instance's, and reordering targets in the admin UI moves each credential with
   its own URL rather than its position.
 
-- **Read preference follows the configured push-target order.** The first target
-  is the one queried; the rest are fallbacks. It is stored as an explicit
-  position rather than left to the database's row order, so reordering the list
-  in the admin UI changes where reads go.
+- **Read preference follows the configured target order within the group reads
+  resolve to.** That group is `query` when the instance declares one, otherwise
+  `push` and then ungrouped legacy targets; its first target is the one queried
+  and the rest are fallbacks. Position is stored explicitly rather than left to
+  the database's row order, so reordering the list in the admin UI changes where
+  reads go — as long as the move is within the group, since position relative to
+  another group's targets decides nothing.
 
 ---
 

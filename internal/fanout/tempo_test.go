@@ -400,3 +400,120 @@ func TestHealthCheckWithoutBackendIs404(t *testing.T) {
 		t.Fatalf("expected 404, got %d", rec.Code)
 	}
 }
+
+// TestTempoGroupsRouteIngestAndQuerySeparately is the deployment this was built
+// for: Tempo's receivers and HTTP API on different ports, fronted by one
+// gateway instance.
+func TestTempoGroupsRouteIngestAndQuerySeparately(t *testing.T) {
+	var otlpPaths, jaegerPaths, zipkinPaths, apiPaths []string
+
+	otlp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		otlpPaths = append(otlpPaths, r.URL.Path)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(otlp.Close)
+
+	jaeger := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		jaegerPaths = append(jaegerPaths, r.URL.Path)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(jaeger.Close)
+
+	zipkin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		zipkinPaths = append(zipkinPaths, r.URL.Path)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(zipkin.Close)
+
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiPaths = append(apiPaths, r.URL.Path)
+		w.Write([]byte("echo"))
+	}))
+	t.Cleanup(api.Close)
+
+	inst := &config.InstanceConfig{
+		Name: "tempo-prod", Backend: "tempo",
+		PushURLs: []config.PushTarget{
+			{URL: otlp.URL, Group: config.TargetGroupOTLPHTTP},
+			{URL: jaeger.URL, Group: config.TargetGroupJaeger},
+			{URL: zipkin.URL, Group: config.TargetGroupZipkin},
+			{URL: api.URL, Group: config.TargetGroupQuery},
+		},
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	p := proxy.New(client, client)
+	h := newTempoTestMux(newTestConfig([]*config.InstanceConfig{inst}), p)
+
+	for _, tc := range []struct {
+		path string
+		want int
+	}{
+		{"/v1/traces", http.StatusOK},
+		{"/api/traces", http.StatusAccepted},
+		{"/api/v2/spans", http.StatusAccepted},
+	} {
+		push := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader("trace data"))
+		push.Header.Set("Authorization", authHeader())
+		push.Header.Set("Content-Type", "application/x-protobuf")
+		pushRec := httptest.NewRecorder()
+		h.ServeHTTP(pushRec, push)
+		if pushRec.Code != tc.want {
+			t.Fatalf("%s: expected %d, got %d: %s", tc.path, tc.want, pushRec.Code, strings.TrimSpace(pushRec.Body.String()))
+		}
+	}
+
+	// The health check and a query go to the HTTP API.
+	for _, path := range []string{"/tempo/api/echo", "/tempo/api/search"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", authHeader())
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200, got %d: %s", path, rec.Code, strings.TrimSpace(rec.Body.String()))
+		}
+	}
+
+	if len(otlpPaths) != 1 || otlpPaths[0] != "/v1/traces" {
+		t.Errorf("the OTLP receiver should have seen exactly the OTLP trace push, got %v", otlpPaths)
+	}
+	if len(jaegerPaths) != 1 || jaegerPaths[0] != "/api/traces" {
+		t.Errorf("the Jaeger receiver should have seen exactly the Jaeger trace push, got %v", jaegerPaths)
+	}
+	if len(zipkinPaths) != 1 || zipkinPaths[0] != "/api/v2/spans" {
+		t.Errorf("the Zipkin receiver should have seen exactly the Zipkin spans push, got %v", zipkinPaths)
+	}
+	if len(apiPaths) != 2 || apiPaths[0] != "/api/echo" || apiPaths[1] != "/api/search" {
+		t.Errorf("the HTTP API should have seen echo and the query, got %v", apiPaths)
+	}
+}
+
+// TestTempoQueryOnlyInstanceRefusesIngest keeps the ingest failure legible. A
+// fan-out over zero targets would otherwise report success for spans nobody
+// stored.
+func TestTempoQueryOnlyInstanceRefusesIngest(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("echo"))
+	}))
+	t.Cleanup(api.Close)
+
+	inst := &config.InstanceConfig{
+		Name: "tempo-ro", Backend: "tempo",
+		PushURLs: []config.PushTarget{{URL: api.URL, Group: config.TargetGroupQuery}},
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	p := proxy.New(client, client)
+	h := newTempoTestMux(newTestConfig([]*config.InstanceConfig{inst}), p)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/traces", strings.NewReader("trace data"))
+	req.Header.Set("Authorization", authHeader())
+	req.Header.Set("Content-Type", "application/x-protobuf")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", rec.Code, strings.TrimSpace(rec.Body.String()))
+	}
+	if !strings.Contains(rec.Body.String(), "no target for group otlp_http") {
+		t.Errorf("expected the body to name the missing surface, got %s", strings.TrimSpace(rec.Body.String()))
+	}
+}

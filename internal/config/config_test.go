@@ -352,3 +352,119 @@ func TestValidateTenantsCoversPushTargets(t *testing.T) {
 		t.Error("expected push target tenant references to be validated too")
 	}
 }
+
+// ---- target groups ----------------------------------------------------------
+
+// TestTargetGroupsSplitTheSurfaces is the point of groups: Tempo serves ingest
+// receivers and its HTTP API on different listeners, so one instance has to be
+// able to address them without a proxy in front merging every port.
+func TestTargetGroupsSplitTheSurfaces(t *testing.T) {
+	i := &config.InstanceConfig{
+		Name: "tempo-prod", Backend: "tempo",
+		PushURLs: []config.PushTarget{
+			{URL: "http://tempo-otlp.local:4318", Group: config.TargetGroupOTLPHTTP},
+			{URL: "http://tempo-jaeger.local:14268", Group: config.TargetGroupJaeger},
+			{URL: "http://tempo-zipkin.local:9411", Group: config.TargetGroupZipkin},
+			{URL: "http://tempo-api.local:3200", Group: config.TargetGroupQuery},
+		},
+	}
+
+	otlp := i.GetTargets(config.TargetGroupOTLPHTTP)
+	if len(otlp) != 1 || otlp[0].URL != "http://tempo-otlp.local:4318" {
+		t.Errorf("OTLP targets should be the OTLP receivers only, got %+v", otlp)
+	}
+	jaeger := i.GetTargets(config.TargetGroupJaeger)
+	if len(jaeger) != 1 || jaeger[0].URL != "http://tempo-jaeger.local:14268" {
+		t.Errorf("Jaeger targets should be the Jaeger receivers only, got %+v", jaeger)
+	}
+	zipkin := i.GetTargets(config.TargetGroupZipkin)
+	if len(zipkin) != 1 || zipkin[0].URL != "http://tempo-zipkin.local:9411" {
+		t.Errorf("Zipkin targets should be the Zipkin receivers only, got %+v", zipkin)
+	}
+	read := i.GetReadTargets()
+	if len(read) != 1 || read[0].URL != "http://tempo-api.local:3200" {
+		t.Errorf("read targets should be the HTTP API only, got %+v", read)
+	}
+	if q := i.GetQueryTarget(); q.URL != "http://tempo-api.local:3200" {
+		t.Errorf("query target should follow the query role, got %+v", q)
+	}
+}
+
+// TestTargetsWithoutGroupsAreUnchanged is the compatibility guarantee. Every
+// instance configured before groups existed declared no group at all, and must
+// keep sending every HTTP surface to the same targets unless a specific group
+// is introduced.
+func TestTargetsWithoutGroupsAreUnchanged(t *testing.T) {
+	i := &config.InstanceConfig{
+		Name: "loki-prod", Backend: "loki",
+		PushURLs: []config.PushTarget{{URL: "http://a.local"}, {URL: "http://b.local"}},
+	}
+	push, read := i.GetPushTargets(), i.GetReadTargets()
+	if len(push) != 2 || len(read) != 2 {
+		t.Fatalf("expected both surfaces to keep all targets, got %d push and %d read", len(push), len(read))
+	}
+	for n := range push {
+		if push[n].URL != read[n].URL {
+			t.Errorf("target %d differs between surfaces: %q vs %q", n, push[n].URL, read[n].URL)
+		}
+	}
+	otlp := i.GetTargets(config.TargetGroupOTLPHTTP)
+	if len(otlp) != 2 || otlp[0].URL != "http://a.local" || otlp[1].URL != "http://b.local" {
+		t.Errorf("ungrouped targets should serve OTLP too, got %+v", otlp)
+	}
+}
+
+// TestQueryOnlyInstanceHasNoIngestTarget covers the configuration that is legal
+// but cannot ingest. The gateway answers at request time rather than refusing
+// the configuration, so a read-only instance is expressible.
+func TestQueryOnlyInstanceHasNoIngestTarget(t *testing.T) {
+	i := &config.InstanceConfig{
+		Name: "tempo-ro", Backend: "tempo",
+		PushURLs: []config.PushTarget{{URL: "http://tempo-api.local:3200", Group: config.TargetGroupQuery}},
+	}
+	if push := i.GetPushTargets(); len(push) != 0 {
+		t.Errorf("a query-only instance must have no push target, got %+v", push)
+	}
+	if read := i.GetReadTargets(); len(read) != 1 {
+		t.Errorf("expected the query target to serve reads, got %+v", read)
+	}
+}
+
+func TestQueryTargetsFallBackToPushTargets(t *testing.T) {
+	i := &config.InstanceConfig{
+		Name: "tempo-prod", Backend: "tempo",
+		PushURLs: []config.PushTarget{{URL: "http://tempo-distributor.local:4318", Group: config.TargetGroupPush}},
+	}
+	targets := i.GetTargets(config.TargetGroupQuery)
+	if len(targets) != 1 || targets[0].URL != "http://tempo-distributor.local:4318" {
+		t.Errorf("query targets should fall back to generic push targets, got %+v", targets)
+	}
+	if read := i.GetReadTargets(); len(read) != 1 || read[0].URL != targets[0].URL {
+		t.Errorf("read targets should match GetTargets(query), got %+v", read)
+	}
+}
+
+func TestGenericPushGroupIsIngestFallback(t *testing.T) {
+	i := &config.InstanceConfig{
+		Name: "tempo-prod", Backend: "tempo",
+		PushURLs: []config.PushTarget{{URL: "http://tempo-distributor.local:4318", Group: config.TargetGroupPush}},
+	}
+	otlp := i.GetTargets(config.TargetGroupOTLPHTTP)
+	if len(otlp) != 1 || otlp[0].URL != "http://tempo-distributor.local:4318" {
+		t.Errorf("specific ingest groups should fall back to generic push, got %+v", otlp)
+	}
+}
+
+func TestUnknownTargetGroupIsRejected(t *testing.T) {
+	i := &config.InstanceConfig{
+		Name: "tempo-prod", Backend: "tempo",
+		PushURLs: []config.PushTarget{{URL: "http://a.local", Group: "ingest"}},
+	}
+	_, err := loadInstances(i)
+	if err == nil {
+		t.Fatal("expected an unknown group to be rejected")
+	}
+	if !strings.Contains(err.Error(), "push_urls[0]") || !strings.Contains(err.Error(), "ingest") {
+		t.Errorf("expected the error to identify the target and the bad group, got: %v", err)
+	}
+}

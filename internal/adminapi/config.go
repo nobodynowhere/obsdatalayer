@@ -27,6 +27,7 @@ type targetDoc struct {
 	BasicAuth      string `json:"basic_auth,omitempty"`
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
 	TenantID       string `json:"tenant_id,omitempty"`
+	Group          string `json:"group,omitempty"`
 	SkipTLSVerify  bool   `json:"skip_tls_verify,omitempty"`
 }
 
@@ -58,7 +59,7 @@ func toDoc(inst *config.InstanceConfig) instanceDoc {
 		d.BasicAuth = redacted
 	}
 	for _, pt := range inst.PushURLs {
-		t := targetDoc{URL: pt.URL, TenantID: pt.TenantID, SkipTLSVerify: pt.SkipTLSVerify}
+		t := targetDoc{URL: pt.URL, TenantID: pt.TenantID, Group: pt.Group, SkipTLSVerify: pt.SkipTLSVerify}
 		t.TimeoutSeconds = pt.TimeoutSeconds
 		if pt.BasicAuth != "" {
 			t.BasicAuth = redacted
@@ -79,12 +80,32 @@ func toDoc(inst *config.InstanceConfig) instanceDoc {
 // existing instance on an update, used to carry forward credentials the client
 // echoed back as "<redacted>" rather than overwriting them with the mask.
 //
-// A masked push-target credential is resolved by matching the target's URL, not
-// its position. Positional matching silently misroutes credentials when targets
-// are reordered -- target A would be sent target B's upstream password. When a
-// mask cannot be resolved to a known URL the request is rejected rather than
-// guessed at, because the failure mode of guessing is sending a credential to
+// A masked push-target credential is resolved by matching the target's group
+// and URL, not its position. Positional matching silently misroutes credentials
+// when targets are reordered -- target A would be sent target B's upstream
+// password.
+//
+// Group *and* URL, rather than URL alone, because target groups made a URL
+// non-unique within an instance: one origin fronting both the ingest and the
+// query surface is two targets with the same URL and, quite reasonably, two
+// different upstream credentials. Keyed by URL alone the second overwrote the
+// first in this map, and an ordinary masked edit then handed both targets
+// whichever credential happened to come last -- silently, with a 200.
+//
+// The URL-only match is kept as a fallback, because it is the case an operator
+// hits far more often than duplicate URLs: changing a target's group in the UI
+// re-sends that target's credential masked, and its group-and-URL key no longer
+// matches anything stored. That fallback is used only when every stored target
+// on the URL carries the same credential. When they differ there is no
+// non-guess available and the request is refused, as it is when a mask resolves
+// to nothing at all -- the failure mode of guessing is sending a credential to
 // the wrong backend.
+// credentialKey identifies a stored target for credential carry-forward. The
+// separator is a NUL because it cannot occur in either half, so no group and
+// URL pair can collide with a different one by concatenation. WriteTargets
+// builds its de-duplication key the same way.
+func credentialKey(group, url string) string { return group + "\x00" + url }
+
 func fromDoc(d instanceDoc, prev *config.InstanceConfig) (*config.InstanceConfig, error) {
 	inst := &config.InstanceConfig{
 		Name:          d.Name,
@@ -101,9 +122,16 @@ func fromDoc(d instanceDoc, prev *config.InstanceConfig) (*config.InstanceConfig
 		inst.BasicAuth = prev.BasicAuth
 	}
 
+	prevByGroupURL := map[string]string{}
 	prevByURL := map[string]string{}
+	prevURLAmbiguous := map[string]bool{}
 	if prev != nil {
 		for _, pt := range prev.PushURLs {
+			prevByGroupURL[credentialKey(pt.Group, pt.URL)] = pt.BasicAuth
+			if stored, seen := prevByURL[pt.URL]; seen && stored != pt.BasicAuth {
+				prevURLAmbiguous[pt.URL] = true
+				continue
+			}
 			prevByURL[pt.URL] = pt.BasicAuth
 		}
 	}
@@ -113,11 +141,21 @@ func fromDoc(d instanceDoc, prev *config.InstanceConfig) (*config.InstanceConfig
 			URL:            t.URL,
 			BasicAuth:      t.BasicAuth,
 			TenantID:       t.TenantID,
+			Group:          t.Group,
 			SkipTLSVerify:  t.SkipTLSVerify,
 			TimeoutSeconds: t.TimeoutSeconds,
 		}
 		if t.BasicAuth == redacted {
-			stored, ok := prevByURL[t.URL]
+			stored, ok := prevByGroupURL[credentialKey(t.Group, t.URL)]
+			if !ok {
+				if prevURLAmbiguous[t.URL] {
+					return nil, fmt.Errorf(
+						"push target %q in group %q sent a redacted basic_auth and matches no stored "+
+							"target in that group, and the stored targets on that URL carry different "+
+							"credentials; send the credential explicitly", t.URL, t.Group)
+				}
+				stored, ok = prevByURL[t.URL]
+			}
 			if !ok {
 				return nil, fmt.Errorf(
 					"push target %q sent a redacted basic_auth but has no stored credential to keep; "+

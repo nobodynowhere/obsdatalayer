@@ -281,7 +281,7 @@ func scopeRequestToInstance(w http.ResponseWriter, r *http.Request, inst *config
 func targetTenantIDs(inst *config.InstanceConfig, write bool) []string {
 	var targets []config.PushTarget
 	if write {
-		targets = inst.GetPushTargets()
+		targets = inst.WriteTargets()
 	} else {
 		targets = []config.PushTarget{inst.GetQueryTarget()}
 	}
@@ -302,7 +302,7 @@ func targetTenantIDs(inst *config.InstanceConfig, write bool) []string {
 }
 
 func hasUnscopedPushTarget(inst *config.InstanceConfig) bool {
-	for _, target := range inst.GetPushTargets() {
+	for _, target := range inst.WriteTargets() {
 		if target.TenantID == "" {
 			return true
 		}
@@ -379,10 +379,10 @@ func copyResponseHeaders(w http.ResponseWriter, headers http.Header) {
 	}
 }
 
-// handlePush reads the body (limited to maxBodyBytes), optionally rewrites labels,
-// records payload counters, fans out, and writes the response. rewriteFn is
-// called only when it is non-nil.
-func handlePush(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, upstreamPath string, rewriteFn func([]byte) ([]byte, rewrite.PayloadStats, error), maxBodyBytes int64, p *proxy.Proxy, m *metrics.Metrics) {
+// handlePush reads the body (limited to maxBodyBytes), optionally rewrites
+// labels, records payload counters, fans out to targetGroup, and writes the
+// response. rewriteFn is called only when it is non-nil.
+func handlePush(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, upstreamPath string, targetGroup string, rewriteFn func([]byte) ([]byte, rewrite.PayloadStats, error), maxBodyBytes int64, p *proxy.Proxy, m *metrics.Metrics) {
 	if maxBodyBytes > 0 {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	}
@@ -419,7 +419,14 @@ func handlePush(w http.ResponseWriter, r *http.Request, inst *config.InstanceCon
 			return
 		}
 	}
-	statusCode, respBody, respHeaders, partialFailures := Do(r.Context(), inst, inst.GetPushTargets(), body, r.Header, upstreamPath, p.PushClient(), m)
+	pushTargets := inst.GetTargets(targetGroup)
+	if len(pushTargets) == 0 {
+		proxy.WriteJSONError(w, http.StatusInternalServerError, map[string]string{
+			"error": "instance has no target for group " + targetGroup, "instance": inst.Name,
+		})
+		return
+	}
+	statusCode, respBody, respHeaders, partialFailures := Do(r.Context(), inst, pushTargets, body, r.Header, upstreamPath, p.PushClient(), m)
 	if len(partialFailures) > 0 {
 		w.Header().Set("X-Gateway-Partial-Failure", FormatPartialFailureHeader(partialFailures))
 		m.RecordPartialFailure(inst.Name)

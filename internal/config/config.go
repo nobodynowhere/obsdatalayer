@@ -178,9 +178,13 @@ type InstanceConfig struct {
 }
 
 type PushTarget struct {
-	URL           string `yaml:"url"`
-	BasicAuth     string `yaml:"basic_auth"`
-	TenantID      string `yaml:"tenant_id"`
+	URL       string `yaml:"url"`
+	BasicAuth string `yaml:"basic_auth"`
+	TenantID  string `yaml:"tenant_id"`
+	// Group selects the upstream surface this target serves. Empty means a
+	// legacy target that can serve every HTTP surface unless a more specific
+	// group is declared.
+	Group         string `yaml:"group"`
 	SkipTLSVerify bool   `yaml:"skip_tls_verify"`
 
 	// TimeoutSeconds bounds a single attempt against this target. Targets are
@@ -380,6 +384,13 @@ func validate(cfg *Config) error {
 			}
 		}
 
+		// 12b. push_urls target group
+		for i, pt := range inst.PushURLs {
+			if !KnownTargetGroup(pt.Group) {
+				return fmt.Errorf("config: instance %q push_urls[%d] has unknown group %q (must be push, query, otlp_http, jaeger or zipkin)", inst.Name, i, pt.Group)
+			}
+		}
+
 		// 13. push_urls target missing url
 		for i, pt := range inst.PushURLs {
 			if pt.URL == "" {
@@ -442,44 +453,129 @@ func resolveTarget(pt PushTarget, instBasicAuth, instTenantID string, instSkipTL
 		URL:            pt.URL,
 		BasicAuth:      basicAuth,
 		TenantID:       tenantID,
+		Group:          pt.Group,
 		SkipTLSVerify:  pt.SkipTLSVerify || instSkipTLSVerify,
 		TimeoutSeconds: pt.TimeoutSeconds,
 	}
 }
 
-// GetPushTargets returns resolved push targets with effective auth.
-func (inst *InstanceConfig) GetPushTargets() []PushTarget {
-	if len(inst.PushURLs) > 0 {
-		targets := make([]PushTarget, len(inst.PushURLs))
-		for i, pt := range inst.PushURLs {
-			targets[i] = resolveTarget(pt, inst.BasicAuth, inst.TenantID, inst.SkipTLSVerify)
+// Target groups name the HTTP surface a target serves. Ungrouped targets are
+// the compatibility path: they are used for any group that has no explicit
+// targets, so old fan-out lists still serve both ingest and query.
+const (
+	TargetGroupPush     = "push"
+	TargetGroupQuery    = "query"
+	TargetGroupOTLPHTTP = "otlp_http"
+	TargetGroupJaeger   = "jaeger"
+	TargetGroupZipkin   = "zipkin"
+)
+
+// KnownTargetGroup reports whether group is one of the gateway's named HTTP
+// surfaces. The empty group is valid and means legacy fallback.
+func KnownTargetGroup(group string) bool {
+	switch group {
+	case "", TargetGroupPush, TargetGroupQuery, TargetGroupOTLPHTTP, TargetGroupJaeger, TargetGroupZipkin:
+		return true
+	default:
+		return false
+	}
+}
+
+// targetsForExactGroup returns resolved targets carrying exactly group, in
+// configuration order.
+func (inst *InstanceConfig) targetsForExactGroup(group string) []PushTarget {
+	out := make([]PushTarget, 0, len(inst.PushURLs))
+	for _, pt := range inst.PushURLs {
+		if pt.Group != group {
+			continue
 		}
-		return targets
+		out = append(out, resolveTarget(pt, inst.BasicAuth, inst.TenantID, inst.SkipTLSVerify))
+	}
+	return out
+}
+
+// GetTargets returns resolved targets for a named surface. A specific group
+// wins, then the generic push group for non-push surfaces, then ungrouped
+// legacy targets.
+//
+// The single-url form names one origin serving every surface.
+func (inst *InstanceConfig) GetTargets(group string) []PushTarget {
+	if len(inst.PushURLs) > 0 {
+		if targets := inst.targetsForExactGroup(group); len(targets) > 0 {
+			return targets
+		}
+		if group != TargetGroupPush {
+			if targets := inst.targetsForExactGroup(TargetGroupPush); len(targets) > 0 {
+				return targets
+			}
+		}
+		if targets := inst.targetsForExactGroup(""); len(targets) > 0 {
+			return targets
+		}
+		return nil
 	}
 	return []PushTarget{{URL: inst.URL, BasicAuth: inst.BasicAuth, TenantID: inst.TenantID, SkipTLSVerify: inst.SkipTLSVerify}}
 }
 
+// GetPushTargets returns resolved generic push targets with effective auth.
+func (inst *InstanceConfig) GetPushTargets() []PushTarget {
+	return inst.GetTargets(TargetGroupPush)
+}
+
+// WriteTargets returns every configured write-side target, resolved with
+// effective auth and de-duplicated by URL and group. It is used for tenant
+// scoping, not forwarding a request to a specific receiver.
+func (inst *InstanceConfig) WriteTargets() []PushTarget {
+	if len(inst.PushURLs) == 0 {
+		return inst.GetPushTargets()
+	}
+	seen := make(map[string]struct{}, len(inst.PushURLs))
+	targets := make([]PushTarget, 0, len(inst.PushURLs))
+	for _, pt := range inst.PushURLs {
+		if pt.Group == TargetGroupQuery {
+			continue
+		}
+		resolved := resolveTarget(pt, inst.BasicAuth, inst.TenantID, inst.SkipTLSVerify)
+		key := resolved.Group + "\x00" + resolved.URL
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		targets = append(targets, resolved)
+	}
+	return targets
+}
+
 // GetReadTargets returns the candidates for a read, in preference order.
 //
-// It is the same ordered list writes go to, and deliberately so. A fan-out
-// instance always pushes to every target -- the fan_out_mode only decides how
-// the responses are aggregated -- so the targets are replicas of one another
-// and any of them can answer a query. Reading down the list therefore survives
-// a target being down without needing a separate read endpoint to be
-// configured, or query results to be merged.
+// Query-group targets are preferred when present. Otherwise reads fall back to
+// generic push targets and then legacy ungrouped targets, which keeps older
+// configurations working without a proxy that merges every upstream surface.
 //
 // What it does not survive is a target that is up but stale, which answers
 // successfully with less data than its peers. That divergence comes from a push
 // that failed against one target while succeeding against another, and belongs
 // to the fan-out delivery contract rather than here.
 func (inst *InstanceConfig) GetReadTargets() []PushTarget {
-	return inst.GetPushTargets()
+	return inst.GetTargets(TargetGroupQuery)
 }
 
-// GetQueryTarget returns the query target (first push target or single URL).
+// GetQueryTarget returns the single target for a request that is not fanned
+// out: the first read target, which is the first query-group target when the
+// instance declares any and a fallback target otherwise.
+//
+// Writes to a backend's HTTP API -- the ruler, Tempo's overrides, Alertmanager
+// configuration -- come through here rather than through GetPushTargets,
+// because they address the API surface and not the ingest receivers. That is
+// why this follows the query group: those writes belong on the same listener the
+// queries go to.
+//
+// The zero value is returned when the instance has no target for the surface at
+// all, which callers must check; its URL is empty and forwarding to it would
+// produce a request to a relative path.
 func (inst *InstanceConfig) GetQueryTarget() PushTarget {
-	if len(inst.PushURLs) > 0 {
-		return resolveTarget(inst.PushURLs[0], inst.BasicAuth, inst.TenantID, inst.SkipTLSVerify)
+	if targets := inst.GetReadTargets(); len(targets) > 0 {
+		return targets[0]
 	}
-	return PushTarget{URL: inst.URL, BasicAuth: inst.BasicAuth, TenantID: inst.TenantID, SkipTLSVerify: inst.SkipTLSVerify}
+	return PushTarget{}
 }

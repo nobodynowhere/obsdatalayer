@@ -374,7 +374,7 @@ onUnmounted(() => {
             </div>
           </div>
           <small>
-            Every target receives every write; reads try them in configured order. A target with
+            These are the targets that answered reads, in the order they are tried. A target with
             failures is being skipped for a short cool-off and retried after it.
           </small>
         </template>

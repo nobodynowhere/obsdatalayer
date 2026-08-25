@@ -1119,3 +1119,114 @@ func TestAPIKeyRejectsBadExpiry(t *testing.T) {
 		t.Errorf("expected 400 for an unparseable expiry, got %d", rec.Code)
 	}
 }
+
+// TestSameURLInTwoGroupsKeepsEachCredential covers what target groups made
+// possible: one origin fronting both the ingest and the query surface is two
+// targets with the same URL, and they need not share an upstream credential.
+//
+// Credential carry-forward used to be keyed by URL alone, so the second target
+// overwrote the first and an ordinary masked edit handed both whichever
+// credential came last -- silently, with a 200.
+func TestSameURLInTwoGroupsKeepsEachCredential(t *testing.T) {
+	e := newEnvWithCipher(t, encryptionTestCipher(t))
+
+	create := map[string]any{
+		"name": "tempo-merged", "backend": "tempo", "fan_out_mode": "any",
+		"push_urls": []map[string]any{
+			{"url": "http://tempo.local", "group": "otlp_http", "basic_auth": "ingest:secret1"},
+			{"url": "http://tempo.local", "group": "query", "basic_auth": "reader:secret2"},
+		},
+	}
+	if rec := e.do(t, http.MethodPost, "/api/instances", create); rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// The edit the UI performs: both credentials echoed back masked.
+	rec := e.do(t, http.MethodPut, "/api/instances/tempo-merged", map[string]any{
+		"name": "tempo-merged", "backend": "tempo", "fan_out_mode": "any",
+		"push_urls": []map[string]any{
+			{"url": "http://tempo.local", "group": "otlp_http", "basic_auth": "<redacted>"},
+			{"url": "http://tempo.local", "group": "query", "basic_auth": "<redacted>"},
+		},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update: %d %s", rec.Code, rec.Body.String())
+	}
+
+	want := map[string]string{"otlp_http": "ingest:secret1", "query": "reader:secret2"}
+	for _, pt := range e.cfg.Get().ByName["tempo-merged"].PushURLs {
+		if pt.BasicAuth != want[pt.Group] {
+			t.Errorf("group %q kept %q, want %q", pt.Group, pt.BasicAuth, want[pt.Group])
+		}
+	}
+}
+
+// TestChangingATargetGroupKeepsItsMaskedCredential is why the URL-only match
+// survives as a fallback. Re-grouping a target in the UI re-sends its
+// credential masked, and its group-and-URL key no longer matches anything
+// stored; refusing that would break the common case to protect the rare one.
+func TestChangingATargetGroupKeepsItsMaskedCredential(t *testing.T) {
+	e := newEnvWithCipher(t, encryptionTestCipher(t))
+
+	if rec := e.do(t, http.MethodPost, "/api/instances", map[string]any{
+		"name": "tempo-regroup", "backend": "tempo",
+		"push_urls": []map[string]any{
+			{"url": "http://tempo.local:4318", "basic_auth": "ingest:secret1"},
+		},
+	}); rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec := e.do(t, http.MethodPut, "/api/instances/tempo-regroup", map[string]any{
+		"name": "tempo-regroup", "backend": "tempo",
+		"push_urls": []map[string]any{
+			{"url": "http://tempo.local:4318", "group": "otlp_http", "basic_auth": "<redacted>"},
+		},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("re-grouping a target must not fail: %d %s", rec.Code, rec.Body.String())
+	}
+	targets := e.cfg.Get().ByName["tempo-regroup"].PushURLs
+	if len(targets) != 1 || targets[0].Group != "otlp_http" || targets[0].BasicAuth != "ingest:secret1" {
+		t.Fatalf("target = %+v", targets)
+	}
+}
+
+// TestAmbiguousURLCredentialIsRefused is the case with no honest answer. The
+// target matches no stored group, and the stored targets on its URL disagree
+// about the credential, so there is nothing to fall back to that is not a
+// guess -- and a wrong guess sends a credential upstream.
+func TestAmbiguousURLCredentialIsRefused(t *testing.T) {
+	e := newEnvWithCipher(t, encryptionTestCipher(t))
+
+	if rec := e.do(t, http.MethodPost, "/api/instances", map[string]any{
+		"name": "tempo-ambiguous", "backend": "tempo", "fan_out_mode": "any",
+		"push_urls": []map[string]any{
+			{"url": "http://tempo.local", "group": "otlp_http", "basic_auth": "ingest:secret1"},
+			{"url": "http://tempo.local", "group": "query", "basic_auth": "reader:secret2"},
+		},
+	}); rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// A third group on the same URL: matches no stored group, and the stored
+	// credentials on that URL differ.
+	rec := e.do(t, http.MethodPut, "/api/instances/tempo-ambiguous", map[string]any{
+		"name": "tempo-ambiguous", "backend": "tempo", "fan_out_mode": "any",
+		"push_urls": []map[string]any{
+			{"url": "http://tempo.local", "group": "jaeger", "basic_auth": "<redacted>"},
+		},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected the ambiguous mask to be refused, got %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "different") {
+		t.Errorf("the error should say the stored credentials differ, got %s", rec.Body.String())
+	}
+	// The refusal must leave the stored credentials untouched.
+	for _, pt := range e.cfg.Get().ByName["tempo-ambiguous"].PushURLs {
+		if pt.BasicAuth != map[string]string{"otlp_http": "ingest:secret1", "query": "reader:secret2"}[pt.Group] {
+			t.Errorf("a refused update changed stored credentials: %+v", pt)
+		}
+	}
+}

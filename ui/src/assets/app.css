@@ -270,8 +270,8 @@ body {
 
 .target-row {
   display: grid;
-  /* rank, url, tenant, tls, timeout, up, down, remove */
-  grid-template-columns: auto minmax(10rem, 1fr) 10rem 10rem 6.5rem auto auto auto;
+  /* rank, url, group, tenant, tls, timeout, up, down, remove */
+  grid-template-columns: auto minmax(10rem, 1fr) 9rem 10rem 10rem 6.5rem auto auto auto;
   gap: 0.5rem;
   align-items: start;
 }

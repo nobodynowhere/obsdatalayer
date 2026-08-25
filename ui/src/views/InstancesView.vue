@@ -31,6 +31,14 @@ const fanOutModes = [
   { label: 'any — succeed if one target accepts', value: 'any' },
   { label: 'all — every target must accept', value: 'all' },
 ]
+const targetGroups = [
+  { label: 'Legacy fallback', value: '' },
+  { label: 'Generic ingest', value: 'push' },
+  { label: 'Query API', value: 'query' },
+  { label: 'OTLP HTTP', value: 'otlp_http' },
+  { label: 'Jaeger HTTP', value: 'jaeger' },
+  { label: 'Zipkin', value: 'zipkin' },
+]
 const filterModes = [
   { label: 'allowlist', value: 'allowlist' },
   { label: 'denylist', value: 'denylist' },
@@ -134,7 +142,7 @@ function openEdit(inst) {
     backend: inst.backend,
     mode: inst.push_urls?.length ? 'fanout' : 'single',
     url: inst.url ?? '',
-    push_urls: (inst.push_urls ?? []).map((t) => ({ timeout_seconds: 0, ...t })),
+    push_urls: (inst.push_urls ?? []).map((t) => ({ timeout_seconds: 0, ...t, group: t.group ?? '' })),
     fan_out_mode: inst.fan_out_mode || 'any',
     basic_auth: inst.basic_auth ?? '',
     tenant_id: inst.tenant_id ?? '',
@@ -165,6 +173,7 @@ function toPayload() {
   } else {
     doc.push_urls = f.push_urls.map((t) => ({
       url: t.url,
+      group: t.group || undefined,
       basic_auth: t.basic_auth || undefined,
       tenant_id: t.tenant_id || undefined,
       skip_tls_verify: t.skip_tls_verify || undefined,
@@ -255,11 +264,46 @@ async function openTargetStatus(inst, check) {
 }
 
 const addTarget = () =>
-  form.value.push_urls.push({ url: '', basic_auth: '', tenant_id: '', skip_tls_verify: false, timeout_seconds: 0 })
+  form.value.push_urls.push({ url: '', group: '', basic_auth: '', tenant_id: '', skip_tls_verify: false, timeout_seconds: 0 })
 const removeTarget = (i) => form.value.push_urls.splice(i, 1)
 
-// Order is meaningful: writes go to every target, but reads try them in this
-// order and prefer the first, so moving a target up makes it the one queried.
+// Order is meaningful within a group, and only there. Every target in an ingest
+// group receives every write, so order is not preference for them; reads walk a
+// single group and take the first that answers, so within that one group the
+// first target is the one queried. Moving a target past one in another group
+// therefore changes nothing, which is why readGroup below exists: the tooltip
+// has to say which of the two a given row is.
+// Mirrors config.GetTargets(TargetGroupQuery): the query group when the
+// instance declares one, then the generic push group, then legacy ungrouped
+// targets. Null when the instance declares only receiver groups and so has
+// nothing to answer a read with.
+const readGroup = computed(() => {
+  const groups = form.value.push_urls.map((t) => t.group || '')
+  for (const candidate of ['query', 'push', '']) {
+    if (groups.includes(candidate)) return candidate
+  }
+  return null
+})
+
+const groupLabel = (group) => targetGroups.find((g) => g.value === (group || ''))?.label ?? group
+
+// Position among the targets sharing this one's group, which is the only
+// position that decides anything.
+const rankInGroup = (index) => {
+  const group = form.value.push_urls[index]?.group || ''
+  return form.value.push_urls.slice(0, index + 1).filter((t) => (t.group || '') === group).length
+}
+
+const rankTitle = (index) => {
+  const group = form.value.push_urls[index]?.group || ''
+  const label = groupLabel(group)
+  const rank = rankInGroup(index)
+  if (group !== readGroup.value) {
+    return `${label} target ${rank} — every target in this group receives every write`
+  }
+  return rank === 1 ? `${label} — first tried for reads` : `${label} — read fallback ${rank - 1}`
+}
+
 const moveTarget = (from, to) => {
   const list = form.value.push_urls
   if (to < 0 || to >= list.length) return
@@ -310,6 +354,7 @@ onMounted(load)
                 <span>{{ target.url }}</span>
               </div>
               <div v-if="target.skip_tls_verify" class="stat-card__hint">TLS verification skipped</div>
+              <div v-if="target.group" class="stat-card__hint">group: {{ target.group }}</div>
             </div>
             <div v-if="targetChecks(data).length" class="instance-target__actions">
               <PrimeButton
@@ -449,8 +494,15 @@ onMounted(load)
             class="target-row"
             style="margin-top: 0.5rem"
           >
-            <span class="target-rank" :title="i === 0 ? 'Preferred for reads' : `Read fallback ${i}`">{{ i + 1 }}</span>
+            <span class="target-rank" :title="rankTitle(i)">{{ i + 1 }}</span>
             <PrimeInputText v-model="t.url" placeholder="http://target.local" class="mono" />
+            <PrimeSelect
+              v-model="t.group"
+              :options="targetGroups"
+              option-label="label"
+              option-value="value"
+              placeholder="Group"
+            />
             <PrimeSelect
               v-model="t.tenant_id"
               :options="tenantOptions"
@@ -498,9 +550,12 @@ onMounted(load)
             <PrimeButton icon="pi pi-times" text rounded severity="danger" @click="removeTarget(i)" />
           </div>
           <small v-if="form.push_urls.length > 1" style="display: block; margin-top: 0.5rem">
-            Every target receives every write. Reads try them in this order, so target 1 is the one
-            normally queried and the rest are fallbacks used when it cannot answer. The timeout is
-            how long each target gets to answer a read; leave it at 0 to use the gateway default.
+            Every target in an ingest group receives every write. Reads use one group only — the
+            Query API group when you define one, otherwise generic ingest and then legacy fallback
+            targets — and try that group's targets in order, so its first target is the one normally
+            queried and the rest cover for it. Order therefore matters within a group and nowhere
+            else: moving a target past one in a different group changes nothing. The timeout is how
+            long each target gets to answer a read; leave it at 0 to use the gateway default.
           </small>
           <div style="margin-top: 0.75rem">
             <PrimeButton icon="pi pi-plus" label="Add target" size="small" severity="secondary" outlined @click="addTarget" />

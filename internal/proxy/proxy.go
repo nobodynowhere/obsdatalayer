@@ -157,7 +157,14 @@ func (p *Proxy) ForwardPush(w http.ResponseWriter, r *http.Request, inst *config
 	if maxBodyBytes > 0 {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	}
-	p.forward(w, r, inst, inst.GetQueryTarget(), upstreamPath, p.PushClient())
+	target := inst.GetQueryTarget()
+	if target.URL == "" {
+		WriteJSONError(w, http.StatusInternalServerError, map[string]string{
+			"error": "instance has no query target", "instance": inst.Name,
+		})
+		return
+	}
+	p.forward(w, r, inst, target, upstreamPath, p.PushClient())
 }
 
 // OperationalResponse is one answer collected by FetchOperational.
@@ -363,6 +370,12 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, inst *config.Ins
 // stream is cut when the process stops rather than drained.
 func (p *Proxy) ForwardUpgrade(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig, upstreamPath string) {
 	target := inst.GetQueryTarget()
+	if target.URL == "" {
+		WriteJSONError(w, http.StatusInternalServerError, map[string]string{
+			"error": "instance has no query target", "instance": inst.Name,
+		})
+		return
+	}
 	upstreamURL, err := url.Parse(target.URL)
 	if err != nil {
 		WriteJSONError(w, http.StatusInternalServerError, map[string]string{

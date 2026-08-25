@@ -74,13 +74,13 @@ func IngestRoutes(mux Registrar, h *config.ConfigHolder, p *proxy.Proxy, m *metr
 	// Tempo's OTLP HTTP receiver is a bare OTel receiver at /v1/traces, not
 	// under an /otlp prefix as in Mimir and Loki.
 	mux.HandleFunc("POST /v1/traces", func(w http.ResponseWriter, r *http.Request) {
-		forwardTempoPush(w, r, h, p, m, "/v1/traces")
+		forwardTempoPush(w, r, h, p, m, "/v1/traces", config.TargetGroupOTLPHTTP)
 	})
 	mux.HandleFunc("POST /api/traces", func(w http.ResponseWriter, r *http.Request) {
-		forwardTempoPush(w, r, h, p, m, "/api/traces")
+		forwardTempoPush(w, r, h, p, m, "/api/traces", config.TargetGroupJaeger)
 	})
 	mux.HandleFunc("POST /api/v2/spans", func(w http.ResponseWriter, r *http.Request) {
-		forwardTempoPush(w, r, h, p, m, "/api/v2/spans")
+		forwardTempoPush(w, r, h, p, m, "/api/v2/spans", config.TargetGroupZipkin)
 	})
 }
 
@@ -110,10 +110,10 @@ var ingestBackends = map[string]string{
 	"/api/v2/spans": "tempo",
 }
 
-func forwardTempoPush(w http.ResponseWriter, r *http.Request, h *config.ConfigHolder, p *proxy.Proxy, m *metrics.Metrics, upstreamPath string) {
+func forwardTempoPush(w http.ResponseWriter, r *http.Request, h *config.ConfigHolder, p *proxy.Proxy, m *metrics.Metrics, upstreamPath, targetGroup string) {
 	inst := getInstance(h, r, w, "tempo")
 	if inst == nil {
 		return
 	}
-	handlePush(w, r, inst, upstreamPath, nil, h.Get().Gateway.MaxBodyBytes, p, m)
+	handlePush(w, r, inst, upstreamPath, targetGroup, nil, h.Get().Gateway.MaxBodyBytes, p, m)
 }
