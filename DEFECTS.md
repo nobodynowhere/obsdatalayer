@@ -16,6 +16,11 @@ and the Tempo one is a genuine capability gap.
 Entries were re-verified against the source on 2026-08-20 and again on
 2026-08-21, with line references refreshed.
 
+Two entries were added on 2026-08-25: Windows test compatibility and an ignored
+error in fan-out response handling. The Windows test compatibility issue was
+resolved on 2026-08-25 by adding platform-specific test files and modifying the
+permission check to skip Unix-style permission validation on Windows.
+
 Tempo's read scoping needs a word, because it is what is left of the last P1.
 Read label scoping was one entry covering Loki and Tempo. Loki is fixed. Tempo
 is not, but the argument that made it a P1 -- writes tagged, reads unconstrained
@@ -265,6 +270,23 @@ operational-safety issue, not just cosmetic polish.
 Fix direction: audit every admin view in dark mode, especially modal forms,
 tables, empty states, select/dropdown menus and inline hints. Add visual
 regression coverage or a screenshot checklist for both light and dark themes.
+
+## P3 - Fan-out response body read error is ignored
+
+In `doSingleTarget`, the response body read ignores the error: `respBody, _ =
+io.ReadAll(resp.Body)`. If reading the body fails, the error is silently dropped
+and the response continues with an empty body.
+
+References:
+- `doSingleTarget`, `internal/fanout/fanout.go:635`
+
+Impact: silent failures when reading response bodies from upstream targets. This
+could mask network issues, upstream problems, or data corruption. The function
+continues as if the read succeeded, potentially returning an empty body when the
+upstream sent meaningful error information.
+
+Fix direction: handle the read error properly and return it as part of the
+`TargetResult`, similar to how request errors are handled.
 
 ---
 

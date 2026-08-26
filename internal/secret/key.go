@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"runtime"
 	"strings"
 )
 
@@ -71,10 +72,14 @@ func LoadKey(keyFile string) (key []byte, source string, err error) {
 	// upstream credential, so a world- or group-readable key file defeats the
 	// purpose. Refuse rather than warn: this is caught once, at startup, by the
 	// operator who just created the file.
-	if perm := info.Mode().Perm(); perm&0o077 != 0 {
-		return nil, "", fmt.Errorf(
-			"encryption key file %s is readable by group or others (mode %#o); run: chmod 600 %s",
-			keyFile, perm, keyFile)
+	// On Windows, we skip the Unix-style permission check since Windows uses ACLs.
+	// The operator is responsible for setting appropriate Windows ACLs.
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm&0o077 != 0 {
+			return nil, "", fmt.Errorf(
+				"encryption key file %s is readable by group or others (mode %#o); run: chmod 600 %s",
+				keyFile, perm, keyFile)
+		}
 	}
 
 	data, err := os.ReadFile(keyFile)
