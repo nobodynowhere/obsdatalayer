@@ -10,6 +10,12 @@ const form = ref({
   max_body_bytes: 33554432,
   query_timeout: '30s',
   push_timeout: '60s',
+  read_header_timeout: '5s',
+  idle_timeout: '2m0s',
+  upstream_max_idle_conns: 10000,
+  upstream_max_idle_conns_per_host: 10000,
+  upstream_max_conns_per_host: 0,
+  upstream_idle_conn_timeout: '1m30s',
   log_level: 'info',
   reload_interval: '30s',
   default_target_timeout: '30s',
@@ -77,14 +83,14 @@ onMounted(load)
   <div class="page-title">
     <div>
       <h1>Settings</h1>
-      <p>Gateway-wide configuration. Every value here applies without a restart.</p>
+      <p>Gateway-wide configuration. Most values here apply without a restart.</p>
     </div>
     <PrimeButton icon="pi pi-refresh" label="Refresh" severity="secondary" outlined @click="load" />
   </div>
 
   <PrimeMessage severity="secondary" :closable="false" class="mb-3">
     Listener addresses are not shown here: they come from the bootstrap file and change only on
-    restart. The bootstrap file holds nothing else.
+    restart. Listener timeout changes below are also applied on restart.
   </PrimeMessage>
 
   <PrimeMessage v-if="error" severity="error" :closable="false" class="mb-3">{{ error }}</PrimeMessage>
@@ -111,6 +117,18 @@ onMounted(load)
         </div>
 
         <div class="form-field">
+          <label for="s-read-header-timeout">Read header timeout</label>
+          <PrimeInputText id="s-read-header-timeout" v-model="form.read_header_timeout" class="mono" />
+          <small>Startup setting. Bounds how long a new client gets to send request headers.</small>
+        </div>
+
+        <div class="form-field">
+          <label for="s-idle-timeout">Idle client timeout</label>
+          <PrimeInputText id="s-idle-timeout" v-model="form.idle_timeout" class="mono" />
+          <small>Startup setting. Closes quiet keep-alive client connections after this long.</small>
+        </div>
+
+        <div class="form-field">
           <label>Log level</label>
           <PrimeSelect v-model="form.log_level" :options="logLevels" option-label="label" option-value="value" />
           <small>Takes effect on save; no restart needed.</small>
@@ -129,6 +147,45 @@ onMounted(load)
           <label for="s-reload">Reload interval</label>
           <PrimeInputText id="s-reload" v-model="form.reload_interval" class="mono" />
           <small>How often the gateway re-reads configuration from the database.</small>
+        </div>
+
+        <div class="form-field">
+          <label for="s-upstream-idle">Upstream idle connections</label>
+          <PrimeInputNumber
+            input-id="s-upstream-idle"
+            v-model="form.upstream_max_idle_conns"
+            :use-grouping="true"
+            :min="0"
+          />
+          <small>Total idle upstream connections kept for reuse. 0 restores the default.</small>
+        </div>
+
+        <div class="form-field">
+          <label for="s-upstream-idle-host">Upstream idle connections per host</label>
+          <PrimeInputNumber
+            input-id="s-upstream-idle-host"
+            v-model="form.upstream_max_idle_conns_per_host"
+            :use-grouping="true"
+            :min="0"
+          />
+          <small>Idle upstream connections kept per backend host. 0 restores the default.</small>
+        </div>
+
+        <div class="form-field">
+          <label for="s-upstream-active-host">Upstream active connections per host</label>
+          <PrimeInputNumber
+            input-id="s-upstream-active-host"
+            v-model="form.upstream_max_conns_per_host"
+            :use-grouping="true"
+            :min="0"
+          />
+          <small>0 means unlimited active upstream connections per host.</small>
+        </div>
+
+        <div class="form-field">
+          <label for="s-upstream-idle-timeout">Upstream idle timeout</label>
+          <PrimeInputText id="s-upstream-idle-timeout" v-model="form.upstream_idle_conn_timeout" class="mono" />
+          <small>How long reusable upstream connections can sit idle before being closed.</small>
         </div>
 
         <div class="form-field">

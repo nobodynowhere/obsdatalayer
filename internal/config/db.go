@@ -68,12 +68,18 @@ func EnsureSettings(db *gorm.DB) error {
 	}
 	enabled := defaults.Gateway.AuthLimit.ThrottleEnabled()
 	row := dbstore.GatewaySetting{
-		ID:             id,
-		MaxBodyBytes:   defaults.Gateway.MaxBodyBytes,
-		QueryTimeout:   durationString(defaults.Gateway.Timeouts.Query),
-		PushTimeout:    durationString(defaults.Gateway.Timeouts.Push),
-		LogLevel:       defaults.Gateway.LogLevel,
-		ReloadInterval: durationString(defaults.Gateway.ReloadInterval),
+		ID:                          id,
+		MaxBodyBytes:                defaults.Gateway.MaxBodyBytes,
+		QueryTimeout:                durationString(defaults.Gateway.Timeouts.Query),
+		PushTimeout:                 durationString(defaults.Gateway.Timeouts.Push),
+		ReadHeaderTimeout:           durationString(defaults.Gateway.Server.ReadHeaderTimeout),
+		IdleTimeout:                 durationString(defaults.Gateway.Server.IdleTimeout),
+		UpstreamMaxIdleConns:        defaults.Gateway.Transport.MaxIdleConns,
+		UpstreamMaxIdleConnsPerHost: defaults.Gateway.Transport.MaxIdleConnsPerHost,
+		UpstreamMaxConnsPerHost:     defaults.Gateway.Transport.MaxConnsPerHost,
+		UpstreamIdleConnTimeout:     durationString(defaults.Gateway.Transport.IdleConnTimeout),
+		LogLevel:                    defaults.Gateway.LogLevel,
+		ReloadInterval:              durationString(defaults.Gateway.ReloadInterval),
 
 		AuthLimitEnabled:        &enabled,
 		AuthFailureThreshold:    defaults.Gateway.AuthLimit.FailureThreshold,
@@ -105,11 +111,17 @@ func SaveSettings(db *gorm.DB, g GatewayConfig) error {
 	}
 	enabled := cfg.Gateway.AuthLimit.ThrottleEnabled()
 	updates := map[string]any{
-		"max_body_bytes":  cfg.Gateway.MaxBodyBytes,
-		"query_timeout":   durationString(cfg.Gateway.Timeouts.Query),
-		"push_timeout":    durationString(cfg.Gateway.Timeouts.Push),
-		"log_level":       cfg.Gateway.LogLevel,
-		"reload_interval": durationString(cfg.Gateway.ReloadInterval),
+		"max_body_bytes":                   cfg.Gateway.MaxBodyBytes,
+		"query_timeout":                    durationString(cfg.Gateway.Timeouts.Query),
+		"push_timeout":                     durationString(cfg.Gateway.Timeouts.Push),
+		"read_header_timeout":              durationString(cfg.Gateway.Server.ReadHeaderTimeout),
+		"idle_timeout":                     durationString(cfg.Gateway.Server.IdleTimeout),
+		"upstream_max_idle_conns":          cfg.Gateway.Transport.MaxIdleConns,
+		"upstream_max_idle_conns_per_host": cfg.Gateway.Transport.MaxIdleConnsPerHost,
+		"upstream_max_conns_per_host":      cfg.Gateway.Transport.MaxConnsPerHost,
+		"upstream_idle_conn_timeout":       durationString(cfg.Gateway.Transport.IdleConnTimeout),
+		"log_level":                        cfg.Gateway.LogLevel,
+		"reload_interval":                  durationString(cfg.Gateway.ReloadInterval),
 
 		"auth_limit_enabled":         enabled,
 		"auth_failure_threshold":     cfg.Gateway.AuthLimit.FailureThreshold,
@@ -304,6 +316,15 @@ func mapConfig(setting *dbstore.GatewaySetting, instances []dbstore.Instance, c 
 		return nil, err
 	}
 
+	serverConfig, err := mapServerConfig(setting)
+	if err != nil {
+		return nil, err
+	}
+	transportConfig, err := mapTransportConfig(setting)
+	if err != nil {
+		return nil, err
+	}
+
 	// Empty is a row written before the column existed; applyDefaults fills it.
 	var defaultTargetTimeout Duration
 	if setting.DefaultTargetTimeout != "" {
@@ -322,6 +343,8 @@ func mapConfig(setting *dbstore.GatewaySetting, instances []dbstore.Instance, c 
 				Query: queryDur,
 				Push:  pushDur,
 			},
+			Server:                 serverConfig,
+			Transport:              transportConfig,
 			AuthLimit:              authLimit,
 			DefaultTargetTimeout:   defaultTargetTimeout,
 			MetricsUnauthenticated: setting.MetricsUnauthenticated,
@@ -337,6 +360,44 @@ func mapConfig(setting *dbstore.GatewaySetting, instances []dbstore.Instance, c 
 		cfg.Instances = append(cfg.Instances, ic)
 	}
 	return cfg, nil
+}
+
+func mapServerConfig(setting *dbstore.GatewaySetting) (ServerConfig, error) {
+	out := ServerConfig{}
+	for _, f := range []struct {
+		name string
+		raw  string
+		dst  *Duration
+	}{
+		{"read_header_timeout", setting.ReadHeaderTimeout, &out.ReadHeaderTimeout},
+		{"idle_timeout", setting.IdleTimeout, &out.IdleTimeout},
+	} {
+		if f.raw == "" {
+			continue
+		}
+		d, err := parseDurationString(f.raw)
+		if err != nil {
+			return ServerConfig{}, fmt.Errorf("invalid %s %q: %w", f.name, f.raw, err)
+		}
+		*f.dst = d
+	}
+	return out, nil
+}
+
+func mapTransportConfig(setting *dbstore.GatewaySetting) (TransportConfig, error) {
+	out := TransportConfig{
+		MaxIdleConns:        setting.UpstreamMaxIdleConns,
+		MaxIdleConnsPerHost: setting.UpstreamMaxIdleConnsPerHost,
+		MaxConnsPerHost:     setting.UpstreamMaxConnsPerHost,
+	}
+	if setting.UpstreamIdleConnTimeout != "" {
+		d, err := parseDurationString(setting.UpstreamIdleConnTimeout)
+		if err != nil {
+			return TransportConfig{}, fmt.Errorf("invalid upstream_idle_conn_timeout %q: %w", setting.UpstreamIdleConnTimeout, err)
+		}
+		out.IdleConnTimeout = d
+	}
+	return out, nil
 }
 
 // mapAuthLimit reads the throttle columns. Each duration is optional: an empty

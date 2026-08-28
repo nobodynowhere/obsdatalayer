@@ -127,7 +127,8 @@ func (h *handler) mimirHTTPClient() *http.Client {
 	if h.mimirClient != nil {
 		return h.mimirClient
 	}
-	return proxy.NewHTTPClient(h.cfg.Get().Gateway.Timeouts.Query.Duration())
+	g := h.cfg.Get().Gateway
+	return proxy.NewHTTPClientWithTransport(g.Timeouts.Query.Duration(), g.Transport)
 }
 
 var errAmbiguousMimirInstance = errors.New("ambiguous Mimir instance")

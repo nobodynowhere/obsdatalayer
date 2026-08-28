@@ -45,6 +45,24 @@ func TestDefaultsApplied(t *testing.T) {
 	if cfg.Gateway.Timeouts.Push.Duration() != 60*time.Second {
 		t.Errorf("expected push timeout 60s, got %v", cfg.Gateway.Timeouts.Push.Duration())
 	}
+	if cfg.Gateway.Server.ReadHeaderTimeout.Duration() != 5*time.Second {
+		t.Errorf("expected read header timeout 5s, got %v", cfg.Gateway.Server.ReadHeaderTimeout.Duration())
+	}
+	if cfg.Gateway.Server.IdleTimeout.Duration() != 120*time.Second {
+		t.Errorf("expected idle timeout 120s, got %v", cfg.Gateway.Server.IdleTimeout.Duration())
+	}
+	if cfg.Gateway.Transport.MaxIdleConns != 10000 {
+		t.Errorf("expected 10000 upstream idle connections, got %d", cfg.Gateway.Transport.MaxIdleConns)
+	}
+	if cfg.Gateway.Transport.MaxIdleConnsPerHost != 10000 {
+		t.Errorf("expected 10000 upstream idle connections per host, got %d", cfg.Gateway.Transport.MaxIdleConnsPerHost)
+	}
+	if cfg.Gateway.Transport.MaxConnsPerHost != 0 {
+		t.Errorf("expected unlimited upstream active connections per host, got %d", cfg.Gateway.Transport.MaxConnsPerHost)
+	}
+	if cfg.Gateway.Transport.IdleConnTimeout.Duration() != 90*time.Second {
+		t.Errorf("expected upstream idle timeout 90s, got %v", cfg.Gateway.Transport.IdleConnTimeout.Duration())
+	}
 	if cfg.Gateway.MaxBodyBytes != 32*1024*1024 {
 		t.Errorf("expected 32 MiB body limit, got %d", cfg.Gateway.MaxBodyBytes)
 	}
@@ -95,6 +113,10 @@ func TestGatewayValidation(t *testing.T) {
 	}{
 		{"defaults", func(*config.GatewayConfig) {}, false},
 		{"negative body limit", func(g *config.GatewayConfig) { g.MaxBodyBytes = -1 }, true},
+		{"negative server timeout", func(g *config.GatewayConfig) { g.Server.ReadHeaderTimeout = -1 }, true},
+		{"negative transport limit", func(g *config.GatewayConfig) { g.Transport.MaxIdleConns = -1 }, true},
+		{"negative active transport limit", func(g *config.GatewayConfig) { g.Transport.MaxConnsPerHost = -1 }, true},
+		{"negative transport idle timeout", func(g *config.GatewayConfig) { g.Transport.IdleConnTimeout = -1 }, true},
 		{"bad log level", func(g *config.GatewayConfig) { g.LogLevel = "chatty" }, true},
 		{"valid log level", func(g *config.GatewayConfig) { g.LogLevel = "debug" }, false},
 	}

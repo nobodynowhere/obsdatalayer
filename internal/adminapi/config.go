@@ -270,11 +270,17 @@ func (h *handler) deleteInstance(w http.ResponseWriter, r *http.Request) {
 // ---- gateway settings -------------------------------------------------------
 
 type settingsDoc struct {
-	MaxBodyBytes   int64  `json:"max_body_bytes"`
-	QueryTimeout   string `json:"query_timeout"`
-	PushTimeout    string `json:"push_timeout"`
-	LogLevel       string `json:"log_level"`
-	ReloadInterval string `json:"reload_interval"`
+	MaxBodyBytes                int64  `json:"max_body_bytes"`
+	QueryTimeout                string `json:"query_timeout"`
+	PushTimeout                 string `json:"push_timeout"`
+	ReadHeaderTimeout           string `json:"read_header_timeout"`
+	IdleTimeout                 string `json:"idle_timeout"`
+	UpstreamMaxIdleConns        int    `json:"upstream_max_idle_conns"`
+	UpstreamMaxIdleConnsPerHost int    `json:"upstream_max_idle_conns_per_host"`
+	UpstreamMaxConnsPerHost     int    `json:"upstream_max_conns_per_host"`
+	UpstreamIdleConnTimeout     string `json:"upstream_idle_conn_timeout"`
+	LogLevel                    string `json:"log_level"`
+	ReloadInterval              string `json:"reload_interval"`
 	// DefaultTargetTimeout applies to any fan-out target that does not set its
 	// own timeout_seconds.
 	DefaultTargetTimeout string `json:"default_target_timeout"`
@@ -300,12 +306,18 @@ func (h *handler) getSettings(w http.ResponseWriter, r *http.Request) {
 	g := h.cfg.Get().Gateway
 	enabled := g.AuthLimit.ThrottleEnabled()
 	writeJSON(w, http.StatusOK, settingsDoc{
-		MaxBodyBytes:         g.MaxBodyBytes,
-		QueryTimeout:         g.Timeouts.Query.Duration().String(),
-		PushTimeout:          g.Timeouts.Push.Duration().String(),
-		LogLevel:             g.LogLevel,
-		ReloadInterval:       g.ReloadInterval.Duration().String(),
-		DefaultTargetTimeout: g.DefaultTargetTimeout.Duration().String(),
+		MaxBodyBytes:                g.MaxBodyBytes,
+		QueryTimeout:                g.Timeouts.Query.Duration().String(),
+		PushTimeout:                 g.Timeouts.Push.Duration().String(),
+		ReadHeaderTimeout:           g.Server.ReadHeaderTimeout.Duration().String(),
+		IdleTimeout:                 g.Server.IdleTimeout.Duration().String(),
+		UpstreamMaxIdleConns:        g.Transport.MaxIdleConns,
+		UpstreamMaxIdleConnsPerHost: g.Transport.MaxIdleConnsPerHost,
+		UpstreamMaxConnsPerHost:     g.Transport.MaxConnsPerHost,
+		UpstreamIdleConnTimeout:     g.Transport.IdleConnTimeout.Duration().String(),
+		LogLevel:                    g.LogLevel,
+		ReloadInterval:              g.ReloadInterval.Duration().String(),
+		DefaultTargetTimeout:        g.DefaultTargetTimeout.Duration().String(),
 
 		MetricsUnauthenticated: g.MetricsUnauthenticated,
 
@@ -332,6 +344,11 @@ func (h *handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 		LogLevel:               doc.LogLevel,
 		MetricsUnauthenticated: doc.MetricsUnauthenticated,
 	}
+	g.Transport = config.TransportConfig{
+		MaxIdleConns:        doc.UpstreamMaxIdleConns,
+		MaxIdleConnsPerHost: doc.UpstreamMaxIdleConnsPerHost,
+		MaxConnsPerHost:     doc.UpstreamMaxConnsPerHost,
+	}
 	g.AuthLimit = config.AuthLimitConfig{
 		Enabled:             doc.AuthLimitEnabled,
 		FailureThreshold:    doc.AuthFailureThreshold,
@@ -343,6 +360,9 @@ func (h *handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 	}{
 		{doc.QueryTimeout, &g.Timeouts.Query},
 		{doc.PushTimeout, &g.Timeouts.Push},
+		{doc.ReadHeaderTimeout, &g.Server.ReadHeaderTimeout},
+		{doc.IdleTimeout, &g.Server.IdleTimeout},
+		{doc.UpstreamIdleConnTimeout, &g.Transport.IdleConnTimeout},
 		{doc.ReloadInterval, &g.ReloadInterval},
 		{doc.DefaultTargetTimeout, &g.DefaultTargetTimeout},
 		{doc.AuthFailureWindow, &g.AuthLimit.FailureWindow},

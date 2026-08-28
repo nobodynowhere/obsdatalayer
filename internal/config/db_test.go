@@ -215,6 +215,12 @@ func TestSaveSettings(t *testing.T) {
 	g := config.GatewayConfig{MaxBodyBytes: 1024, LogLevel: "debug"}
 	_ = g.Timeouts.Query.UnmarshalText([]byte("5s"))
 	_ = g.Timeouts.Push.UnmarshalText([]byte("7s"))
+	_ = g.Server.ReadHeaderTimeout.UnmarshalText([]byte("4s"))
+	_ = g.Server.IdleTimeout.UnmarshalText([]byte("3m"))
+	g.Transport.MaxIdleConns = 20000
+	g.Transport.MaxIdleConnsPerHost = 5000
+	g.Transport.MaxConnsPerHost = 25000
+	_ = g.Transport.IdleConnTimeout.UnmarshalText([]byte("2m"))
 	_ = g.ReloadInterval.UnmarshalText([]byte("90s"))
 
 	if err := config.SaveSettings(gormDB, g); err != nil {
@@ -233,6 +239,24 @@ func TestSaveSettings(t *testing.T) {
 	}
 	if cfg.Gateway.Timeouts.Query.Duration().String() != "5s" {
 		t.Errorf("expected 5s query timeout, got %v", cfg.Gateway.Timeouts.Query.Duration())
+	}
+	if cfg.Gateway.Server.ReadHeaderTimeout.Duration().String() != "4s" {
+		t.Errorf("expected 4s read header timeout, got %v", cfg.Gateway.Server.ReadHeaderTimeout.Duration())
+	}
+	if cfg.Gateway.Server.IdleTimeout.Duration().String() != "3m0s" {
+		t.Errorf("expected 3m idle timeout, got %v", cfg.Gateway.Server.IdleTimeout.Duration())
+	}
+	if cfg.Gateway.Transport.MaxIdleConns != 20000 {
+		t.Errorf("expected 20000 upstream idle connections, got %d", cfg.Gateway.Transport.MaxIdleConns)
+	}
+	if cfg.Gateway.Transport.MaxIdleConnsPerHost != 5000 {
+		t.Errorf("expected 5000 upstream idle connections per host, got %d", cfg.Gateway.Transport.MaxIdleConnsPerHost)
+	}
+	if cfg.Gateway.Transport.MaxConnsPerHost != 25000 {
+		t.Errorf("expected 25000 upstream active connections per host, got %d", cfg.Gateway.Transport.MaxConnsPerHost)
+	}
+	if cfg.Gateway.Transport.IdleConnTimeout.Duration().String() != "2m0s" {
+		t.Errorf("expected 2m upstream idle timeout, got %v", cfg.Gateway.Transport.IdleConnTimeout.Duration())
 	}
 	if cfg.Gateway.ReloadInterval.Duration().String() != "1m30s" {
 		t.Errorf("expected 90s reload interval, got %v", cfg.Gateway.ReloadInterval.Duration())
@@ -635,6 +659,45 @@ func TestDefaultTargetTimeoutOnPreUpgradeRow(t *testing.T) {
 	}
 	if got := cfg.Gateway.DefaultTargetTimeout.Duration(); got != 30*time.Second {
 		t.Errorf("pre-upgrade row gave %v, want the 30s default", got)
+	}
+}
+
+func TestScaleSettingsDefaultOnPreUpgradeRow(t *testing.T) {
+	gormDB := openTestConfigDB(t)
+
+	if err := gormDB.Table("gateway_settings").Where("1 = 1").
+		Updates(map[string]any{
+			"read_header_timeout":              "",
+			"idle_timeout":                     "",
+			"upstream_max_idle_conns":          0,
+			"upstream_max_idle_conns_per_host": 0,
+			"upstream_max_conns_per_host":      0,
+			"upstream_idle_conn_timeout":       "",
+		}).Error; err != nil {
+		t.Fatalf("simulate pre-upgrade row: %v", err)
+	}
+
+	cfg, err := config.LoadFromDB(gormDB, nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := cfg.Gateway.Server.ReadHeaderTimeout.Duration(); got != 5*time.Second {
+		t.Errorf("read header timeout = %v, want 5s", got)
+	}
+	if got := cfg.Gateway.Server.IdleTimeout.Duration(); got != 120*time.Second {
+		t.Errorf("idle timeout = %v, want 120s", got)
+	}
+	if got := cfg.Gateway.Transport.MaxIdleConns; got != 10000 {
+		t.Errorf("upstream max idle connections = %d, want 10000", got)
+	}
+	if got := cfg.Gateway.Transport.MaxIdleConnsPerHost; got != 10000 {
+		t.Errorf("upstream max idle connections per host = %d, want 10000", got)
+	}
+	if got := cfg.Gateway.Transport.MaxConnsPerHost; got != 0 {
+		t.Errorf("upstream max active connections per host = %d, want unlimited", got)
+	}
+	if got := cfg.Gateway.Transport.IdleConnTimeout.Duration(); got != 90*time.Second {
+		t.Errorf("upstream idle timeout = %v, want 90s", got)
 	}
 }
 

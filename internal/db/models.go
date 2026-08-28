@@ -13,12 +13,18 @@ import (
 // Durations are stored as strings ("30s") so the row stays readable to an
 // operator inspecting the database directly.
 type GatewaySetting struct {
-	ID             uuid.UUID `gorm:"type:text;primaryKey"`
-	MaxBodyBytes   int64
-	QueryTimeout   string
-	PushTimeout    string
-	LogLevel       string
-	ReloadInterval string
+	ID                          uuid.UUID `gorm:"type:text;primaryKey"`
+	MaxBodyBytes                int64
+	QueryTimeout                string
+	PushTimeout                 string
+	ReadHeaderTimeout           string
+	IdleTimeout                 string
+	UpstreamMaxIdleConns        int
+	UpstreamMaxIdleConnsPerHost int
+	UpstreamMaxConnsPerHost     int
+	UpstreamIdleConnTimeout     string
+	LogLevel                    string
+	ReloadInterval              string
 	// DefaultTargetTimeout is stored as a duration string like the others.
 	DefaultTargetTimeout string
 

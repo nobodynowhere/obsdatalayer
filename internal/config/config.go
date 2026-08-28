@@ -91,6 +91,8 @@ func (c *Config) ValidateTenants(reg TenantRegistry) error {
 type GatewayConfig struct {
 	MaxBodyBytes   int64           `yaml:"max_body_bytes"`
 	Timeouts       TimeoutConfig   `yaml:"timeouts"`
+	Server         ServerConfig    `yaml:"server"`
+	Transport      TransportConfig `yaml:"upstream_transport"`
 	LogLevel       string          `yaml:"log_level"`
 	ReloadInterval Duration        `yaml:"reload_interval"`
 	AuthLimit      AuthLimitConfig `yaml:"auth_limit"`
@@ -159,6 +161,18 @@ func (a AuthLimitConfig) Limiter() authlimit.Config {
 type TimeoutConfig struct {
 	Query Duration `yaml:"query"`
 	Push  Duration `yaml:"push"`
+}
+
+type ServerConfig struct {
+	ReadHeaderTimeout Duration `yaml:"read_header_timeout"`
+	IdleTimeout       Duration `yaml:"idle_timeout"`
+}
+
+type TransportConfig struct {
+	MaxIdleConns        int      `yaml:"max_idle_conns"`
+	MaxIdleConnsPerHost int      `yaml:"max_idle_conns_per_host"`
+	MaxConnsPerHost     int      `yaml:"max_conns_per_host"`
+	IdleConnTimeout     Duration `yaml:"idle_conn_timeout"`
 }
 
 type InstanceConfig struct {
@@ -238,6 +252,21 @@ func applyDefaults(cfg *Config) {
 	if cfg.Gateway.Timeouts.Push == 0 {
 		cfg.Gateway.Timeouts.Push = Duration(60 * time.Second)
 	}
+	if cfg.Gateway.Server.ReadHeaderTimeout == 0 {
+		cfg.Gateway.Server.ReadHeaderTimeout = Duration(5 * time.Second)
+	}
+	if cfg.Gateway.Server.IdleTimeout == 0 {
+		cfg.Gateway.Server.IdleTimeout = Duration(120 * time.Second)
+	}
+	if cfg.Gateway.Transport.MaxIdleConns == 0 {
+		cfg.Gateway.Transport.MaxIdleConns = 10000
+	}
+	if cfg.Gateway.Transport.MaxIdleConnsPerHost == 0 {
+		cfg.Gateway.Transport.MaxIdleConnsPerHost = 10000
+	}
+	if cfg.Gateway.Transport.IdleConnTimeout == 0 {
+		cfg.Gateway.Transport.IdleConnTimeout = Duration(90 * time.Second)
+	}
 	if cfg.Gateway.LogLevel == "" {
 		cfg.Gateway.LogLevel = "info"
 	}
@@ -285,6 +314,15 @@ func validateGateway(g *GatewayConfig) error {
 	}
 	if g.Timeouts.Query <= 0 || g.Timeouts.Push <= 0 {
 		return fmt.Errorf("config: timeouts must be positive")
+	}
+	if g.Server.ReadHeaderTimeout <= 0 || g.Server.IdleTimeout <= 0 {
+		return fmt.Errorf("config: server timeouts must be positive")
+	}
+	if g.Transport.MaxIdleConns < 0 || g.Transport.MaxIdleConnsPerHost < 0 || g.Transport.MaxConnsPerHost < 0 {
+		return fmt.Errorf("config: upstream transport connection limits must not be negative")
+	}
+	if g.Transport.IdleConnTimeout <= 0 {
+		return fmt.Errorf("config: upstream_transport.idle_conn_timeout must be positive")
 	}
 	if g.ReloadInterval <= 0 {
 		return fmt.Errorf("config: reload_interval must be positive")

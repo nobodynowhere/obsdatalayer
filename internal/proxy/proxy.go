@@ -499,14 +499,43 @@ func (p *Proxy) ForwardUpgrade(w http.ResponseWriter, r *http.Request, inst *con
 // NewHTTPClient returns a client whose transport can skip upstream TLS
 // verification per request when the resolved target asks for it.
 func NewHTTPClient(timeout time.Duration) *http.Client {
-	return &http.Client{Timeout: timeout, Transport: NewTransport()}
+	return NewHTTPClientWithTransport(timeout, config.TransportConfig{})
+}
+
+// NewHTTPClientWithTransport returns a client with an explicitly sized
+// connection pool. A zero-valued transport config takes the same production
+// defaults as the gateway settings row.
+func NewHTTPClientWithTransport(timeout time.Duration, cfg config.TransportConfig) *http.Client {
+	return &http.Client{Timeout: timeout, Transport: NewTransportWithConfig(cfg)}
 }
 
 func NewTransport() http.RoundTripper {
+	return NewTransportWithConfig(config.TransportConfig{})
+}
+
+func NewTransportWithConfig(cfg config.TransportConfig) http.RoundTripper {
+	if cfg.MaxIdleConns == 0 {
+		cfg.MaxIdleConns = 10000
+	}
+	if cfg.MaxIdleConnsPerHost == 0 {
+		cfg.MaxIdleConnsPerHost = 10000
+	}
+	if cfg.IdleConnTimeout == 0 {
+		cfg.IdleConnTimeout = config.Duration(90 * time.Second)
+	}
 	base := http.DefaultTransport.(*http.Transport).Clone()
 	insecure := http.DefaultTransport.(*http.Transport).Clone()
+	tuneTransport(base, cfg)
+	tuneTransport(insecure, cfg)
 	insecure.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	return &tlsSwitchTransport{base: base, insecure: insecure}
+}
+
+func tuneTransport(t *http.Transport, cfg config.TransportConfig) {
+	t.MaxIdleConns = cfg.MaxIdleConns
+	t.MaxIdleConnsPerHost = cfg.MaxIdleConnsPerHost
+	t.MaxConnsPerHost = cfg.MaxConnsPerHost
+	t.IdleConnTimeout = cfg.IdleConnTimeout.Duration()
 }
 
 type tlsSwitchTransport struct {

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -168,7 +169,10 @@ func main() {
 	cfg := holder.Get()
 	applyLogLevel(logLevel, cfg.Gateway.LogLevel)
 
-	p := proxy.New(makeClient(cfg.Gateway.Timeouts.Query), makeClient(cfg.Gateway.Timeouts.Push))
+	p := proxy.New(
+		makeClient(cfg.Gateway.Timeouts.Query, cfg.Gateway.Transport),
+		makeClient(cfg.Gateway.Timeouts.Push, cfg.Gateway.Transport),
+	)
 	m := metrics.New(prometheus.DefaultRegisterer)
 	p.SetMetrics(m)
 	p.SetDefaultTargetTimeout(cfg.Gateway.DefaultTargetTimeout.Duration())
@@ -193,7 +197,7 @@ func main() {
 	guards := newAuthGuards(m, cfg.Gateway.AuthLimit)
 	applyAuthLimit(authSvc, guards, cfg.Gateway.AuthLimit)
 
-	reload := newReloader(holder, authSvc, tenants, p, m, logLevel, cfg.Gateway.Timeouts, guards)
+	reload := newReloader(holder, authSvc, tenants, p, m, logLevel, cfg.Gateway.Timeouts, cfg.Gateway.Transport, guards)
 
 	// Signals are trapped before the listeners start so that an early SIGTERM
 	// cannot slip through to the default disposition and kill the process
@@ -239,8 +243,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("tls config: %v", err)
 	}
-	adminSrv := &http.Server{Addr: adminAddr, Handler: adminHandler(gormDB, holder, authSvc, tenants, m, reload, cipher, p, guards.admin), TLSConfig: adminTLSConfig}
-	dataSrv := &http.Server{Addr: bootstrap.DataAddr(), Handler: dataHandler(holder, authSvc, p, m, guards.data), TLSConfig: dataTLSConfig}
+	adminSrv := makeServer(adminAddr, adminHandler(gormDB, holder, authSvc, tenants, m, reload, cipher, p, guards.admin), adminTLSConfig, cfg.Gateway.Server)
+	dataSrv := makeServer(bootstrap.DataAddr(), dataHandler(holder, authSvc, p, m, guards.data), dataTLSConfig, cfg.Gateway.Server)
 
 	// A listener that dies on its own (port already bound, for example) has to
 	// bring the process down rather than leaving it half-serving.
@@ -638,19 +642,20 @@ func applyLogLevel(level *slog.LevelVar, configured string) {
 // fetched and validated before either is published, so a failure in one cannot
 // leave the process running a half-applied reload.
 type reloader struct {
-	mu       sync.Mutex
-	holder   *config.ConfigHolder
-	auth     *auth.Service
-	tenants  *tenant.Store
-	proxy    *proxy.Proxy
-	metrics  *metrics.Metrics
-	logLevel *slog.LevelVar
-	timeouts config.TimeoutConfig
-	guards   *authGuards
+	mu        sync.Mutex
+	holder    *config.ConfigHolder
+	auth      *auth.Service
+	tenants   *tenant.Store
+	proxy     *proxy.Proxy
+	metrics   *metrics.Metrics
+	logLevel  *slog.LevelVar
+	timeouts  config.TimeoutConfig
+	transport config.TransportConfig
+	guards    *authGuards
 }
 
-func newReloader(h *config.ConfigHolder, a *auth.Service, t *tenant.Store, p *proxy.Proxy, m *metrics.Metrics, lvl *slog.LevelVar, current config.TimeoutConfig, guards *authGuards) *reloader {
-	return &reloader{holder: h, auth: a, tenants: t, proxy: p, metrics: m, logLevel: lvl, timeouts: current, guards: guards}
+func newReloader(h *config.ConfigHolder, a *auth.Service, t *tenant.Store, p *proxy.Proxy, m *metrics.Metrics, lvl *slog.LevelVar, currentTimeouts config.TimeoutConfig, currentTransport config.TransportConfig, guards *authGuards) *reloader {
+	return &reloader{holder: h, auth: a, tenants: t, proxy: p, metrics: m, logLevel: lvl, timeouts: currentTimeouts, transport: currentTransport, guards: guards}
 }
 
 func (r *reloader) run() (err error) {
@@ -699,12 +704,13 @@ func (r *reloader) run() (err error) {
 	applyLogLevel(r.logLevel, staged.Gateway.LogLevel)
 	applyAuthLimit(r.auth, r.guards, staged.Gateway.AuthLimit)
 	r.proxy.SetDefaultTargetTimeout(staged.Gateway.DefaultTargetTimeout.Duration())
-	if staged.Gateway.Timeouts != r.timeouts {
+	if staged.Gateway.Timeouts != r.timeouts || staged.Gateway.Transport != r.transport {
 		r.proxy.SetClients(
-			makeClient(staged.Gateway.Timeouts.Query),
-			makeClient(staged.Gateway.Timeouts.Push),
+			makeClient(staged.Gateway.Timeouts.Query, staged.Gateway.Transport),
+			makeClient(staged.Gateway.Timeouts.Push, staged.Gateway.Transport),
 		)
 		r.timeouts = staged.Gateway.Timeouts
+		r.transport = staged.Gateway.Transport
 	}
 	// Debug, not info: this runs on a timer (gateway.reload_interval, 30s by
 	// default) and almost always finds nothing changed, so at info it is a line
@@ -848,8 +854,24 @@ func dataHandler(holder *config.ConfigHolder, authSvc *auth.Service, p *proxy.Pr
 	return middleware.Logging(middleware.BasicAuth(authSvc, guard, middleware.SanitizeHeaders(mux)))
 }
 
-func makeClient(d config.Duration) *http.Client {
-	return proxy.NewHTTPClient(d.Duration())
+func makeServer(addr string, handler http.Handler, tlsConfig *tls.Config, cfg config.ServerConfig) *http.Server {
+	if cfg.ReadHeaderTimeout == 0 {
+		cfg.ReadHeaderTimeout = config.Duration(5 * time.Second)
+	}
+	if cfg.IdleTimeout == 0 {
+		cfg.IdleTimeout = config.Duration(120 * time.Second)
+	}
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		TLSConfig:         tlsConfig,
+		ReadHeaderTimeout: cfg.ReadHeaderTimeout.Duration(),
+		IdleTimeout:       cfg.IdleTimeout.Duration(),
+	}
+}
+
+func makeClient(d config.Duration, transport config.TransportConfig) *http.Client {
+	return proxy.NewHTTPClientWithTransport(d.Duration(), transport)
 }
 
 // ---- bootstrap credentials --------------------------------------------------
