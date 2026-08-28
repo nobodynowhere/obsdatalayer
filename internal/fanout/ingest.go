@@ -40,8 +40,9 @@ import (
 //     compatibility, so it is the one genuine collision between the three
 //     projects' ingestion surfaces. Both are deprecated; use /loki/api/v1/push
 //     or /api/v1/push instead.
-//   - OTLP over gRPC, for any signal. The gateway is HTTP only.
 //   - Jaeger over Thrift Compact, Thrift Binary or gRPC, which are not HTTP.
+//
+// OTLP over gRPC is served on its own listener; see internal/otlpgrpc.
 //
 // The OTLP paths are the one place the shape is not ours to choose: an OTLP
 // exporter given OTEL_EXPORTER_OTLP_ENDPOINT appends /v1/<signal> itself. Note

@@ -511,6 +511,7 @@ const (
 	TargetGroupPush     = "push"
 	TargetGroupQuery    = "query"
 	TargetGroupOTLPHTTP = "otlp_http"
+	TargetGroupOTLPGRPC = "otlp_grpc"
 	TargetGroupJaeger   = "jaeger"
 	TargetGroupZipkin   = "zipkin"
 )
@@ -520,18 +521,20 @@ const (
 //
 // It is not the same list for all three, because the receivers are not. Tempo's
 // distributor is a set of OpenTelemetry receivers on their own ports, so OTLP
-// HTTP, Jaeger and Zipkin are separately addressable there. Mimir and Loki
-// serve their OTLP paths on the same distributor listener as their native push
-// paths, so there is no second surface to name -- forwardMimirPush and
-// forwardLokiPush always ask for the push group, and an otlp_http target on
-// either backend would be a target no request ever reaches.
+// HTTP, OTLP gRPC, Jaeger and Zipkin are separately addressable there. Mimir
+// and Loki serve their OTLP HTTP paths on the same distributor listener as
+// their native push paths, so there is no second receiver surface to name --
+// forwardMimirPush and forwardLokiPush always ask for the push group, and an
+// otlp target on either backend would be a target no request ever reaches.
+// Inbound OTLP/gRPC for Mimir and Loki is accepted by the gateway, then
+// translated to those existing OTLP HTTP paths.
 //
 // Rejecting those is the point. A group that validates but is never routed to
 // is worse than an error: the operator sees a saved configuration and no data.
 var groupsByBackend = map[string][]string{
 	"loki":  {TargetGroupPush, TargetGroupQuery},
 	"mimir": {TargetGroupPush, TargetGroupQuery},
-	"tempo": {TargetGroupPush, TargetGroupQuery, TargetGroupOTLPHTTP, TargetGroupJaeger, TargetGroupZipkin},
+	"tempo": {TargetGroupPush, TargetGroupQuery, TargetGroupOTLPHTTP, TargetGroupOTLPGRPC, TargetGroupJaeger, TargetGroupZipkin},
 }
 
 // GroupsForBackend returns the groups an operator may assign to a target of
@@ -566,6 +569,13 @@ func (inst *InstanceConfig) targetsForExactGroup(group string) []PushTarget {
 		out = append(out, resolveTarget(pt, inst.BasicAuth, inst.TenantID, inst.SkipTLSVerify))
 	}
 	return out
+}
+
+// GetExactTargets returns resolved targets carrying exactly group, without any
+// fallback. Protocol-specific receivers use it when falling back would send a
+// request to the wrong kind of listener.
+func (inst *InstanceConfig) GetExactTargets(group string) []PushTarget {
+	return inst.targetsForExactGroup(group)
 }
 
 // GetTargets returns resolved targets for a named surface. A specific group

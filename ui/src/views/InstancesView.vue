@@ -44,6 +44,7 @@ const groupLabels = {
   push: 'Generic ingest',
   query: 'Query API',
   otlp_http: 'OTLP HTTP',
+  otlp_grpc: 'OTLP gRPC',
   jaeger: 'Jaeger HTTP',
   zipkin: 'Zipkin',
 }

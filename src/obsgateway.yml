@@ -37,6 +37,9 @@ gateway:
   # The admin plane carries config, user, role and tenant management. A bare
   # port binds loopback only; set "*:9091" to expose it, and firewall it.
   admin_listen: "*:9091"
+  # OTLP/gRPC is opt-in. Uncomment to accept OTLP traces, metrics and logs on
+  # the conventional gRPC receiver port.
+  # otlp_grpc_listen: "*:4317"
   tls:
     enabled: false
     # Generate a local test certificate:

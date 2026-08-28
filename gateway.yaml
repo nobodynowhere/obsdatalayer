@@ -37,6 +37,9 @@ gateway:
   # the admin plane. Use "*:9091" to expose the admin plane deliberately.
   listen: 8080
   admin_listen: 9091
+  # OTLP/gRPC is opt-in. Uncomment to accept OTLP traces, metrics and logs on
+  # the conventional gRPC receiver port.
+  # otlp_grpc_listen: "*:4317"
 
   # Upstream backend credentials are encrypted at rest with this key. It lives
   # outside the database on purpose: a key stored beside the ciphertext would

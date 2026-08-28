@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -23,6 +24,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/term"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/keepalive"
 	"gorm.io/gorm"
 
 	"obsdatalayer/internal/adminapi"
@@ -34,6 +38,7 @@ import (
 	"obsdatalayer/internal/fanout"
 	"obsdatalayer/internal/metrics"
 	"obsdatalayer/internal/middleware"
+	"obsdatalayer/internal/otlpgrpc"
 	"obsdatalayer/internal/proxy"
 	"obsdatalayer/internal/secret"
 	"obsdatalayer/internal/tenant"
@@ -197,7 +202,30 @@ func main() {
 	guards := newAuthGuards(m, cfg.Gateway.AuthLimit)
 	applyAuthLimit(authSvc, guards, cfg.Gateway.AuthLimit)
 
-	reload := newReloader(holder, authSvc, tenants, p, m, logLevel, cfg.Gateway.Timeouts, cfg.Gateway.Transport, guards)
+	otlpGRPCAddr, otlpGRPCEnabled := bootstrap.OTLPGRPCAddr()
+
+	adminAddr := bootstrap.AdminAddr()
+	if !bootstrap.AdminIsLoopback() {
+		slog.Warn("admin listener is not bound to loopback; ensure it is firewalled",
+			"addr", adminAddr)
+	}
+
+	adminTLSConfig, err := bootstrap.Gateway.TLS.ServerTLSConfig()
+	if err != nil {
+		log.Fatalf("tls config: %v", err)
+	}
+	dataTLSConfig, err := bootstrap.Gateway.TLS.ServerTLSConfig()
+	if err != nil {
+		log.Fatalf("tls config: %v", err)
+	}
+	var otlpGRPCSrv *otlpgrpc.Server
+	if otlpGRPCEnabled {
+		otlpGRPCSrv, err = makeOTLPGRPCServer(bootstrap.Gateway.TLS, dataTLSConfig, holder, authSvc, p, m, guards.otlpgrpc, cfg.Gateway.Server)
+		if err != nil {
+			log.Fatalf("otlp grpc server: %v", err)
+		}
+	}
+	reload := newReloader(holder, authSvc, tenants, p, m, logLevel, cfg.Gateway.Timeouts, cfg.Gateway.Transport, guards, otlpGRPCEnabled, otlpGRPCSrv)
 
 	// Signals are trapped before the listeners start so that an early SIGTERM
 	// cannot slip through to the default disposition and kill the process
@@ -229,26 +257,13 @@ func main() {
 		}
 	}()
 
-	adminAddr := bootstrap.AdminAddr()
-	if !bootstrap.AdminIsLoopback() {
-		slog.Warn("admin listener is not bound to loopback; ensure it is firewalled",
-			"addr", adminAddr)
-	}
-
-	adminTLSConfig, err := bootstrap.Gateway.TLS.ServerTLSConfig()
-	if err != nil {
-		log.Fatalf("tls config: %v", err)
-	}
-	dataTLSConfig, err := bootstrap.Gateway.TLS.ServerTLSConfig()
-	if err != nil {
-		log.Fatalf("tls config: %v", err)
-	}
+	warnDisabledOTLPGRPCTargets(cfg, otlpGRPCEnabled)
 	adminSrv := makeServer(adminAddr, adminHandler(gormDB, holder, authSvc, tenants, m, reload, cipher, p, guards.admin), adminTLSConfig, cfg.Gateway.Server)
 	dataSrv := makeServer(bootstrap.DataAddr(), dataHandler(holder, authSvc, p, m, guards.data), dataTLSConfig, cfg.Gateway.Server)
 
 	// A listener that dies on its own (port already bound, for example) has to
 	// bring the process down rather than leaving it half-serving.
-	fatal := make(chan error, 2)
+	fatal := make(chan error, 3)
 	serve := func(name string, srv *http.Server) {
 		slog.Info("starting listener", "name", name, "addr", srv.Addr, "tls", bootstrap.Gateway.TLS.Enabled)
 		var err error
@@ -266,6 +281,9 @@ func main() {
 	}
 	go serve("admin", adminSrv)
 	go serve("data", dataSrv)
+	if otlpGRPCEnabled {
+		go serveGRPC("otlp_grpc", otlpGRPCAddr, otlpGRPCSrv, bootstrap.Gateway.TLS.Enabled, fatal)
+	}
 
 	for {
 		select {
@@ -287,6 +305,7 @@ func main() {
 				slog.Info("received shutdown signal, draining", "signal", sig.String())
 				close(stopTicker)
 				shutdown(adminSrv, dataSrv)
+				shutdownGRPC(otlpGRPCSrv)
 				slog.Info("shutdown complete")
 				return
 			}
@@ -316,6 +335,25 @@ func shutdown(servers ...*http.Server) {
 		}(srv)
 	}
 	wg.Wait()
+}
+
+func shutdownGRPC(srv *otlpgrpc.Server) {
+	if srv == nil {
+		return
+	}
+	srv.SetNotServing()
+	done := make(chan struct{})
+	go func() {
+		srv.GracefulStop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(shutdownGrace):
+		slog.Error("graceful grpc shutdown timed out, stopping")
+		srv.Stop()
+		<-done
+	}
 }
 
 type selfSignedOptions struct {
@@ -595,14 +633,16 @@ func renameSourceToCaller(groups []string, a slog.Attr) slog.Attr {
 // authGuards holds one throttle per listener. They share configuration and the
 // metrics they record to, but never their failure counters -- see newAuthGuards.
 type authGuards struct {
-	data  *middleware.AuthGuard
-	admin *middleware.AuthGuard
+	data     *middleware.AuthGuard
+	admin    *middleware.AuthGuard
+	otlpgrpc *middleware.AuthGuard
 }
 
 func newAuthGuards(m *metrics.Metrics, cfg config.AuthLimitConfig) *authGuards {
 	return &authGuards{
-		data:  &middleware.AuthGuard{Limiter: authlimit.NewLimiter(cfg.Limiter()), Metrics: m},
-		admin: &middleware.AuthGuard{Limiter: authlimit.NewLimiter(cfg.Limiter()), Metrics: m},
+		data:     &middleware.AuthGuard{Limiter: authlimit.NewLimiter(cfg.Limiter()), Metrics: m},
+		admin:    &middleware.AuthGuard{Limiter: authlimit.NewLimiter(cfg.Limiter()), Metrics: m},
+		otlpgrpc: &middleware.AuthGuard{Limiter: authlimit.NewLimiter(cfg.Limiter()), Metrics: m},
 	}
 }
 
@@ -612,7 +652,7 @@ func newAuthGuards(m *metrics.Metrics, cfg config.AuthLimitConfig) *authGuards {
 // released back to the gate it came from.
 func applyAuthLimit(a *auth.Service, guards *authGuards, cfg config.AuthLimitConfig) {
 	if guards != nil {
-		for _, g := range []*middleware.AuthGuard{guards.data, guards.admin} {
+		for _, g := range []*middleware.AuthGuard{guards.data, guards.admin, guards.otlpgrpc} {
 			if g != nil && g.Limiter != nil {
 				g.Limiter.SetConfig(cfg.Limiter())
 			}
@@ -642,20 +682,22 @@ func applyLogLevel(level *slog.LevelVar, configured string) {
 // fetched and validated before either is published, so a failure in one cannot
 // leave the process running a half-applied reload.
 type reloader struct {
-	mu        sync.Mutex
-	holder    *config.ConfigHolder
-	auth      *auth.Service
-	tenants   *tenant.Store
-	proxy     *proxy.Proxy
-	metrics   *metrics.Metrics
-	logLevel  *slog.LevelVar
-	timeouts  config.TimeoutConfig
-	transport config.TransportConfig
-	guards    *authGuards
+	mu         sync.Mutex
+	holder     *config.ConfigHolder
+	auth       *auth.Service
+	tenants    *tenant.Store
+	proxy      *proxy.Proxy
+	metrics    *metrics.Metrics
+	logLevel   *slog.LevelVar
+	timeouts   config.TimeoutConfig
+	transport  config.TransportConfig
+	guards     *authGuards
+	otlpgrpc   bool
+	otlpServer *otlpgrpc.Server
 }
 
-func newReloader(h *config.ConfigHolder, a *auth.Service, t *tenant.Store, p *proxy.Proxy, m *metrics.Metrics, lvl *slog.LevelVar, currentTimeouts config.TimeoutConfig, currentTransport config.TransportConfig, guards *authGuards) *reloader {
-	return &reloader{holder: h, auth: a, tenants: t, proxy: p, metrics: m, logLevel: lvl, timeouts: currentTimeouts, transport: currentTransport, guards: guards}
+func newReloader(h *config.ConfigHolder, a *auth.Service, t *tenant.Store, p *proxy.Proxy, m *metrics.Metrics, lvl *slog.LevelVar, currentTimeouts config.TimeoutConfig, currentTransport config.TransportConfig, guards *authGuards, otlpgrpcEnabled bool, otlpServer *otlpgrpc.Server) *reloader {
+	return &reloader{holder: h, auth: a, tenants: t, proxy: p, metrics: m, logLevel: lvl, timeouts: currentTimeouts, transport: currentTransport, guards: guards, otlpgrpc: otlpgrpcEnabled, otlpServer: otlpServer}
 }
 
 func (r *reloader) run() (err error) {
@@ -695,6 +737,10 @@ func (r *reloader) run() (err error) {
 	}
 
 	r.holder.Publish(staged)
+	warnDisabledOTLPGRPCTargets(staged, r.otlpgrpc)
+	if r.otlpServer != nil {
+		r.otlpServer.RetainTargets(staged)
+	}
 
 	// Instances are created and deleted through the admin API, and every counter
 	// is labeled by instance. Drop the series of any instance that no longer
@@ -854,6 +900,24 @@ func dataHandler(holder *config.ConfigHolder, authSvc *auth.Service, p *proxy.Pr
 	return middleware.Logging(middleware.BasicAuth(authSvc, guard, middleware.SanitizeHeaders(mux)))
 }
 
+func warnDisabledOTLPGRPCTargets(cfg *config.Config, enabled bool) {
+	if enabled || cfg == nil {
+		return
+	}
+	var instances []string
+	for _, inst := range cfg.Instances {
+		if len(inst.GetExactTargets(config.TargetGroupOTLPGRPC)) > 0 {
+			instances = append(instances, inst.Name)
+		}
+	}
+	if len(instances) == 0 {
+		return
+	}
+	slog.Warn("OTLP/gRPC targets configured but gateway OTLP/gRPC listener is disabled",
+		"instances", strings.Join(instances, ","),
+		"setting", "gateway.otlp_grpc_listen")
+}
+
 func makeServer(addr string, handler http.Handler, tlsConfig *tls.Config, cfg config.ServerConfig) *http.Server {
 	if cfg.ReadHeaderTimeout == 0 {
 		cfg.ReadHeaderTimeout = config.Duration(5 * time.Second)
@@ -867,6 +931,53 @@ func makeServer(addr string, handler http.Handler, tlsConfig *tls.Config, cfg co
 		TLSConfig:         tlsConfig,
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout.Duration(),
 		IdleTimeout:       cfg.IdleTimeout.Duration(),
+	}
+}
+
+func makeOTLPGRPCServer(tlsBootstrap config.TLSConfig, tlsConfig *tls.Config, holder *config.ConfigHolder, authSvc auth.Authorizer, p *proxy.Proxy, m *metrics.Metrics, guard *middleware.AuthGuard, cfg config.ServerConfig) (*otlpgrpc.Server, error) {
+	if cfg.ReadHeaderTimeout == 0 {
+		cfg.ReadHeaderTimeout = config.Duration(5 * time.Second)
+	}
+	if cfg.IdleTimeout == 0 {
+		cfg.IdleTimeout = config.Duration(120 * time.Second)
+	}
+	opts := []grpc.ServerOption{
+		grpc.ConnectionTimeout(cfg.ReadHeaderTimeout.Duration()),
+		grpc.KeepaliveParams(keepalive.ServerParameters{
+			MaxConnectionIdle: cfg.IdleTimeout.Duration(),
+			Time:              2 * time.Hour,
+			Timeout:           20 * time.Second,
+		}),
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             time.Minute,
+			PermitWithoutStream: false,
+		}),
+		grpc.MaxConcurrentStreams(1024),
+	}
+	if tlsBootstrap.Enabled {
+		cfg := tlsConfig.Clone()
+		cert, err := tls.LoadX509KeyPair(
+			os.ExpandEnv(tlsBootstrap.CertFile),
+			os.ExpandEnv(tlsBootstrap.KeyFile),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("load TLS certificate: %w", err)
+		}
+		cfg.Certificates = []tls.Certificate{cert}
+		opts = append(opts, grpc.Creds(credentials.NewTLS(cfg)))
+	}
+	return otlpgrpc.NewServer(holder, authSvc, p, m, guard, opts...), nil
+}
+
+func serveGRPC(name, addr string, srv *otlpgrpc.Server, tlsEnabled bool, fatal chan<- error) {
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		fatal <- fmt.Errorf("%s listener: %w", name, err)
+		return
+	}
+	slog.Info("starting listener", "name", name, "addr", addr, "tls", tlsEnabled)
+	if err := srv.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+		fatal <- fmt.Errorf("%s listener: %w", name, err)
 	}
 }
 

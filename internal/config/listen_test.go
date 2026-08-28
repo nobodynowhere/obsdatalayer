@@ -143,6 +143,30 @@ db:
 	if got := b.AdminAddr(); got != "127.0.0.1:9091" {
 		t.Errorf("expected default admin 127.0.0.1:9091, got %q", got)
 	}
+	if addr, ok := b.OTLPGRPCAddr(); ok || addr != "" {
+		t.Errorf("expected OTLP/gRPC listener to default disabled, got addr=%q enabled=%v", addr, ok)
+	}
+}
+
+func TestBootstrapOTLPGRPCListenIsOptIn(t *testing.T) {
+	path := writeConfig(t, `
+db:
+  type: sqlite
+  path: /tmp/test.db
+gateway:
+  otlp_grpc_listen: 4317
+`)
+	b, err := config.LoadBootstrap(path)
+	if err != nil {
+		t.Fatalf("load bootstrap: %v", err)
+	}
+	addr, ok := b.OTLPGRPCAddr()
+	if !ok {
+		t.Fatal("expected OTLP/gRPC listener to be enabled")
+	}
+	if addr != ":4317" {
+		t.Errorf("expected OTLP/gRPC listener on all interfaces, got %q", addr)
+	}
 }
 
 func TestBootstrapAcceptsStructuredPostgres(t *testing.T) {

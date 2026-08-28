@@ -59,7 +59,17 @@ func FormatPartialFailureHeader(failures []PartialFailure) string {
 	return strings.Join(parts, ", ")
 }
 
-var errAmbiguousInstance = errors.New("ambiguous backend instances")
+var (
+	// ErrAmbiguousInstance means more than one configured instance can answer a
+	// request and the gateway cannot choose without crossing a tenant boundary.
+	ErrAmbiguousInstance = errors.New("ambiguous backend instances")
+	// ErrAmbiguousWriteTenant means the caller's grants resolve to multiple
+	// tenants for a write whose upstream accepts only one tenant assertion.
+	ErrAmbiguousWriteTenant = errors.New("write tenant is ambiguous for this instance")
+	// ErrForbidden means the caller's tenant set does not include the instance's
+	// tenant.
+	ErrForbidden = errors.New("forbidden")
+)
 
 // getInstance selects an operator-configured instance for a public
 // /api/{backend}/... request. Tenant-bound instances win over shared instances
@@ -71,9 +81,9 @@ func getInstance(h *config.ConfigHolder, r *http.Request, w http.ResponseWriter,
 	if err != nil {
 		status := http.StatusNotFound
 		msg := "no matching instance"
-		if errors.Is(err, errAmbiguousInstance) {
+		if errors.Is(err, ErrAmbiguousInstance) {
 			status = http.StatusConflict
-			msg = errAmbiguousInstance.Error()
+			msg = ErrAmbiguousInstance.Error()
 		}
 		proxy.WriteJSONError(w, status, map[string]string{"error": msg})
 		return nil
@@ -82,6 +92,12 @@ func getInstance(h *config.ConfigHolder, r *http.Request, w http.ResponseWriter,
 		return nil
 	}
 	return inst
+}
+
+// SelectInstance selects the configured instance that should answer a request
+// for backend under the caller's resolved auth scope.
+func SelectInstance(cfg *config.Config, ra *auth.RequestAuth, backend string) (*config.InstanceConfig, error) {
+	return selectInstance(cfg, ra, backend)
 }
 
 // getHealthInstance selects an instance for one of the health checks a Grafana
@@ -152,13 +168,13 @@ func selectInstance(cfg *config.Config, ra *auth.RequestAuth, backend string) (*
 		switch len(shared) {
 		case 0:
 			if len(dedicated) > 0 {
-				return nil, errAmbiguousInstance
+				return nil, ErrAmbiguousInstance
 			}
 			return nil, config.ErrNotFound
 		case 1:
 			return shared[0], nil
 		default:
-			return nil, errAmbiguousInstance
+			return nil, ErrAmbiguousInstance
 		}
 	}
 
@@ -167,7 +183,7 @@ func selectInstance(cfg *config.Config, ra *auth.RequestAuth, backend string) (*
 	case 1:
 		return dedicated[0], nil
 	default:
-		return nil, errAmbiguousInstance
+		return nil, ErrAmbiguousInstance
 	}
 
 	switch len(shared) {
@@ -176,7 +192,7 @@ func selectInstance(cfg *config.Config, ra *auth.RequestAuth, backend string) (*
 	case 1:
 		return shared[0], nil
 	default:
-		return nil, errAmbiguousInstance
+		return nil, ErrAmbiguousInstance
 	}
 }
 
@@ -242,25 +258,28 @@ func forwardByMethod(w http.ResponseWriter, r *http.Request, inst *config.Instan
 
 func scopeRequestToInstance(w http.ResponseWriter, r *http.Request, inst *config.InstanceConfig) bool {
 	ra := auth.FromContext(r.Context())
+	if err := ScopeAuthToInstance(ra, inst); err != nil {
+		proxy.WriteJSONError(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+		return false
+	}
+	return true
+}
+
+// ScopeAuthToInstance narrows ra to inst's tenant, or rejects ambiguous writes.
+func ScopeAuthToInstance(ra *auth.RequestAuth, inst *config.InstanceConfig) error {
 	if ra == nil || len(ra.TenantIDs) == 0 {
-		return true
+		return nil
 	}
 
 	wanted := targetTenantIDs(inst)
 	if len(wanted) == 0 {
 		if !ra.IsRead && len(ra.TenantIDs) > 1 {
-			proxy.WriteJSONError(w, http.StatusForbidden, map[string]string{
-				"error": "write tenant is ambiguous for this instance",
-			})
-			return false
+			return ErrAmbiguousWriteTenant
 		}
-		return true
+		return nil
 	}
 	if !ra.IsRead && hasUnscopedPushTarget(inst) && len(ra.TenantIDs) > 1 {
-		proxy.WriteJSONError(w, http.StatusForbidden, map[string]string{
-			"error": "write tenant is ambiguous for this instance",
-		})
-		return false
+		return ErrAmbiguousWriteTenant
 	}
 
 	allowed := make(map[string]struct{}, len(ra.TenantIDs))
@@ -269,12 +288,11 @@ func scopeRequestToInstance(w http.ResponseWriter, r *http.Request, inst *config
 	}
 	for _, id := range wanted {
 		if _, ok := allowed[id]; !ok {
-			proxy.WriteJSONError(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
-			return false
+			return ErrForbidden
 		}
 	}
 	ra.TenantIDs = wanted
-	return true
+	return nil
 }
 
 // targetTenantIDs is the tenant an instance is bound to, as a set, or empty when

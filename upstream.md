@@ -79,6 +79,11 @@ This document assumes the defaults.
 Note these sit at the **root**, not under `/prometheus`. Mimir's ingestion paths
 are siblings of its query prefix, not children of it.
 
+The gateway accepts inbound OTLP/gRPC metrics on its own optional listener, but
+for Mimir it translates those requests to the OTLP HTTP path above. Do not
+configure an `otlp_grpc` target group for Mimir unless Mimir gains a standard
+OTLP gRPC receiver and this document is updated with that upstream surface.
+
 ### Data source (Prometheus-compatible query API)
 
 All under `/prometheus`.
@@ -264,6 +269,10 @@ or leak cross-tenant information (`/distributor/all_user_stats`).
 | POST | `/otlp/v1/logs` | OTLP HTTP |
 | POST | `/api/prom/push` | Deprecated legacy push |
 
+The gateway accepts inbound OTLP/gRPC logs on its own optional listener, but for
+Loki it translates those requests to the OTLP HTTP path above. Loki's own gRPC
+port is not the OTLP `LogsService`.
+
 ### Data source (query API)
 
 | Method | Path |
@@ -397,12 +406,13 @@ bare `/v1/traces`, without the `/otlp` prefix that Mimir and Loki use.
 
 Ingest runs on **separate receiver ports** from the query API. Express this by
 giving the instance grouped targets: `group: query` for the HTTP API and
-receiver groups such as `group: otlp_http`, `group: jaeger` and `group: zipkin`
-for the matching HTTP ingest routes; see the OTLP exporters section of the
-README. The receiver groups exist **only for Tempo**: Mimir and Loki serve OTLP
-HTTP on the same distributor listener as their other ingest paths, so the
-gateway always routes their ingest to `group: push` and rejects a target on
-either backend that names a receiver group it does not serve.
+receiver groups such as `group: otlp_grpc`, `group: otlp_http`, `group: jaeger`
+and `group: zipkin` for the matching ingest routes; see the OTLP exporters
+section of the README. The Tempo-specific receiver groups exist **only for
+Tempo**: Mimir and Loki serve OTLP HTTP on the same distributor listener as
+their other ingest paths, so the gateway always routes their ingest to
+`group: push` and rejects a target on either backend that names a receiver group
+it does not serve.
 
 Tenancy is not a target property. `tenant_id` belongs to the instance and every
 target asserts it, because an instance's targets address one backend -- with

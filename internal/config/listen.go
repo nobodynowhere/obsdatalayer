@@ -35,6 +35,12 @@ func (a ListenAddr) MarshalYAML() ([]byte, error) {
 	return []byte(strconv.Quote(a.spec())), nil
 }
 
+// IsZero lets YAML omitempty skip optional listeners. Without it, an unset
+// listener marshals as "0", which cannot be parsed on the next load.
+func (a ListenAddr) IsZero() bool {
+	return a.Host == "" && a.Port == 0
+}
+
 func (a *ListenAddr) parse(s string) error {
 	// A bare port leaves Host empty so the caller's default wins.
 	if port, err := strconv.Atoi(s); err == nil {

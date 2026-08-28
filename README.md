@@ -240,9 +240,12 @@ itself, so an existing shipper config works by changing only the host and port.
 | Metrics | Prometheus / Alloy `remote_write` | `POST /api/v1/push` | Mimir `/api/v1/push` |
 | Metrics | Influx line protocol | `POST /api/v1/push/influx/write` | Mimir `/api/v1/push/influx/write` |
 | Metrics | OTLP HTTP | `POST /otlp/v1/metrics` | Mimir `/otlp/v1/metrics` |
+| Metrics | OTLP gRPC | OTLP/gRPC `MetricsService/Export` | HTTP fallback to Mimir `/otlp/v1/metrics` |
 | Logs | Promtail / Alloy `loki.write` | `POST /loki/api/v1/push` | Loki `/loki/api/v1/push` |
 | Logs | OTLP HTTP | `POST /otlp/v1/logs` | Loki `/otlp/v1/logs` |
+| Logs | OTLP gRPC | OTLP/gRPC `LogsService/Export` | HTTP fallback to Loki `/otlp/v1/logs` |
 | Traces | OTLP HTTP | `POST /v1/traces` | Tempo `/v1/traces` |
+| Traces | OTLP gRPC | OTLP/gRPC `TraceService/Export` | Tempo OTLP gRPC, or HTTP fallback to `/v1/traces` |
 | Traces | Jaeger Thrift HTTP | `POST /api/traces` | Tempo `/api/traces` |
 | Traces | Zipkin | `POST /api/v2/spans` | Tempo `/api/v2/spans` |
 
@@ -276,10 +279,32 @@ OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=https://gateway:8080/otlp/v1/logs
 OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://gateway:8080/v1/traces
 ```
 
+For OTLP/gRPC, enable `gateway.otlp_grpc_listen` in the bootstrap file and point
+the exporter at that listener. The gRPC endpoint accepts traces, metrics and
+logs on the standard OTLP services. If an instance declares `otlp_grpc` targets,
+the gateway forwards gRPC to those targets. Today that native gRPC target group
+is Tempo-only; Mimir and Loki OTLP/gRPC exports are accepted at the gateway and
+translated to their existing OTLP HTTP ingest paths.
+That fallback is chosen from configuration before a request is sent: if an
+`otlp_grpc` target is configured and returns `Unimplemented` because it points
+at the wrong port or the receiver is disabled, the request fails rather than
+retrying through `otlp_http`.
+
+```bash
+OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+OTEL_EXPORTER_OTLP_ENDPOINT=http://gateway:4317
+```
+
+The gRPC transport receive cap is set from `gateway.max_body_bytes` when the
+process starts. Raising `max_body_bytes` does not admit larger messages until
+the process restarts -- the transport rejects them first. Lowering it takes
+effect on the next reload, but the rejection happens after grpc-go has
+decompressed and unmarshalled the message rather than before.
+
 Note that Tempo serves OTLP HTTP on a dedicated receiver port (4318 by
-default), separate from its query API port (3200). Jaeger Thrift HTTP and
-Zipkin can be separate receiver ports too. Give the instance one target group
-per surface.
+default), and OTLP gRPC on 4317 by default, separate from its query API port
+(3200). Jaeger Thrift HTTP and Zipkin can be separate receiver ports too. Give
+the instance one target group per surface.
 
 Instances live in the database, not in this file — create them through the
 admin API or the Instances page of the admin UI:
@@ -292,6 +317,7 @@ curl -u "$ADMIN_USER:$ADMIN_PASS" -X POST http://127.0.0.1:9091/api/instances \
     "tenant_id": "acme",
     "fan_out_mode": "any",
     "push_urls": [
+      {"url": "http://tempo-distributor:4317",   "group": "otlp_grpc"},
       {"url": "http://tempo-distributor:4318",   "group": "otlp_http"},
       {"url": "http://tempo-distributor:14268",  "group": "jaeger"},
       {"url": "http://tempo-distributor:9411",   "group": "zipkin"},
@@ -305,21 +331,22 @@ endpoints. Writes to Tempo's own HTTP API — the overrides endpoint, and the
 ruler and Alertmanager equivalents on the other backends — also follow the query
 group, because they address the API surface rather than the receivers.
 
-`otlp_http`, `jaeger` and `zipkin` targets receive their matching HTTP ingest
-routes. **Which groups exist depends on the backend**, and the gateway refuses a
-target that names one its backend does not serve:
+`otlp_grpc`, `otlp_http`, `jaeger` and `zipkin` targets receive their matching
+ingest routes. **Which groups exist depends on the backend**, and the gateway
+refuses a target that names one its backend does not serve:
 
 | Backend | Groups |
 | --- | --- |
-| `tempo` | `push`, `query`, `otlp_http`, `jaeger`, `zipkin` |
+| `tempo` | `push`, `query`, `otlp_http`, `otlp_grpc`, `jaeger`, `zipkin` |
 | `mimir` | `push`, `query` |
 | `loki` | `push`, `query` |
 
 Mimir and Loki serve their OTLP paths on the same distributor listener as their
-native push paths, so there is no second receiver surface to name there — the
-gateway always routes their ingest to the `push` group. A group that validated
-but was never routed to would be worse than an error: a saved configuration and
-no data.
+native push paths, so there is no second HTTP receiver surface to name there —
+the gateway always routes their HTTP ingest to the `push` group. OTLP gRPC for
+Mimir and Loki is translated to those same HTTP ingest targets. A group that
+validated but was never routed to would be worse than an error: a saved
+configuration and no data.
 
 `push` is the generic ingest group, and also the fallback for any receiver group
 an instance does not declare. A target with no `group` at all is a legacy

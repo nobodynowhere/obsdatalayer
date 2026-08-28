@@ -32,6 +32,10 @@ the only admin mutation that escapes the audit wrapper, encryption keys have no
 rotation workflow, and the Loki read rewriter is a scanner rather than a full
 LogQL parser.
 
+One entry was added while adding the OTLP/gRPC listener: the gRPC transport
+receive cap is fixed at listener construction, so raising `max_body_bytes`
+requires a restart while lowering it is enforced by the live handler check.
+
 Every entry here has been confirmed present in the source except **Dark mode is
 incomplete**, which is carried forward on structural evidence and needs a visual
 pass to confirm or close; the entry says so.
@@ -85,6 +89,30 @@ gateway-local approximation.
 Fix direction: adopt Loki's LogQL parser when the dependency cost is acceptable,
 rewrite stream selector nodes in the parsed AST, and keep the existing fail-closed
 behavior for endpoints or query forms the parser cannot represent safely.
+
+## P3 - OTLP/gRPC receive cap changes are partly restart-bound
+
+The OTLP/gRPC listener sets `grpc.MaxRecvMsgSize` from the loaded
+`gateway.max_body_bytes` when the process starts. Raising `max_body_bytes` does
+not admit larger messages until the process restarts -- the transport rejects
+them first. Lowering it takes effect on the next reload, but the rejection
+happens after grpc-go has decompressed and unmarshalled the message rather than
+before.
+
+References:
+- `recvMsgSize`, `internal/otlpgrpc/server.go`.
+- The live size check in `Receiver.export`, `internal/otlpgrpc/server.go`.
+- The optional listener is process-level bootstrap state in
+  `internal/config/bootstrap.go`, not hot-reloadable DB state.
+
+Impact: decreasing `max_body_bytes` below the value loaded at startup does not
+tighten the pre-auth gRPC transport cap until restart. Requests above the new
+live limit are still rejected, but only after grpc-go has received,
+decompressed and unmarshalled them.
+
+Fix direction: if this needs to become fully hot-reloadable, rebuild and swap
+the gRPC listener on settings reload, or move OTLP/gRPC onto a transport layer
+where message-size gating can be adjusted without reconstructing the server.
 
 ## P2 - Encrypted credentials have no rotation workflow
 

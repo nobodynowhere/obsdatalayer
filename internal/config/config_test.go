@@ -397,6 +397,7 @@ func TestTargetGroupsSplitTheSurfaces(t *testing.T) {
 		Name: "tempo-prod", Backend: "tempo",
 		PushURLs: []config.PushTarget{
 			{URL: "http://tempo-otlp.local:4318", Group: config.TargetGroupOTLPHTTP},
+			{URL: "http://tempo-grpc.local:4317", Group: config.TargetGroupOTLPGRPC},
 			{URL: "http://tempo-jaeger.local:14268", Group: config.TargetGroupJaeger},
 			{URL: "http://tempo-zipkin.local:9411", Group: config.TargetGroupZipkin},
 			{URL: "http://tempo-api.local:3200", Group: config.TargetGroupQuery},
@@ -406,6 +407,10 @@ func TestTargetGroupsSplitTheSurfaces(t *testing.T) {
 	otlp := i.GetTargets(config.TargetGroupOTLPHTTP)
 	if len(otlp) != 1 || otlp[0].URL != "http://tempo-otlp.local:4318" {
 		t.Errorf("OTLP targets should be the OTLP receivers only, got %+v", otlp)
+	}
+	otlpGRPC := i.GetTargets(config.TargetGroupOTLPGRPC)
+	if len(otlpGRPC) != 1 || otlpGRPC[0].URL != "http://tempo-grpc.local:4317" {
+		t.Errorf("OTLP gRPC targets should be the OTLP gRPC receivers only, got %+v", otlpGRPC)
 	}
 	jaeger := i.GetTargets(config.TargetGroupJaeger)
 	if len(jaeger) != 1 || jaeger[0].URL != "http://tempo-jaeger.local:14268" {
@@ -516,13 +521,16 @@ func TestGroupsAreBackendSpecific(t *testing.T) {
 		allowed        bool
 	}{
 		{"tempo", config.TargetGroupOTLPHTTP, true},
+		{"tempo", config.TargetGroupOTLPGRPC, true},
 		{"tempo", config.TargetGroupJaeger, true},
 		{"tempo", config.TargetGroupZipkin, true},
 		{"tempo", config.TargetGroupQuery, true},
 		{"mimir", config.TargetGroupQuery, true},
 		{"mimir", config.TargetGroupPush, true},
+		{"mimir", config.TargetGroupOTLPGRPC, false},
 		{"mimir", config.TargetGroupOTLPHTTP, false},
 		{"mimir", config.TargetGroupJaeger, false},
+		{"loki", config.TargetGroupOTLPGRPC, false},
 		{"loki", config.TargetGroupOTLPHTTP, false},
 		{"loki", config.TargetGroupZipkin, false},
 		// The legacy fallback is valid everywhere and is not a choice.
