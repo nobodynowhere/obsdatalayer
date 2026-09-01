@@ -16,8 +16,8 @@ const nav = [
   { to: '/', label: 'Overview', icon: 'dds__icon--home' },
   { to: '/instances', label: 'Instances', icon: 'dds__icon--device-server' },
   { to: '/tenants', label: 'Tenants', icon: 'dds__icon--cloud' },
-  { to: '/users', label: 'Users', icon: 'dds__icon--user-group' },
   { to: '/roles', label: 'Roles', icon: 'dds__icon--shield' },
+  { to: '/users', label: 'Users', icon: 'dds__icon--user-group' },
   { to: '/settings', label: 'Settings', icon: 'dds__icon--gear' },
   { to: '/config', label: 'Configuration', icon: 'dds__icon--view-list' },
 ]
