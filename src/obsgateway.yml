@@ -38,7 +38,7 @@ gateway:
   listen: "*:8443"
   # The admin plane carries config, user, role and tenant management. A bare
   # port binds loopback only; set "*:9091" to expose it, and firewall it.
-  admin_listen: "*:9091"
+  admin_listen: "*:9991"
   # Dedicated OTLP listeners accept standard OTLP receiver paths without
   # exposing the broader gateway data plane.
   otlp_grpc_listen: "*:4317"
