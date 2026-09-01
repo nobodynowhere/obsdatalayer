@@ -214,7 +214,7 @@ In the helm chart values:
 
 ```yaml
 tempo:
-  config:
+  structuredConfig:
     multitenancy_enabled: true
     query_frontend:
       multi_tenant_queries_enabled: true
