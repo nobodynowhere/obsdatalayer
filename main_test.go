@@ -46,7 +46,7 @@ func TestGenerateSelfSignedCertificateWritesGeneratedFiles(t *testing.T) {
 	keyFile := filepath.Join(dir, "gateway.key")
 
 	err := generateSelfSignedCertificate(selfSignedOptions{
-		ConfigPath: "gateway.yaml",
+		ConfigPath: "obsgateway.yml",
 		Bootstrap:  &config.Bootstrap{DB: db.Config{Type: "sqlite", Path: ":memory:"}},
 		Hosts:      "localhost,127.0.0.1",
 		Days:       30,
@@ -67,7 +67,7 @@ func TestGenerateSelfSignedCertificateWritesGeneratedFiles(t *testing.T) {
 
 func TestGenerateSelfSignedCertificateCanUpdateBootstrapConfig(t *testing.T) {
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "gateway.yaml")
+	configPath := filepath.Join(dir, "obsgateway.yml")
 	certDir := filepath.Join(dir, "tls")
 	initial := []byte("db:\n  type: sqlite\n  path: ./gateway.db\ngateway:\n  listen: 8080\n  admin_listen: 9091\n  tls:\n    enabled: false\n")
 	if err := os.WriteFile(configPath, initial, 0o644); err != nil {
@@ -251,10 +251,10 @@ func TestSetupLoggingRecordsTheCallSite(t *testing.T) {
 // those, or an operator alerting on them silently stops matching.
 func TestSetupLoggingLeavesCallerAttributesNamedSourceAlone(t *testing.T) {
 	got := logWithCallerRenaming(t, func(l *slog.Logger) {
-		l.Info("config reloaded", "instances", 3, "source", "./gateway.yaml")
+		l.Info("config reloaded", "instances", 3, "source", "./obsgateway.yml")
 	})
 
-	if !strings.Contains(got, "source=./gateway.yaml") {
+	if !strings.Contains(got, "source=./obsgateway.yml") {
 		t.Errorf("the line's own source attribute was rewritten, got %s", got)
 	}
 	if !strings.Contains(got, "caller=") {
