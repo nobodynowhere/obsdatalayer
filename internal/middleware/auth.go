@@ -91,6 +91,12 @@ func (g *AuthGuard) saturated(w http.ResponseWriter, r *http.Request, plane stri
 // /healthz and /ready bypass auth so container probes work without
 // credentials; both are answered by the gateway and never forwarded.
 func BasicAuth(a auth.Authorizer, guard *AuthGuard, next http.Handler) http.Handler {
+	return BasicAuthForPlane(a, guard, "data", next)
+}
+
+// BasicAuthForPlane is BasicAuth with an explicit listener label for throttle
+// logs and metrics.
+func BasicAuthForPlane(a auth.Authorizer, guard *AuthGuard, plane string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Container probes carry no credentials. Both are terminated by the
 		// gateway and never forwarded, so nothing tenant-scoped is exposed.
@@ -99,7 +105,7 @@ func BasicAuth(a auth.Authorizer, guard *AuthGuard, next http.Handler) http.Hand
 			return
 		}
 
-		source, allowed := guard.check(w, r, "data")
+		source, allowed := guard.check(w, r, plane)
 		if !allowed {
 			return
 		}
@@ -136,7 +142,7 @@ func BasicAuth(a auth.Authorizer, guard *AuthGuard, next http.Handler) http.Hand
 			}
 			if _, err := a.AuthenticateContext(r.Context(), name, password); err != nil {
 				if errors.Is(err, auth.ErrHashLimitReached) {
-					guard.saturated(w, r, "data")
+					guard.saturated(w, r, plane)
 					return
 				}
 				guard.recordFailure(source)

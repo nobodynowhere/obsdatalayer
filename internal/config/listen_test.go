@@ -146,6 +146,30 @@ db:
 	if addr, ok := b.OTLPGRPCAddr(); ok || addr != "" {
 		t.Errorf("expected OTLP/gRPC listener to default disabled, got addr=%q enabled=%v", addr, ok)
 	}
+	if addr, ok := b.OTLPHTTPAddr(); ok || addr != "" {
+		t.Errorf("expected OTLP/HTTP listener to default disabled, got addr=%q enabled=%v", addr, ok)
+	}
+}
+
+func TestBootstrapOTLPHTTPListenIsOptIn(t *testing.T) {
+	path := writeConfig(t, `
+db:
+  type: sqlite
+  path: /tmp/test.db
+gateway:
+  otlp_http_listen: 4318
+`)
+	b, err := config.LoadBootstrap(path)
+	if err != nil {
+		t.Fatalf("load bootstrap: %v", err)
+	}
+	addr, ok := b.OTLPHTTPAddr()
+	if !ok {
+		t.Fatal("expected OTLP/HTTP listener to be enabled")
+	}
+	if addr != ":4318" {
+		t.Errorf("expected OTLP/HTTP listener on all interfaces, got %q", addr)
+	}
 }
 
 func TestBootstrapOTLPGRPCListenIsOptIn(t *testing.T) {

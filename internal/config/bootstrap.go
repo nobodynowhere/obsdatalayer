@@ -16,6 +16,7 @@ import (
 const (
 	DefaultDataHost     = "*"
 	DefaultAdminHost    = "127.0.0.1"
+	DefaultOTLPHTTPHost = "*"
 	DefaultOTLPGRPCHost = "*"
 )
 
@@ -24,6 +25,7 @@ const (
 type GatewayBootstrap struct {
 	Listen         ListenAddr `yaml:"listen"`
 	AdminListen    ListenAddr `yaml:"admin_listen"`
+	OTLPHTTPListen ListenAddr `yaml:"otlp_http_listen,omitempty"`
 	OTLPGRPCListen ListenAddr `yaml:"otlp_grpc_listen,omitempty"`
 	TLS            TLSConfig  `yaml:"tls"`
 
@@ -61,6 +63,14 @@ func (b *Bootstrap) DataAddr() string {
 // AdminAddr returns the admin listener address, defaulting to loopback.
 func (b *Bootstrap) AdminAddr() string {
 	return b.Gateway.AdminListen.Addr(DefaultAdminHost)
+}
+
+// OTLPHTTPAddr returns the OTLP/HTTP listener address and whether it is enabled.
+func (b *Bootstrap) OTLPHTTPAddr() (string, bool) {
+	if b.Gateway.OTLPHTTPListen.Port == 0 {
+		return "", false
+	}
+	return b.Gateway.OTLPHTTPListen.Addr(DefaultOTLPHTTPHost), true
 }
 
 // OTLPGRPCAddr returns the OTLP/gRPC listener address and whether it is enabled.

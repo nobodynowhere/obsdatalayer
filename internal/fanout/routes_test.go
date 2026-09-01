@@ -73,6 +73,15 @@ func newRouteOnlyMux(cfg *config.Config, transport http.RoundTripper) http.Handl
 	return middleware.BasicAuth(testAuth, nil, mux)
 }
 
+func newOTLPHTTPOnlyMux(cfg *config.Config, transport http.RoundTripper) http.Handler {
+	h := config.NewHolder(cfg, "")
+	client := &http.Client{Timeout: 5 * time.Second, Transport: transport}
+	p := proxy.New(client, client)
+	mux := http.NewServeMux()
+	fanout.OTLPHTTPRoutes(mux, h, p, newTestMetrics())
+	return middleware.BasicAuth(testAuth, nil, mux)
+}
+
 func withAuthSelectors(t *testing.T, selectors ...string) {
 	t.Helper()
 	previous := append([]string(nil), testAuth.LabelSelectors...)
@@ -80,6 +89,70 @@ func withAuthSelectors(t *testing.T, selectors ...string) {
 	t.Cleanup(func() {
 		testAuth.LabelSelectors = previous
 	})
+}
+
+func TestOTLPHTTPOnlyRoutesUseStandardPaths(t *testing.T) {
+	withAuthTenants(t, "tenant-a")
+	tests := []struct {
+		path         string
+		instance     *config.InstanceConfig
+		upstreamPath string
+	}{
+		{
+			path:         "/v1/metrics",
+			instance:     &config.InstanceConfig{Name: "mimir-prod", Backend: "mimir", URL: "http://mimir.local"},
+			upstreamPath: "/otlp/v1/metrics",
+		},
+		{
+			path:         "/v1/logs",
+			instance:     &config.InstanceConfig{Name: "loki-prod", Backend: "loki", URL: "http://loki.local"},
+			upstreamPath: "/otlp/v1/logs",
+		},
+		{
+			path:         "/v1/traces",
+			instance:     &config.InstanceConfig{Name: "tempo-prod", Backend: "tempo", URL: "http://tempo.local"},
+			upstreamPath: "/v1/traces",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.path, func(t *testing.T) {
+			capture := &captureTransport{}
+			h := newOTLPHTTPOnlyMux(newTestConfig([]*config.InstanceConfig{tc.instance}), capture)
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader("payload"))
+			req.Header.Set("Authorization", authHeader())
+			rec := httptest.NewRecorder()
+
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("expected 202, got %d", rec.Code)
+			}
+			if capture.path != tc.upstreamPath {
+				t.Fatalf("expected upstream path %s, got %s", tc.upstreamPath, capture.path)
+			}
+		})
+	}
+}
+
+func TestOTLPHTTPOnlyRoutesDoNotMountFullDataPlane(t *testing.T) {
+	withAuthTenants(t, "tenant-a")
+	capture := &captureTransport{}
+	cfg := newTestConfig([]*config.InstanceConfig{{Name: "mimir-prod", Backend: "mimir", URL: "http://mimir.local"}})
+	h := newOTLPHTTPOnlyMux(cfg, capture)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/push", strings.NewReader("payload"))
+	req.Header.Set("Authorization", authHeader())
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for non-OTLP route, got %d", rec.Code)
+	}
+	if capture.calls != 0 {
+		t.Fatalf("expected no upstream call for non-OTLP route, got %d", capture.calls)
+	}
 }
 
 func TestMimirRuleWriteForwardsToPrometheusConfigAPI(t *testing.T) {

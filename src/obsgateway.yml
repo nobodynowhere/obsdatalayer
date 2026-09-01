@@ -32,14 +32,17 @@ db:
 
 gateway:
   # Listeners accept a bare port, "*:port" for every interface, or "IP:port".
-  # The data plane serves clients, so a bare port binds every interface.
-  listen: "*:8080"
+  # The data plane serves clients, so a bare port binds every interface. The
+  # public data-plane port is 8443 by convention; enable TLS below when
+  # certificate files are available.
+  listen: "*:8443"
   # The admin plane carries config, user, role and tenant management. A bare
   # port binds loopback only; set "*:9091" to expose it, and firewall it.
   admin_listen: "*:9091"
-  # OTLP/gRPC is opt-in. Uncomment to accept OTLP traces, metrics and logs on
-  # the conventional gRPC receiver port.
-  # otlp_grpc_listen: "*:4317"
+  # Dedicated OTLP listeners accept standard OTLP receiver paths without
+  # exposing the broader gateway data plane.
+  otlp_grpc_listen: "*:4317"
+  otlp_http_listen: "*:4318"
   tls:
     enabled: false
     # Generate a local test certificate:

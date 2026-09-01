@@ -85,8 +85,25 @@ func IngestRoutes(mux Registrar, h *config.ConfigHolder, p *proxy.Proxy, m *metr
 	})
 }
 
+// OTLPHTTPRoutes registers the standard OTLP/HTTP receiver paths for a
+// dedicated OTLP listener. Unlike IngestRoutes, this is not trying to mimic each
+// upstream project's public URL space; it presents one OpenTelemetry receiver
+// shape and translates metrics/logs to Mimir and Loki's namespaced OTLP paths.
+func OTLPHTTPRoutes(mux Registrar, h *config.ConfigHolder, p *proxy.Proxy, m *metrics.Metrics) {
+	mux.HandleFunc("POST /v1/metrics", func(w http.ResponseWriter, r *http.Request) {
+		forwardMimirPush(w, r, h, p, m, "/otlp/v1/metrics", false)
+	})
+	mux.HandleFunc("POST /v1/logs", func(w http.ResponseWriter, r *http.Request) {
+		forwardLokiPush(w, r, h, p, m, "/otlp/v1/logs", false)
+	})
+	mux.HandleFunc("POST /v1/traces", func(w http.ResponseWriter, r *http.Request) {
+		forwardTempoPush(w, r, h, p, m, "/v1/traces", config.TargetGroupOTLPHTTP)
+	})
+}
+
 // IngestBackend returns the backend an ingestion path belongs to, and whether
-// the path is an ingestion path at all.
+// the path is an ingestion path at all. It includes both the main data-plane
+// ingest paths and the standard OTLP/HTTP paths used by the dedicated listener.
 //
 // Authorization resolves a backend from the request path, and these paths carry
 // no /api/{backend}/ segment to read it from -- they are the upstream projects'
@@ -102,9 +119,11 @@ var ingestBackends = map[string]string{
 	"/api/v1/push":              "mimir",
 	"/api/v1/push/influx/write": "mimir",
 	"/otlp/v1/metrics":          "mimir",
+	"/v1/metrics":               "mimir",
 
 	"/loki/api/v1/push": "loki",
 	"/otlp/v1/logs":     "loki",
+	"/v1/logs":          "loki",
 
 	"/v1/traces":    "tempo",
 	"/api/traces":   "tempo",

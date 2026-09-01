@@ -50,7 +50,7 @@ var commit = "unknown"
 var buildTime = "unknown"
 
 func main() {
-	configPath := flag.String("config", "/etc/obsgateway/gateway.yml", "path to bootstrap config file")
+	configPath := flag.String("config", "/etc/obsgateway/obsgateway.yml", "path to bootstrap config file")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	generateSelfSigned := flag.Bool("generate-self-signed", false, "generate a self-signed TLS certificate and exit")
 	selfSignedHosts := flag.String("self-signed-hosts", "localhost,127.0.0.1,::1", "comma-separated DNS names or IP addresses for --generate-self-signed")
@@ -202,6 +202,7 @@ func main() {
 	guards := newAuthGuards(m, cfg.Gateway.AuthLimit)
 	applyAuthLimit(authSvc, guards, cfg.Gateway.AuthLimit)
 
+	otlpHTTPAddr, otlpHTTPEnabled := bootstrap.OTLPHTTPAddr()
 	otlpGRPCAddr, otlpGRPCEnabled := bootstrap.OTLPGRPCAddr()
 
 	adminAddr := bootstrap.AdminAddr()
@@ -260,10 +261,14 @@ func main() {
 	warnDisabledOTLPGRPCTargets(cfg, otlpGRPCEnabled)
 	adminSrv := makeServer(adminAddr, adminHandler(gormDB, holder, authSvc, tenants, m, reload, cipher, p, guards.admin), adminTLSConfig, cfg.Gateway.Server)
 	dataSrv := makeServer(bootstrap.DataAddr(), dataHandler(holder, authSvc, p, m, guards.data), dataTLSConfig, cfg.Gateway.Server)
+	var otlpHTTPSrv *http.Server
+	if otlpHTTPEnabled {
+		otlpHTTPSrv = makeServer(otlpHTTPAddr, otlpHTTPHandler(holder, authSvc, p, m, guards.otlphttp), dataTLSConfig, cfg.Gateway.Server)
+	}
 
 	// A listener that dies on its own (port already bound, for example) has to
 	// bring the process down rather than leaving it half-serving.
-	fatal := make(chan error, 3)
+	fatal := make(chan error, 4)
 	serve := func(name string, srv *http.Server) {
 		slog.Info("starting listener", "name", name, "addr", srv.Addr, "tls", bootstrap.Gateway.TLS.Enabled)
 		var err error
@@ -281,6 +286,9 @@ func main() {
 	}
 	go serve("admin", adminSrv)
 	go serve("data", dataSrv)
+	if otlpHTTPEnabled {
+		go serve("otlp_http", otlpHTTPSrv)
+	}
 	if otlpGRPCEnabled {
 		go serveGRPC("otlp_grpc", otlpGRPCAddr, otlpGRPCSrv, bootstrap.Gateway.TLS.Enabled, fatal)
 	}
@@ -304,7 +312,7 @@ func main() {
 			case syscall.SIGTERM, syscall.SIGINT:
 				slog.Info("received shutdown signal, draining", "signal", sig.String())
 				close(stopTicker)
-				shutdown(adminSrv, dataSrv)
+				shutdown(adminSrv, dataSrv, otlpHTTPSrv)
 				shutdownGRPC(otlpGRPCSrv)
 				slog.Info("shutdown complete")
 				return
@@ -325,6 +333,9 @@ func shutdown(servers ...*http.Server) {
 
 	var wg sync.WaitGroup
 	for _, srv := range servers {
+		if srv == nil {
+			continue
+		}
 		wg.Add(1)
 		go func(s *http.Server) {
 			defer wg.Done()
@@ -635,6 +646,7 @@ func renameSourceToCaller(groups []string, a slog.Attr) slog.Attr {
 type authGuards struct {
 	data     *middleware.AuthGuard
 	admin    *middleware.AuthGuard
+	otlphttp *middleware.AuthGuard
 	otlpgrpc *middleware.AuthGuard
 }
 
@@ -642,6 +654,7 @@ func newAuthGuards(m *metrics.Metrics, cfg config.AuthLimitConfig) *authGuards {
 	return &authGuards{
 		data:     &middleware.AuthGuard{Limiter: authlimit.NewLimiter(cfg.Limiter()), Metrics: m},
 		admin:    &middleware.AuthGuard{Limiter: authlimit.NewLimiter(cfg.Limiter()), Metrics: m},
+		otlphttp: &middleware.AuthGuard{Limiter: authlimit.NewLimiter(cfg.Limiter()), Metrics: m},
 		otlpgrpc: &middleware.AuthGuard{Limiter: authlimit.NewLimiter(cfg.Limiter()), Metrics: m},
 	}
 }
@@ -652,7 +665,7 @@ func newAuthGuards(m *metrics.Metrics, cfg config.AuthLimitConfig) *authGuards {
 // released back to the gate it came from.
 func applyAuthLimit(a *auth.Service, guards *authGuards, cfg config.AuthLimitConfig) {
 	if guards != nil {
-		for _, g := range []*middleware.AuthGuard{guards.data, guards.admin, guards.otlpgrpc} {
+		for _, g := range []*middleware.AuthGuard{guards.data, guards.admin, guards.otlphttp, guards.otlpgrpc} {
 			if g != nil && g.Limiter != nil {
 				g.Limiter.SetConfig(cfg.Limiter())
 			}
@@ -898,6 +911,15 @@ func dataHandler(holder *config.ConfigHolder, authSvc *auth.Service, p *proxy.Pr
 	// Order matters: BasicAuth consumes Authorization, then SanitizeHeaders
 	// drops it along with everything else outside the forwarding allowlist.
 	return middleware.Logging(middleware.BasicAuth(authSvc, guard, middleware.SanitizeHeaders(mux)))
+}
+
+// otlpHTTPHandler builds the dedicated OTLP/HTTP receiver listener. It exposes
+// the standard OpenTelemetry paths only; the broader gateway data plane stays
+// on gateway.listen.
+func otlpHTTPHandler(holder *config.ConfigHolder, authSvc *auth.Service, p *proxy.Proxy, m *metrics.Metrics, guard *middleware.AuthGuard) http.Handler {
+	mux := http.NewServeMux()
+	fanout.OTLPHTTPRoutes(mux, holder, p, m)
+	return middleware.Logging(middleware.BasicAuthForPlane(authSvc, guard, "otlp_http", middleware.SanitizeHeaders(mux)))
 }
 
 func warnDisabledOTLPGRPCTargets(cfg *config.Config, enabled bool) {

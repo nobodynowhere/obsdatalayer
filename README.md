@@ -240,9 +240,11 @@ itself, so an existing shipper config works by changing only the host and port.
 | Metrics | Prometheus / Alloy `remote_write` | `POST /api/v1/push` | Mimir `/api/v1/push` |
 | Metrics | Influx line protocol | `POST /api/v1/push/influx/write` | Mimir `/api/v1/push/influx/write` |
 | Metrics | OTLP HTTP | `POST /otlp/v1/metrics` | Mimir `/otlp/v1/metrics` |
+| Metrics | OTLP HTTP on dedicated listener | `POST /v1/metrics` | Mimir `/otlp/v1/metrics` |
 | Metrics | OTLP gRPC | OTLP/gRPC `MetricsService/Export` | HTTP fallback to Mimir `/otlp/v1/metrics` |
 | Logs | Promtail / Alloy `loki.write` | `POST /loki/api/v1/push` | Loki `/loki/api/v1/push` |
 | Logs | OTLP HTTP | `POST /otlp/v1/logs` | Loki `/otlp/v1/logs` |
+| Logs | OTLP HTTP on dedicated listener | `POST /v1/logs` | Loki `/otlp/v1/logs` |
 | Logs | OTLP gRPC | OTLP/gRPC `LogsService/Export` | HTTP fallback to Loki `/otlp/v1/logs` |
 | Traces | OTLP HTTP | `POST /v1/traces` | Tempo `/v1/traces` |
 | Traces | OTLP gRPC | OTLP/gRPC `TraceService/Export` | Tempo OTLP gRPC, or HTTP fallback to `/v1/traces` |
@@ -253,7 +255,7 @@ These paths do not collide with one another. The one upstream path both Loki and
 Mimir serve, the deprecated Cortex-compatibility `POST /api/prom/push`, is
 deliberately not exposed; use `/loki/api/v1/push` or `/api/v1/push` instead.
 
-All ingestion routes are registered together in `RegisterIngest`
+Main data-plane ingestion routes are registered together in `IngestRoutes`
 (`internal/fanout/ingest.go`), and the path-to-backend mapping is explicit rather
 than parsed from the path, so a new route cannot silently acquire a backend.
 
@@ -269,14 +271,24 @@ by the client is discarded.
 
 Mimir and Loki namespace their OTLP endpoints under `/otlp`, while Tempo serves
 a bare OTel receiver at `/v1/traces`. A single `OTEL_EXPORTER_OTLP_ENDPOINT`
-therefore cannot reach all three, because the exporter appends `/v1/<signal>` to
-it. Set the per-signal variables instead, which the OTLP specification treats as
-complete URLs:
+therefore cannot reach all three on the main data-plane listener, because the
+exporter appends `/v1/<signal>` to it. Set the per-signal variables instead,
+which the OTLP specification treats as complete URLs:
 
 ```bash
-OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=https://gateway:8080/otlp/v1/metrics
-OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=https://gateway:8080/otlp/v1/logs
-OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://gateway:8080/v1/traces
+OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=https://gateway:8443/otlp/v1/metrics
+OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=https://gateway:8443/otlp/v1/logs
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://gateway:8443/v1/traces
+```
+
+For the dedicated OTLP/HTTP listener, enable `gateway.otlp_http_listen` in the
+bootstrap file and use the conventional base endpoint. That listener exposes
+only the standard OTLP HTTP paths, translating metrics and logs to Mimir and
+Loki's namespaced upstream paths internally.
+
+```bash
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_EXPORTER_OTLP_ENDPOINT=http://gateway:4318
 ```
 
 For OTLP/gRPC, enable `gateway.otlp_grpc_listen` in the bootstrap file and point
@@ -294,6 +306,9 @@ retrying through `otlp_http`.
 OTEL_EXPORTER_OTLP_PROTOCOL=grpc
 OTEL_EXPORTER_OTLP_ENDPOINT=http://gateway:4317
 ```
+
+Use `https://` for the OTLP listener endpoints when `gateway.tls.enabled` is
+true.
 
 The gRPC transport receive cap is set from `gateway.max_body_bytes` when the
 process starts. Raising `max_body_bytes` does not admit larger messages until
@@ -593,7 +608,7 @@ password to `.obsgateway-admin-password` beside the database file. If that
 password is lost, reset it from the host:
 
 ```bash
-obsgateway --config /etc/obsgateway/gateway.yml --resetpwd admin
+obsgateway --config /etc/obsgateway/obsgateway.yml --resetpwd admin
 ```
 
 The new password is prompted for twice and never echoed, so it does not reach
@@ -611,7 +626,7 @@ Off a terminal — in a provisioning script — the same two entries are read as
 two lines on stdin:
 
 ```bash
-printf '%s\n%s\n' "$NEW" "$NEW" | obsgateway --config /etc/obsgateway/gateway.yml --resetpwd admin
+printf '%s\n%s\n' "$NEW" "$NEW" | obsgateway --config /etc/obsgateway/obsgateway.yml --resetpwd admin
 ```
 
 ### Credential encryption
@@ -755,7 +770,7 @@ The response carries the only copy of the token; only its hash is stored, so it
 cannot be retrieved again. Use it as a bearer credential:
 
 ```bash
-curl -H "Authorization: Bearer obsgw_..." https://gateway:8080/loki/api/v1/push
+curl -H "Authorization: Bearer obsgw_..." https://gateway:8443/loki/api/v1/push
 ```
 
 Notes:
